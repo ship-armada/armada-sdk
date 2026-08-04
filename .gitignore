@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.DS_Store
+._*
+*.log
+.env
+.env.local
+*.key
+*.pem
+*.secret

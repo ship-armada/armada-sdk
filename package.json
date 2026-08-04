@@ -1,0 +1,33 @@
+{
+  "name": "@armada/sdk",
+  "version": "0.0.0",
+  "description": "Fork-and-shrink replacement of the Railgun SDK stack for the Armada protocol",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "files": ["dist", "SPEC.md", "NOTICE.md", "vendor/railgun-engine/LICENSE"],
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "require": "./dist/index.cjs" },
+    "./core": { "types": "./dist/core/index.d.ts", "import": "./dist/core/index.js", "require": "./dist/core/index.cjs" },
+    "./wallet": { "types": "./dist/wallet/index.d.ts", "import": "./dist/wallet/index.js", "require": "./dist/wallet/index.cjs" },
+    "./payments": { "types": "./dist/payments/index.d.ts", "import": "./dist/payments/index.js", "require": "./dist/payments/index.cjs" },
+    "./ops": { "types": "./dist/ops/index.d.ts", "import": "./dist/ops/index.js", "require": "./dist/ops/index.cjs" }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:vectors": "vitest run test/vectors",
+    "lint": "eslint . --ext .ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.57.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.2",
+    "vitest": "^1.6.0"
+  }
+}
