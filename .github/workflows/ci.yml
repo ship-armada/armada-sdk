@@ -17,5 +17,11 @@ jobs:
       - run: npm install
       - run: npm run lint
       - run: npm run typecheck
+      - run: npm run typecheck:vendor
       - run: npm test
       - run: npm run build
+      - name: PPOI strip guard (no proof-of-innocence code in vendor/)
+        run: |
+          if grep -rn 'POI' vendor/ | grep -v 'POINTS'; then
+            echo "::error::PPOI reference found in vendor/ — must be stripped (SPEC §3.5)"; exit 1
+          fi

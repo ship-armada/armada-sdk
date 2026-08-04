@@ -30,3 +30,15 @@ The npm artifact is what production code actually runs; the vendored git tag mus
    **Result: MATCH.** The tag source corresponds to the published npm artifact.
 
 PPOI (proof of innocence) code is stripped at vendor time — not present in `vendor/` — per SPEC §3.5.
+CI enforces this with a `grep 'POI' vendor/` guard (excluding the `BASIS_POINTS` false positive) and a
+`typecheck:vendor` closure gate.
+
+### 9.5.4 tree-scoped nullifier invariant (carry into the rebuilt layer)
+
+The upstream 9.5.4 fix "POI spentTXO filtering by tree" fixed a cross-tree nullifier-collision class.
+It lived entirely in the dropped storage/orchestration files (`utxo-merkletree.ts`, `poi/poi.ts`),
+**not** in the vendored core — the vendored `TransactNote.getNullifier` is plain
+`poseidon(nullifyingKey, leafIndex)`, correctly tree-agnostic. When the SDK reimplements the
+nullifier/spent-TXO storage layer, it MUST scope nullifier matches by owning UTXO tree (a composite
+`(tree, nullifier)` key + `txo.tree === utxoTreeIn` guard), never a global tree-agnostic key, and
+carry a cross-tree-collision regression test. Tracked as out-of-vendor-scope work.
