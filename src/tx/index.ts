@@ -161,3 +161,7 @@ export interface TransactDecoder {
 
 // Native transact() calldata decoder + in-band fee-note recovery (the TransactDecoder methods).
 export { decodeTransact, extractFeeOutput, TRANSACT_ABI } from './decode';
+
+// Transfer planning — inspectable Plan (TXO selection + change + fee output + circuit shape).
+export { planTransfer } from './plan';
+export type { PlanTransferParams, TransferOutputRequest, FeeRequest } from './plan';
