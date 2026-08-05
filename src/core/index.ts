@@ -13,6 +13,7 @@ export { hashBoundParamsV2, hashBoundParamsV3 } from '../../vendor/railgun-engin
 // Merkle: proof verification + the node combiner (Poseidon left/right).
 export { verifyMerkleProof, createDummyMerkleProof } from '../../vendor/railgun-engine/dist/merkletree/merkle-proof';
 export { hashLeftRight } from '../../vendor/railgun-engine/dist/merkletree/merkle-math';
+export { MERKLE_ZERO_VALUE, MERKLE_ZERO_VALUE_BIGINT, TREE_DEPTH } from '../../vendor/railgun-engine/dist/models/merkletree-types';
 
 // Spend-authorization EdDSA (BabyJubjub) — verify a signature over the poseidon intent digest.
 export { verifyEDDSA, signEDDSA, getPublicSpendingKey, getPublicViewingKey } from '../../vendor/railgun-engine/dist/utils/keys-utils';

@@ -49,3 +49,7 @@ export { CheckpointStore } from './checkpoints';
 export type { ScanCheckpoint } from './checkpoints';
 export { runScan } from './scan';
 export type { ScanOptions, ScanResult } from './scan';
+
+// UTXO merkletree.
+export { UTXOMerkletree } from './merkletree';
+export type { MerkleProof } from './merkletree';
