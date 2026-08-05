@@ -2,6 +2,7 @@
 // ABOUTME: typed adaptParams, in-band fee binding, and the native decode API for verifiers. FROZEN.
 
 import type { CircuitShape } from '../prover/index';
+import type { CommitmentCiphertextV2 } from '../sync/index';
 
 /** Mirrors the relayer `GET /fees` response. */
 export interface FeeQuote {
@@ -90,17 +91,32 @@ export interface DecodedTransact {
   readonly commitments: readonly bigint[];
   readonly merkleRoot: bigint;
   readonly boundParams: DecodedBoundParams;
+  /**
+   * The output note ciphertexts carried in `boundParams` (one per new commitment). `extractFeeOutput`
+   * decrypts these with the broadcaster viewing key to recover the in-band fee note.
+   */
+  readonly commitmentCiphertexts: readonly CommitmentCiphertextV2[];
+  /** Set only for unshields — the plaintext unshield preimage (recipient npk, token, value). */
+  readonly unshieldPreimage?: {
+    readonly npk: bigint;
+    readonly tokenAddress: `0x${string}`;
+    readonly value: bigint;
+  };
 }
 
 /**
  * Native decode for verifiers — understands bare `transact()` and the wrapper entry points,
- * replacing the relayer's synthetic-calldata normalization (§4.6). `extractFeeOutput` reconstructs
- * the fee note addressed to the given viewing key.
+ * replacing the relayer's synthetic-calldata normalization (§4.6). A `transact()` call carries a
+ * `Transaction[]`, so the decoder returns one `DecodedTransact` per bundled transaction.
+ * `extractFeeOutput` reconstructs the fee note addressed to the given viewing key.
  */
 export interface TransactDecoder {
-  decodeTransact(calldata: `0x${string}`): DecodedTransact;
+  decodeTransact(calldata: `0x${string}`): DecodedTransact[];
   extractFeeOutput(
     decoded: DecodedTransact,
     viewingKey: Uint8Array,
   ): { tokenAddress: `0x${string}`; value: bigint } | undefined;
 }
+
+// Native transact() calldata decoder (implements TransactDecoder.decodeTransact).
+export { decodeTransact, TRANSACT_ABI } from './decode';

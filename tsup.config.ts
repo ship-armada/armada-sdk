@@ -17,4 +17,7 @@ export default defineConfig({
   splitting: false,
   sourcemap: true,
   target: 'es2022',
+  // ethers is a runtime import in tx/ (ABI codec for decodeTransact) — keep it external so consumers
+  // (relayer/app, which already depend on ethers) dedupe it rather than bundling a copy.
+  external: ['ethers'],
 });
