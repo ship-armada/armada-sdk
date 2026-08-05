@@ -10,6 +10,8 @@ import {
   initPoseidonPromise,
   TransactNote,
   verifyMerkleProof,
+  verifyEDDSA,
+  hashBoundParamsV2,
 } from '../../src/core/index';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -50,6 +52,45 @@ describe('core parity — merkle proof (verifyMerkleProof)', () => {
       expect(
         verifyMerkleProof({ leaf: v.leaf, elements: v.pathElements, indices: v.pathIndices, root: v.root }),
       ).toBe(true);
+    });
+  }
+});
+
+describe('core parity — note public key (npk)', () => {
+  for (const [i, v] of load('npk-vectors.json').vectors.entries()) {
+    it(`vector ${i}`, () => {
+      // npk = poseidon([masterPublicKey, hexToBigInt(random)])
+      expect(poseidon([B(v.masterPublicKey), BigInt('0x' + v.random)])).toBe(B(v.npk));
+    });
+  }
+});
+
+describe('core parity — boundParams hash (hashBoundParamsV2)', () => {
+  for (const [i, v] of load('boundparams-hash-vectors.json').vectors.entries()) {
+    it(`vector ${i}`, () => {
+      expect(hashBoundParamsV2(v.boundParams)).toBe(B(v.boundParamsHash));
+    });
+  }
+});
+
+describe('core parity — EdDSA spend authorization (verifyEDDSA)', () => {
+  for (const [i, v] of load('eddsa-spend-auth-vectors.json').vectors.entries()) {
+    it(`vector ${i}`, () => {
+      const signature = {
+        R8: [B(v.signature.R8[0]), B(v.signature.R8[1])] as [bigint, bigint],
+        S: B(v.signature.S),
+      };
+      expect(
+        verifyEDDSA(B(v.message), signature, [B(v.spendingPublicKey[0]), B(v.spendingPublicKey[1])]),
+      ).toBe(true);
+    });
+  }
+});
+
+describe('core parity — TransactionStructV2 (boundParams consistency)', () => {
+  for (const [i, v] of load('transaction-struct-vectors.json').vectors.entries()) {
+    it(`vector ${i} (shape ${v.shape.nullifiers}x${v.shape.commitments})`, () => {
+      expect(hashBoundParamsV2(v.boundParams)).toBe(B(v.boundParamsHash));
     });
   }
 });
