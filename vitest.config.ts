@@ -7,6 +7,10 @@ export default defineConfig({
   test: {
     include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
     environment: 'node',
+    // Fork a real node process per test file. snarkjs's bn128 curve spawns worker_threads; under
+    // vitest's default worker-thread pool that fails ("Worker is not a constructor"). Forks match
+    // pure-node behavior so the prover's Groth16 proving works.
+    pool: 'forks',
     server: {
       deps: {
         // The vendored engine is prebuilt CJS (dist/). Externalize it so Node's require dedupes
