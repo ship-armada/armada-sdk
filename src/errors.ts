@@ -34,3 +34,7 @@ export class ClaimSeedCounterError extends ArmadaError {
 export class NoSpendCapabilityError extends ArmadaError {
   readonly code = 'NO_SPEND_CAPABILITY';
 }
+/** Thrown when no single tree's spendable notes can cover a planned spend (amount + fee). */
+export class InsufficientBalanceError extends ArmadaError {
+  readonly code = 'INSUFFICIENT_BALANCE';
+}
