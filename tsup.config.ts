@@ -17,7 +17,7 @@ export default defineConfig({
   splitting: false,
   sourcemap: true,
   target: 'es2022',
-  // ethers is a runtime import in tx/ (ABI codec for decodeTransact) — keep it external so consumers
-  // (relayer/app, which already depend on ethers) dedupe it rather than bundling a copy.
-  external: ['ethers'],
+  // ethers (tx/ ABI codec) + snarkjs (prover) are runtime imports — keep external so consumers dedupe
+  // them rather than bundling copies (snarkjs especially is large and pulls native-ish deps).
+  external: ['ethers', 'snarkjs'],
 });

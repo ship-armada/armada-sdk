@@ -51,3 +51,6 @@ export interface ProverAdapter {
 // Artifact integrity.
 export { verifyArtifactIntegrity, VerifiedArtifactSource, shapeKey } from './manifest';
 export type { ArtifactDigest, ArtifactManifest } from './manifest';
+
+// Same-thread snarkjs Groth16 prover (node/tests + the worker's proving core).
+export { createSnarkjsProver } from './snarkjs-prover';
