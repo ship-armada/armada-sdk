@@ -14,9 +14,13 @@
     "./ops": { "types": "./dist/ops/index.d.ts", "import": "./dist/ops/index.js", "require": "./dist/ops/index.cjs" }
   },
   "scripts": {
+    "build:vendor": "tsc -p vendor/railgun-engine/tsconfig.build.json && node scripts/postbuild-vendor.mjs",
+    "prebuild": "npm run build:vendor",
     "build": "tsup",
+    "pretypecheck": "npm run build:vendor",
     "typecheck": "tsc --noEmit",
     "typecheck:vendor": "tsc -p vendor/railgun-engine/tsconfig.json",
+    "pretest": "npm run build:vendor",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:vectors": "vitest run test/vectors",
@@ -32,7 +36,8 @@
     "@scure/base": "^1.1.1",
     "buffer-xor": "^2.0.2",
     "ethereum-cryptography": "^2.0.0",
-    "ethers": "^6.14.3"
+    "ethers": "^6.14.3",
+    "fast-text-encoding": "^1.0.6"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
