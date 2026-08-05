@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "strict": true,
+    "useUnknownInCatchVariables": false,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "rootDir": "src",
+    "types": ["node"],
+    "typeRoots": ["../../node_modules/@types", "./src/types"]
+  },
+  "include": ["src/**/*.ts"]
+}
