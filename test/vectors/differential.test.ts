@@ -95,11 +95,8 @@ describe('core parity — TransactionStructV2 (boundParams consistency)', () => 
   }
 });
 
-// DEFERRED to Phase 2 (wallet layer) — these two Phase 0 vectors are NOT pure-core primitives and
-// verify once the wallet layer exists. Kept as `it.todo` so they surface as PENDING in every test
-// run (and in CI) until implemented — a standing reminder so the deferral is never silently dropped.
-// Tracked also in SPEC.md Phase 1/2 acceptance and a GitHub issue.
-describe('parity — DEFERRED to Phase 2 (wallet layer)', () => {
-  // keyset-vectors.json is now COVERED in src/wallet/keys.test.ts (deriveKeyset byte-parity). ✓
-  it.todo('note-ciphertext-vectors.json — ECIES decrypt round-trip (needs viewing private key + shared key)');
-});
+// The two Phase 0 vectors that are NOT pure-core primitives are now both covered by the wallet/sync
+// layers (no longer deferred):
+//   - keyset-vectors.json          → src/wallet/keys.test.ts   (deriveKeyset byte-parity). ✓
+//   - note-ciphertext-vectors.json → src/sync/note-crypto.test.ts (ECIES V2 encrypt→decrypt
+//                                     round-trip + on-chain envelope structural parity). ✓
