@@ -6,6 +6,17 @@
   "type": "module",
   "sideEffects": false,
   "files": ["dist", "SPEC.md", "NOTICE.md", "vendor/railgun-engine/LICENSE"],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "core": ["./dist/core/index.d.ts"],
+      "wallet": ["./dist/wallet/index.d.ts"],
+      "payments": ["./dist/payments/index.d.ts"],
+      "ops": ["./dist/ops/index.d.ts"]
+    }
+  },
   "exports": {
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "require": "./dist/index.cjs" },
     "./core": { "types": "./dist/core/index.d.ts", "import": "./dist/core/index.js", "require": "./dist/core/index.cjs" },
