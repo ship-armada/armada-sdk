@@ -43,3 +43,9 @@ export interface SyncEventMap {
 // Ranged log fetch.
 export { fetchLogsRanged } from './ranged-fetch';
 export type { GetLogsFn, RangedFetchOptions } from './ranged-fetch';
+
+// Scan checkpoints + resumable scan.
+export { CheckpointStore } from './checkpoints';
+export type { ScanCheckpoint } from './checkpoints';
+export { runScan } from './scan';
+export type { ScanOptions, ScanResult } from './scan';
