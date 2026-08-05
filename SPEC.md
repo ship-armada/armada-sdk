@@ -162,8 +162,16 @@ existing memo field.
 - **Test split across repos:** the SDK repo holds all unit/property tests and the differential
   vector *fixtures* (offline — no chains, fast CI); the POC repo holds the vector *capture*
   scripts and all integration/e2e tests (Anvil + deployed contracts + relayer live there),
-  consuming pinned prerelease builds of the SDK (GitHub Packages `0.x.y-dev.N` preferred; a git
-  dependency pinned to a commit SHA is the acceptable low-infra alternative). The
+  consuming pinned builds of the SDK. **Consumption mechanism (RESOLVED, chosen on consumer ease):**
+  during Phase 2 integration the POC repo — a single internal consumer — depends on the SDK via a
+  **git-SHA dependency** (`github:ship-armada/armada-sdk#<sha>`, built on install via a `prepare`
+  script): zero publish/auth infra, keeps the `@armada/sdk` name. **Broad/external consumption moves
+  to public npm `0.x` prereleases** once the SDK is usable end-to-end (instance API + tx pipeline
+  working against chains, ~end of Phase 2); `0.x` semver signals instability, and publishing a
+  mostly-stub package earlier would give external devs a bad first impression. GitHub Packages was
+  considered and deprioritized — its npm registry requires auth even for *public* packages
+  (per-consumer friction), whereas public npm is strictly easier for external developers (no auth,
+  semver, prebuilt dist). The `@armada` npm scope is currently unclaimed (verified 2026-08). The
   compatibility contract travels between repos as fixture data, not coupled code.
 - **Browser-first, Node-compatible.** No Node built-ins in core modules; environment adapters
   (storage, workers) are injected. Target: the Vite `nodePolyfills`/`level-js` scaffolding in

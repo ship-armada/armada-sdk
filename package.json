@@ -17,6 +17,7 @@
     "build:vendor": "tsc -p vendor/railgun-engine/tsconfig.build.json && node scripts/postbuild-vendor.mjs",
     "prebuild": "npm run build:vendor",
     "build": "tsup",
+    "prepare": "npm run build",
     "pretypecheck": "npm run build:vendor",
     "typecheck": "tsc --noEmit",
     "typecheck:vendor": "tsc -p vendor/railgun-engine/tsconfig.json",
