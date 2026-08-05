@@ -47,3 +47,7 @@ export interface ProverAdapter {
   verify(proof: Groth16Proof, publicSignals: bigint[], vkey: object): Promise<boolean>;
   close(): Promise<void>;
 }
+
+// Artifact integrity.
+export { verifyArtifactIntegrity, VerifiedArtifactSource, shapeKey } from './manifest';
+export type { ArtifactDigest, ArtifactManifest } from './manifest';
