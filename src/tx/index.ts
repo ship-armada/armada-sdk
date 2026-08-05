@@ -165,3 +165,7 @@ export { decodeTransact, extractFeeOutput, TRANSACT_ABI } from './decode';
 // Transfer planning — inspectable Plan (TXO selection + change + fee output + circuit shape).
 export { planTransfer } from './plan';
 export type { PlanTransferParams, TransferOutputRequest, FeeRequest } from './plan';
+
+// transact() calldata serializer (inverse of decodeTransact) — proof G2 swap + Transaction structs.
+export { buildTransactCalldata } from './serialize';
+export type { TransactionData, TransactionBoundParams } from './serialize';
