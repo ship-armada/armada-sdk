@@ -15,7 +15,7 @@ export { verifyMerkleProof, createDummyMerkleProof } from '../../vendor/railgun-
 export { hashLeftRight } from '../../vendor/railgun-engine/dist/merkletree/merkle-math';
 
 // Spend-authorization EdDSA (BabyJubjub) — verify a signature over the poseidon intent digest.
-export { verifyEDDSA, signEDDSA, getPublicSpendingKey } from '../../vendor/railgun-engine/dist/utils/keys-utils';
+export { verifyEDDSA, signEDDSA, getPublicSpendingKey, getPublicViewingKey } from '../../vendor/railgun-engine/dist/utils/keys-utils';
 
 // Key derivation — mnemonic → wallet nodes → keypairs/masterPublicKey; 0zk address encode/decode.
 export { Mnemonic } from '../../vendor/railgun-engine/dist/key-derivation/bip39';
