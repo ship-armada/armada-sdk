@@ -169,3 +169,14 @@ export type { PlanTransferParams, TransferOutputRequest, FeeRequest } from './pl
 // transact() calldata serializer (inverse of decodeTransact) — proof G2 swap + Transaction structs.
 export { buildTransactCalldata } from './serialize';
 export type { TransactionData, TransactionBoundParams } from './serialize';
+
+// Circuit witness assembly — full notes + merkle proofs + SpendSigner signature → circuit inputs.
+export { buildWitness } from './witness';
+export type {
+  BuildWitnessParams,
+  BuiltWitness,
+  WitnessInput,
+  WitnessOutputRequest,
+  WitnessSenderContext,
+  FormattedCircuitInputs,
+} from './witness';
