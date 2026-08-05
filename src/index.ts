@@ -58,6 +58,6 @@ export const VERSION = '0.0.0';
 export * from './errors';
 export * from './storage/index';
 export * from './sync/index';
-export type * from './prover/index';
+export * from './prover/index';
 export type * from './tx/index';
 export * from './wallet/index';
