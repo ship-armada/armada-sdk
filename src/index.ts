@@ -59,5 +59,5 @@ export * from './errors';
 export * from './storage/index';
 export * from './sync/index';
 export * from './prover/index';
-export type * from './tx/index';
+export * from './tx/index';
 export * from './wallet/index';
