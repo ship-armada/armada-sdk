@@ -20,11 +20,6 @@ export interface CctpBinding {
   readonly destDomain: number;
   readonly maxFee: bigint;
 }
-export interface YieldBinding {
-  readonly kind: 'yield';
-  readonly adapter: `0x${string}`;
-  readonly minShares: bigint;
-}
 
 export interface DecodedBoundParams {
   readonly treeNumber: number;
@@ -33,7 +28,12 @@ export interface DecodedBoundParams {
   readonly chainID: bigint;
   readonly adaptContract: `0x${string}`;
   readonly adaptParams: `0x${string}`;
-  readonly decodedAdaptParams?: CctpBinding | YieldBinding;
+  /**
+   * The binding recovered from the WRAPPER calldata's plaintext args (not from `adaptParams` — that
+   * is a one-way keccak commitment). Present only when decoding a wrapper entry point that carries
+   * the destination tuple; `undefined` for a bare `transact()`.
+   */
+  readonly decodedAdaptParams?: CctpBinding;
 }
 
 export interface PlanOutput {
@@ -81,11 +81,39 @@ export interface ProofHandle {
   readonly expiresAt?: number;
 }
 
-/** Provided encoders for the deployed contracts (fixes #399). */
+/**
+ * adaptParams binding encoders matching the deployed contracts (fixes #399). Each is a one-way
+ * keccak256 commitment set on `boundParams.adaptParams`; the yield deposit vs redeem paths produce
+ * distinct commitments. See `./adapt-params` for the implementations + `verify*` counterparts.
+ */
 export interface AdaptParamsEncoders {
-  encodeCctpBinding(recipient: `0x${string}`, destDomain: number, maxFee: bigint): `0x${string}`;
-  encodeYieldBinding(adapter: `0x${string}`, minShares: bigint): `0x${string}`;
+  encodeCctpBinding(recipient: string, destinationDomain: number, maxFee: bigint): `0x${string}`;
+  encodeYieldDepositBinding(
+    npk: bigint,
+    encryptedBundle: readonly [string, string, string],
+    shieldKey: string,
+  ): `0x${string}`;
+  encodeYieldRedeemBinding(
+    npk: bigint,
+    encryptedBundle: readonly [string, string, string],
+    shieldKey: string,
+    feeNpk: bigint,
+    feeEncryptedBundle: readonly [string, string, string],
+    feeShieldKey: string,
+    feeAmount: bigint,
+  ): `0x${string}`;
 }
+
+// adaptParams binding encoders + verifiers (fixes #399).
+export {
+  CCTP_UNSHIELD_DOMAIN_TAG,
+  encodeCctpBinding,
+  verifyCctpBinding,
+  encodeYieldDepositBinding,
+  verifyYieldDepositBinding,
+  encodeYieldRedeemBinding,
+  verifyYieldRedeemBinding,
+} from './adapt-params';
 
 export interface DecodedTransact {
   readonly nullifiers: readonly bigint[];
