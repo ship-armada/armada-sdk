@@ -33,6 +33,9 @@ export type { TokenDataGetter } from '../../vendor/railgun-engine/dist/note/tran
 // Wallet source tag — must be set before creating a transfer note (annotation-data requirement).
 export { default as WalletInfo } from '../../vendor/railgun-engine/dist/wallet/wallet-info';
 
+// Shield notes: ownership decryption (decryptRandom via shieldKey ECDH) + note-public-key/hash helpers.
+export { ShieldNote } from '../../vendor/railgun-engine/dist/note/shield-note';
+
 // Key derivation — mnemonic → wallet nodes → keypairs/masterPublicKey; 0zk address encode/decode.
 export { Mnemonic } from '../../vendor/railgun-engine/dist/key-derivation/bip39';
 export { deriveNodes, WalletNode } from '../../vendor/railgun-engine/dist/key-derivation/wallet-node';
