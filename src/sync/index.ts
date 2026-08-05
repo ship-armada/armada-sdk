@@ -53,3 +53,16 @@ export type { ScanOptions, ScanResult } from './scan';
 // UTXO merkletree.
 export { UTXOMerkletree } from './merkletree';
 export type { MerkleProof } from './merkletree';
+
+// Note ECIES V2 codec — trial-decrypt commitments (scan) + encrypt to a receiver (send).
+export {
+  encryptNoteToReceiver,
+  tryDecryptCommitment,
+  createTransferNote,
+  DEFAULT_EVM_CHAIN,
+} from './note-crypto';
+export type {
+  CommitmentCiphertextV2,
+  SenderNoteKeys,
+  ReceiverNoteKeys,
+} from './note-crypto';

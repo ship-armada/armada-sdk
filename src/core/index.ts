@@ -18,6 +18,21 @@ export { MERKLE_ZERO_VALUE, MERKLE_ZERO_VALUE_BIGINT, TREE_DEPTH } from '../../v
 // Spend-authorization EdDSA (BabyJubjub) — verify a signature over the poseidon intent digest.
 export { verifyEDDSA, signEDDSA, getPublicSpendingKey, getPublicViewingKey } from '../../vendor/railgun-engine/dist/utils/keys-utils';
 
+// Note ECIES: viewing-key blinding + ECDH shared symmetric key for note ciphertext encrypt/decrypt.
+export { getNoteBlindingKeys, getSharedSymmetricKey } from '../../vendor/railgun-engine/dist/utils/keys-utils';
+
+// Token data helpers + note/tx enums used by the note ciphertext codec.
+export { getTokenDataERC20, getTokenDataHash } from '../../vendor/railgun-engine/dist/note/note-util';
+export { OutputType, TokenType } from '../../vendor/railgun-engine/dist/models/formatted-types';
+export type { TokenData, Ciphertext } from '../../vendor/railgun-engine/dist/models/formatted-types';
+export { ChainType } from '../../vendor/railgun-engine/dist/models/engine-types';
+export type { Chain } from '../../vendor/railgun-engine/dist/models/engine-types';
+export { TXIDVersion } from '../../vendor/railgun-engine/dist/models/txid-version';
+export type { TokenDataGetter } from '../../vendor/railgun-engine/dist/note/transact-note';
+
+// Wallet source tag — must be set before creating a transfer note (annotation-data requirement).
+export { default as WalletInfo } from '../../vendor/railgun-engine/dist/wallet/wallet-info';
+
 // Key derivation — mnemonic → wallet nodes → keypairs/masterPublicKey; 0zk address encode/decode.
 export { Mnemonic } from '../../vendor/railgun-engine/dist/key-derivation/bip39';
 export { deriveNodes, WalletNode } from '../../vendor/railgun-engine/dist/key-derivation/wallet-node';
