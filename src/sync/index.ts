@@ -39,3 +39,7 @@ export interface SyncEventMap {
     senderRailgunAddress?: string;
   };
 }
+
+// Ranged log fetch.
+export { fetchLogsRanged } from './ranged-fetch';
+export type { GetLogsFn, RangedFetchOptions } from './ranged-fetch';
