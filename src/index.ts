@@ -60,4 +60,4 @@ export * from './storage/index';
 export * from './sync/index';
 export type * from './prover/index';
 export type * from './tx/index';
-export type * from './wallet/index';
+export * from './wallet/index';

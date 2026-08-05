@@ -59,3 +59,8 @@ export interface WalletFactory {
   /** View-only: full scan/balance/disclosure, no spend (spend-path calls throw NoSpendCapabilityError). */
   viewOnlyFromViewingKey(shareableViewingKey: string, opts: { creationBlock: number }): Promise<Wallet>;
 }
+
+// Implementations.
+export { deriveKeyset } from './derive';
+export type { Keyset } from './derive';
+export { LocalSigner } from './local-signer';

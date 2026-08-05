@@ -100,6 +100,6 @@ describe('core parity — TransactionStructV2 (boundParams consistency)', () => 
 // run (and in CI) until implemented — a standing reminder so the deferral is never silently dropped.
 // Tracked also in SPEC.md Phase 1/2 acceptance and a GitHub issue.
 describe('parity — DEFERRED to Phase 2 (wallet layer)', () => {
-  it.todo('keyset-vectors.json — full seed→keyset→0zk derivation (needs wallet key-derivation)');
+  // keyset-vectors.json is now COVERED in src/wallet/keys.test.ts (deriveKeyset byte-parity). ✓
   it.todo('note-ciphertext-vectors.json — ECIES decrypt round-trip (needs viewing private key + shared key)');
 });
