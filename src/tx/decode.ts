@@ -2,7 +2,8 @@
 // ABOUTME: replaces synthetic-calldata normalization. ABI-decodes transact(Transaction[]) into DecodedTransact[].
 
 import { Interface } from 'ethers';
-import { formatCommitmentCiphertext } from '../sync/index';
+import { formatCommitmentCiphertext, tryDecryptCommitment, type ReceiverNoteKeys } from '../sync/index';
+import type { TokenDataGetter, Chain } from '../core/index';
 import type { DecodedTransact, DecodedBoundParams } from './index';
 
 /** ABI of the pool `transact(Transaction[])` entry point (Railgun V2 struct layout). */
@@ -104,4 +105,30 @@ function decodeOne(tx: RawTx): DecodedTransact {
 export function decodeTransact(calldata: string): DecodedTransact[] {
   const [transactions] = iface.decodeFunctionData('transact', calldata) as unknown as [RawTx[]];
   return transactions.map(decodeOne);
+}
+
+/**
+ * Recover the in-band fee note addressed to `broadcaster` from a decoded transaction, or `undefined`
+ * if none. Trial-decrypts each output ciphertext with the broadcaster identity, then BINDS the result:
+ * the decrypted note's commitment hash must appear in `decoded.commitments`. Without that binding a
+ * sender could attach a ciphertext claiming any fee value while the real commitment encodes something
+ * else (or is addressed elsewhere) — so the value is only trusted once its commitment is confirmed.
+ */
+export async function extractFeeOutput(
+  decoded: DecodedTransact,
+  broadcaster: ReceiverNoteKeys,
+  tokenDataGetter: TokenDataGetter,
+  chain?: Chain,
+): Promise<{ tokenAddress: `0x${string}`; value: bigint } | undefined> {
+  const commitmentSet = new Set(decoded.commitments.map((c) => c.toString()));
+  for (const ciphertext of decoded.commitmentCiphertexts) {
+    const note = chain
+      ? await tryDecryptCommitment(ciphertext, broadcaster, tokenDataGetter, chain)
+      : await tryDecryptCommitment(ciphertext, broadcaster, tokenDataGetter);
+    if (note === undefined) continue;
+    // Binding check: the note we decrypted must correspond to an actual on-chain commitment.
+    if (!commitmentSet.has(note.hash.toString())) continue;
+    return { tokenAddress: note.tokenData.tokenAddress as `0x${string}`, value: note.value };
+  }
+  return undefined;
 }
