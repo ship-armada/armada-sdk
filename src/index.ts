@@ -57,7 +57,7 @@ export const VERSION = '0.0.0';
 // ── Frozen public contracts ────────────────────────────────
 export * from './errors';
 export * from './storage/index';
-export type * from './sync/index';
+export * from './sync/index';
 export type * from './prover/index';
 export type * from './tx/index';
 export type * from './wallet/index';
