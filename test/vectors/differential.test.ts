@@ -94,3 +94,12 @@ describe('core parity — TransactionStructV2 (boundParams consistency)', () => 
     });
   }
 });
+
+// DEFERRED to Phase 2 (wallet layer) — these two Phase 0 vectors are NOT pure-core primitives and
+// verify once the wallet layer exists. Kept as `it.todo` so they surface as PENDING in every test
+// run (and in CI) until implemented — a standing reminder so the deferral is never silently dropped.
+// Tracked also in SPEC.md Phase 1/2 acceptance and a GitHub issue.
+describe('parity — DEFERRED to Phase 2 (wallet layer)', () => {
+  it.todo('keyset-vectors.json — full seed→keyset→0zk derivation (needs wallet key-derivation)');
+  it.todo('note-ciphertext-vectors.json — ECIES decrypt round-trip (needs viewing private key + shared key)');
+});
