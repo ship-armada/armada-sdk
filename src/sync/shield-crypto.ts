@@ -49,5 +49,5 @@ export async function tryDecryptShield(
     return undefined;
   }
 
-  return { tokenHash: getTokenDataHash(commitment.tokenData), value: commitment.value };
+  return { tokenHash: getTokenDataHash(commitment.tokenData), value: commitment.value, random, notePublicKey: npk };
 }

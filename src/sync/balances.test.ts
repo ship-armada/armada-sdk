@@ -19,6 +19,8 @@ const spentFor = (tree: number, position: number): SpentNullifier => ({
 const txo = (over: Partial<TXO> & Pick<TXO, 'tree' | 'position' | 'value'>): TXO => ({
   tokenHash: TOKEN_A,
   blockNumber: 100,
+  random: '00'.repeat(16),
+  notePublicKey: 0n,
   ...over,
 });
 
@@ -100,8 +102,8 @@ describe('balance aggregation (§4.4)', () => {
     expect(computeBalances([], [], NULLIFYING_KEY, { currentBlock: 1, finalityThreshold: 0 })).toEqual([]);
   });
 
-  it('txoFromNote pulls tokenHash + value from a decrypted note', () => {
-    // A minimal null note gives a deterministic tokenHash/value without needing full key material.
+  it('txoFromNote captures the full spend witness (tokenHash, value, random, notePublicKey)', () => {
+    // A minimal null note gives deterministic fields without needing full key material.
     const note = TransactNote.createNullUnshieldNote(
       { tokenAddress: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', tokenType: 0, tokenSubID: '0x00' },
       500n,
@@ -113,6 +115,11 @@ describe('balance aggregation (§4.4)', () => {
       tokenHash: note.tokenHash,
       value: 500n,
       blockNumber: 640,
+      random: note.random,
+      notePublicKey: note.notePublicKey,
     });
+    // random + npk are the fields the balance summary discards but the spend witness needs.
+    expect(built.random).toBe(note.random);
+    expect(built.notePublicKey).toBe(note.notePublicKey);
   });
 });

@@ -5,10 +5,13 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { initPoseidonPromise, getTokenDataERC20, TransactNote, type TokenData } from '../core/index';
 import { deriveKeyset } from '../wallet/derive';
 import { UTXOMerkletree } from './merkletree';
-import { WalletScanState, type WalletDecryptors } from './scan-engine';
+import { WalletScanState, ownedNoteFromTransactNote, type WalletDecryptors, type OwnedNote } from './scan-engine';
 import type { DecodedPoolEvents, DecodedTransactCommitment, DecodedShieldCommitment } from './event-decoder';
 import { createTransferNote, encryptNoteToReceiver, tryDecryptCommitment, type CommitmentCiphertextV2 } from './note-crypto';
 import { RootMismatchError } from '../errors';
+
+// Fake owned-note result for the synthetic decryptor tests (random/npk unused by balances/tree logic).
+const owned = (tokenHash: string, value: bigint): OwnedNote => ({ tokenHash, value, random: '00'.repeat(16), notePublicKey: 0n });
 
 const TXID = '0x' + 'ab'.repeat(32);
 const NK = 987654321098765n; // arbitrary nullifying key for the synthetic tests
@@ -49,7 +52,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
     const t = [mkTransact(0, 0, leafHex(11)), mkTransact(0, 1, leafHex(12)), mkTransact(0, 2, leafHex(13))];
     // Own only the middle commitment.
     const decryptors: WalletDecryptors = {
-      transact: async (c) => (c.hash === leafHex(12) ? { tokenHash: TOKEN, value: 100n } : undefined),
+      transact: async (c) => (c.hash === leafHex(12) ? owned(TOKEN, 100n) : undefined),
     };
     const res = await state.apply({ ...noEvents(), transacts: t }, decryptors);
 
@@ -118,7 +121,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
     const withShield = new WalletScanState();
     await withShield.apply(
       { ...noEvents(), shields: [mkShield(0, 0, leafHex(41), 500n)] },
-      { transact: async () => undefined, shield: async (c) => ({ tokenHash: TOKEN, value: c.value }) },
+      { transact: async () => undefined, shield: async (c) => owned(TOKEN, c.value) },
     );
     expect(withShield.txoCount).toBe(1);
     expect(withShield.balances(NK, { currentBlock: 1000, finalityThreshold: 10 })).toEqual([
@@ -131,7 +134,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
     // Own the commitment at tree 0, position 0.
     await state.apply(
       { ...noEvents(), transacts: [mkTransact(0, 0, leafHex(51))] },
-      { transact: async () => ({ tokenHash: TOKEN, value: 250n }) },
+      { transact: async () => owned(TOKEN, 250n) },
     );
     expect(state.balances(NK, { currentBlock: 1000, finalityThreshold: 10 })).toEqual([
       { tokenHash: TOKEN, spendable: 250n, pending: 0n },
@@ -187,13 +190,16 @@ describe('wallet scan orchestrator (§4.4)', () => {
           { addressData: { masterPublicKey: receiver.masterPublicKey, viewingPublicKey: receiver.viewingPublicKey }, viewingPrivateKey: receiver.viewingPrivateKey },
           tokenDataGetter,
         );
-        return decrypted ? { tokenHash: decrypted.tokenHash, value: decrypted.value } : undefined;
+        return decrypted ? ownedNoteFromTransactNote(decrypted) : undefined;
       },
     };
 
     const state = new WalletScanState();
     const res = await state.apply({ ...noEvents(), transacts: [transact] }, decryptors);
     expect(res.ownedTxos).toHaveLength(1);
+    // The owned TXO must carry the full spend witness — random + npk from the decrypted note.
+    expect(res.ownedTxos[0]!.random).toBe(note.random);
+    expect(res.ownedTxos[0]!.notePublicKey).toBe(note.notePublicKey);
     expect(state.balances(receiver.nullifyingKey, { currentBlock: 200, finalityThreshold: 10 })).toEqual([
       { tokenHash: note.tokenHash, spendable: value, pending: 0n },
     ]);
