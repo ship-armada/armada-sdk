@@ -64,3 +64,8 @@ export interface WalletFactory {
 export { deriveKeyset } from './derive';
 export type { Keyset } from './derive';
 export { LocalSigner } from './local-signer';
+
+export { ExternalSigner } from './external-signer';
+export type { SignBackend, PublicKeyBackend } from './external-signer';
+export { deriveViewOnlyIdentity } from './view-only';
+export type { ViewOnlyIdentity } from './view-only';
