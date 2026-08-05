@@ -1,6 +1,7 @@
 // ABOUTME: Wallet scan orchestrator (SPEC §4.4) — folds decoded pool events into per-tree merkletrees,
 // ABOUTME: detects owned TXOs via injected decryptors, records nullifiers, verifies roots, projects balances.
 
+import { TransactNote } from '../core/index';
 import { UTXOMerkletree } from './merkletree';
 import {
   computeBalances,
@@ -20,10 +21,19 @@ import { RootMismatchError } from '../errors';
 export interface OwnedNote {
   readonly tokenHash: string;
   readonly value: bigint;
+  /** 16-byte note random (hex, no 0x) — carried into the TXO so the spend witness can be rebuilt. */
+  readonly random: string;
+  /** Note public key `poseidon(masterPublicKey, random)`. */
+  readonly notePublicKey: bigint;
 }
 
 /** Returns the owned note if the commitment belongs to the wallet, else `undefined`. */
 export type Decryptor<C> = (commitment: C) => Promise<OwnedNote | undefined>;
+
+/** Map a decrypted transact note to an `OwnedNote` — the transact-decryptor's note→result adapter. */
+export function ownedNoteFromTransactNote(note: TransactNote): OwnedNote {
+  return { tokenHash: note.tokenHash, value: note.value, random: note.random, notePublicKey: note.notePublicKey };
+}
 
 /**
  * Per-commitment-type decryptors. `transact` wraps `tryDecryptCommitment`; `shield` (optional) is the
@@ -84,7 +94,15 @@ export class WalletScanState {
           ? await decryptors.transact(leaf.c)
           : await decryptors.shield?.(leaf.c);
       if (owned !== undefined) {
-        const txo: TXO = { tree, position, tokenHash: owned.tokenHash, value: owned.value, blockNumber };
+        const txo: TXO = {
+          tree,
+          position,
+          tokenHash: owned.tokenHash,
+          value: owned.value,
+          blockNumber,
+          random: owned.random,
+          notePublicKey: owned.notePublicKey,
+        };
         this.txos.push(txo);
         ownedTxos.push(txo);
       }

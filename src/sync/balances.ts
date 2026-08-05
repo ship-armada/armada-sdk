@@ -14,6 +14,10 @@ export interface TXO {
   readonly tokenHash: string;
   readonly value: bigint;
   readonly blockNumber: number;
+  /** 16-byte note random (hex, no 0x) — required to rebuild the spend witness (`randomIn`). */
+  readonly random: string;
+  /** Note public key `poseidon(masterPublicKey, random)` — the commitment's npk. */
+  readonly notePublicKey: bigint;
 }
 
 /**
@@ -92,5 +96,13 @@ export function txoFromNote(
   position: number,
   blockNumber: number,
 ): TXO {
-  return { tree, position, tokenHash: note.tokenHash, value: note.value, blockNumber };
+  return {
+    tree,
+    position,
+    tokenHash: note.tokenHash,
+    value: note.value,
+    blockNumber,
+    random: note.random,
+    notePublicKey: note.notePublicKey,
+  };
 }
