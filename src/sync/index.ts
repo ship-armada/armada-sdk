@@ -66,3 +66,7 @@ export type {
   SenderNoteKeys,
   ReceiverNoteKeys,
 } from './note-crypto';
+
+// Balance aggregation — per-token spendable/pending from the TXO set + spent nullifiers.
+export { computeBalances, txoFromNote } from './balances';
+export type { TXO, SpentNullifier, TokenBalance, BalanceOptions } from './balances';
