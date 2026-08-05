@@ -30,3 +30,7 @@ export interface StorageAdapter {
   resetChainState(): Promise<void>;
   close(): Promise<void>;
 }
+
+// Implementations.
+export { MemoryStorageAdapter } from './memory';
+export { EncryptedStore, deriveStorageKey } from './encrypted';
