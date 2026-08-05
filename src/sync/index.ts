@@ -50,6 +50,10 @@ export type { ScanCheckpoint } from './checkpoints';
 export { runScan } from './scan';
 export type { ScanOptions, ScanResult } from './scan';
 
+// Wallet scan orchestrator — folds decoded events into trees/TXOs/balances with root verification.
+export { WalletScanState } from './scan-engine';
+export type { WalletDecryptors, Decryptor, OwnedNote, ApplyResult } from './scan-engine';
+
 // UTXO merkletree.
 export { UTXOMerkletree } from './merkletree';
 export type { MerkleProof } from './merkletree';
