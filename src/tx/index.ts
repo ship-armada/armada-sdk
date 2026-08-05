@@ -2,7 +2,8 @@
 // ABOUTME: typed adaptParams, in-band fee binding, and the native decode API for verifiers. FROZEN.
 
 import type { CircuitShape } from '../prover/index';
-import type { CommitmentCiphertextV2 } from '../sync/index';
+import type { CommitmentCiphertextV2, ReceiverNoteKeys } from '../sync/index';
+import type { TokenDataGetter, Chain } from '../core/index';
 
 /** Mirrors the relayer `GET /fees` response. */
 export interface FeeQuote {
@@ -104,19 +105,31 @@ export interface DecodedTransact {
   };
 }
 
+/** The broadcaster's identity for fee-note recovery — full identity (not just the viewing key). */
+export type BroadcasterIdentity = ReceiverNoteKeys;
+
 /**
  * Native decode for verifiers — understands bare `transact()` and the wrapper entry points,
  * replacing the relayer's synthetic-calldata normalization (§4.6). A `transact()` call carries a
  * `Transaction[]`, so the decoder returns one `DecodedTransact` per bundled transaction.
- * `extractFeeOutput` reconstructs the fee note addressed to the given viewing key.
+ *
+ * `extractFeeOutput` recovers the in-band fee note addressed to the broadcaster. It takes the FULL
+ * broadcaster identity (not just the viewing key) and is async because it must *bind* the decrypted
+ * value to the transaction: decrypting a ciphertext with the viewing key alone yields an untrusted
+ * claimed value — a malicious sender could attach a ciphertext claiming a large fee while the actual
+ * on-chain commitment encodes zero or is addressed elsewhere. Binding requires recomputing
+ * `npk = poseidon(broadcasterMasterPublicKey, random)` and confirming the note's commitment hash
+ * appears in `decoded.commitments`, which needs the master public key.
  */
 export interface TransactDecoder {
   decodeTransact(calldata: `0x${string}`): DecodedTransact[];
   extractFeeOutput(
     decoded: DecodedTransact,
-    viewingKey: Uint8Array,
-  ): { tokenAddress: `0x${string}`; value: bigint } | undefined;
+    broadcaster: BroadcasterIdentity,
+    tokenDataGetter: TokenDataGetter,
+    chain?: Chain,
+  ): Promise<{ tokenAddress: `0x${string}`; value: bigint } | undefined>;
 }
 
-// Native transact() calldata decoder (implements TransactDecoder.decodeTransact).
-export { decodeTransact, TRANSACT_ABI } from './decode';
+// Native transact() calldata decoder + in-band fee-note recovery (the TransactDecoder methods).
+export { decodeTransact, extractFeeOutput, TRANSACT_ABI } from './decode';
