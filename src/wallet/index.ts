@@ -66,7 +66,7 @@ export interface WalletFactory {
 }
 
 // Implementations.
-export { deriveKeyset } from './derive';
+export { deriveKeyset, deriveKeysetFromMnemonic } from './derive';
 export type { Keyset } from './derive';
 export { LocalSigner } from './local-signer';
 

@@ -5,7 +5,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { createArmadaSdk } from './sdk';
 import { deriveKeyset, LocalSigner } from './wallet/index';
 import { MemoryStorageAdapter } from './storage/index';
-import { initPoseidonPromise } from './core/index';
+import { initPoseidonPromise, Mnemonic } from './core/index';
 import type { ProverAdapter, ArtifactSource, ArtifactSet, Groth16Proof } from './prover/index';
 import type { ArmadaSdkConfig } from './index';
 
@@ -61,12 +61,26 @@ describe('createArmadaSdk (§4.1)', () => {
     expect(proverClosed).toBe(true);
   });
 
-  it('exportDisclosure + non-rootSecret factory methods throw documented not-implemented errors', async () => {
+  it('fromMnemonic derives the same 0zk as the equivalent rootSecret', async () => {
+    const sdk = await createArmadaSdk(makeConfig());
+    const bytesToHex = (b: Uint8Array): string => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+    const mnemonic = Mnemonic.fromEntropy(bytesToHex(seed(0x11)));
+    const wallet = await sdk.wallet.fromMnemonic(mnemonic, { creationBlock: 1 });
+    expect(wallet.railgunAddress).toBe((await deriveKeyset(seed(0x11))).railgunAddress);
+    expect(wallet.canSpend).toBe(false);
+  });
+
+  it('ephemeralFromSeed derives a spendable wallet (auto-attached signer)', async () => {
+    const sdk = await createArmadaSdk(makeConfig());
+    const wallet = await sdk.wallet.ephemeralFromSeed(seed(0x55));
+    expect(wallet.railgunAddress).toBe((await deriveKeyset(seed(0x55))).railgunAddress);
+    expect(wallet.canSpend).toBe(true);
+  });
+
+  it('exportDisclosure + view-only factory throw documented not-implemented errors', async () => {
     const sdk = await createArmadaSdk(makeConfig());
     const wallet = await sdk.wallet.fromRootSecret(seed(0x33), { creationBlock: 1 });
     await expect(wallet.exportDisclosure('ref')).rejects.toThrow(/not implemented/);
-    await expect(sdk.wallet.ephemeralFromSeed(seed(0x33))).rejects.toThrow(/not implemented/);
-    await expect(sdk.wallet.fromMnemonic('m', { creationBlock: 1 })).rejects.toThrow(/not implemented/);
     await expect(sdk.wallet.viewOnlyFromViewingKey('vk', { creationBlock: 1 })).rejects.toThrow(/not implemented/);
   });
 
