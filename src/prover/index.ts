@@ -52,8 +52,10 @@ export interface ProverAdapter {
 export { verifyArtifactIntegrity, VerifiedArtifactSource, shapeKey } from './manifest';
 export type { ArtifactDigest, ArtifactManifest } from './manifest';
 
-// Same-thread snarkjs Groth16 prover (node/tests + the worker's proving core).
+// snarkjs Groth16 provers — same-thread (node/tests) + worker protocol/adapter (off-main-thread).
 export { createSnarkjsProver } from './snarkjs-prover';
+export { createWorkerProver, createProverWorkerHandler } from './worker-prover';
+export type { WorkerChannel, ProverWorkerRequest, ProverWorkerReply } from './worker-prover';
 
 // Concrete artifact sources — resolve compiled circuit artifacts by shape (filesystem / HTTP).
 export { FilesystemArtifactSource, HttpArtifactSource } from './artifact-source';
