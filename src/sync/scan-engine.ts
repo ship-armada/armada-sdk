@@ -51,6 +51,21 @@ export interface ApplyResult {
   readonly nullifiers: SpentNullifier[];
 }
 
+/** JSON-serializable snapshot of a `WalletScanState` (bigints as decimal strings) for persistence. */
+export interface ScanStateSnapshot {
+  readonly trees: ReadonlyArray<{ readonly tree: number; readonly leaves: readonly string[] }>;
+  readonly txos: ReadonlyArray<{
+    readonly tree: number;
+    readonly position: number;
+    readonly tokenHash: string;
+    readonly value: string;
+    readonly blockNumber: number;
+    readonly random: string;
+    readonly notePublicKey: string;
+  }>;
+  readonly spent: ReadonlyArray<{ readonly tree: number; readonly nullifier: string }>;
+}
+
 // Compare two commitment roots regardless of 0x-prefix / leading-zero padding.
 function sameRoot(a: string, b: string): boolean {
   const norm = (h: string): bigint => BigInt(h.startsWith('0x') ? h : `0x${h}`);
@@ -180,5 +195,46 @@ export class WalletScanState {
     return this.txos.filter(
       (t) => !spentSet.has(`${t.tree}:${TransactNote.getNullifier(nullifyingKey, t.position).toString()}`),
     );
+  }
+
+  /** JSON-serializable snapshot of the accumulated tree/TXO/nullifier state, for persistence. */
+  snapshot(): ScanStateSnapshot {
+    return {
+      trees: [...this.trees.entries()].map(([tree, merkletree]) => ({ tree, leaves: [...merkletree.getLeaves()] })),
+      txos: this.txos.map((t) => ({
+        tree: t.tree,
+        position: t.position,
+        tokenHash: t.tokenHash,
+        value: t.value.toString(),
+        blockNumber: t.blockNumber,
+        random: t.random,
+        notePublicKey: t.notePublicKey.toString(),
+      })),
+      spent: this.spent.map((s) => ({ tree: s.tree, nullifier: s.nullifier.toString() })),
+    };
+  }
+
+  /** Rebuild a `WalletScanState` from a snapshot — trees are re-derived from their leaves. */
+  static restore(snapshot: ScanStateSnapshot): WalletScanState {
+    const state = new WalletScanState();
+    for (const { tree, leaves } of snapshot.trees) {
+      const merkletree = new UTXOMerkletree();
+      merkletree.insertMany(leaves);
+      state.trees.set(tree, merkletree);
+      state.nextPosition.set(tree, leaves.length);
+    }
+    for (const t of snapshot.txos) {
+      state.txos.push({
+        tree: t.tree,
+        position: t.position,
+        tokenHash: t.tokenHash,
+        value: BigInt(t.value),
+        blockNumber: t.blockNumber,
+        random: t.random,
+        notePublicKey: BigInt(t.notePublicKey),
+      });
+    }
+    for (const s of snapshot.spent) state.spent.push({ tree: s.tree, nullifier: BigInt(s.nullifier) });
+    return state;
   }
 }
