@@ -183,6 +183,10 @@ export type { ProveParams } from './prove';
 export { buildShieldRequest, generateShieldPrivateKey } from './shield';
 export type { ShieldRequest, ShieldRequestInput } from './shield';
 
+// Gasless shield — EIP-712 ShieldIntent + requestsHash for GaslessShieldWrapper.gaslessShield (#410).
+export { buildGaslessShield, hashShieldRequests, buildShieldIntentTypedData, hashShieldIntent } from './gasless-shield';
+export type { GaslessShieldInput, ShieldIntent, ShieldIntentTypedData } from './gasless-shield';
+
 // Circuit witness assembly — full notes + merkle proofs + SpendSigner signature → circuit inputs.
 export { buildWitness } from './witness';
 export type {
