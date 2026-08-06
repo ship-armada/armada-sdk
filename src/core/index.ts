@@ -31,7 +31,12 @@ export { TXIDVersion } from '../../vendor/railgun-engine/dist/models/txid-versio
 export type { TokenDataGetter } from '../../vendor/railgun-engine/dist/note/transact-note';
 
 // Wallet source tag — must be set before creating a transfer note (annotation-data requirement).
-export { default as WalletInfo } from '../../vendor/railgun-engine/dist/wallet/wallet-info';
+// Import the default then re-export as a value. A bare `export { default as WalletInfo }` of the
+// vendored CJS module gets double-wrapped by the bundler's interop when the built dist is consumed
+// (the class ends up at `.default.default`), so unwrap defensively to the concrete class.
+import WalletInfoDefault from '../../vendor/railgun-engine/dist/wallet/wallet-info';
+export const WalletInfo = ((WalletInfoDefault as unknown as { default?: typeof WalletInfoDefault }).default ??
+  WalletInfoDefault) as typeof WalletInfoDefault;
 
 // Shield notes: ownership decryption (decryptRandom via shieldKey ECDH) + note-public-key/hash helpers.
 export { ShieldNote } from '../../vendor/railgun-engine/dist/note/shield-note';
