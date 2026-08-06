@@ -58,3 +58,32 @@ export * from './sync/index';
 export * from './prover/index';
 export * from './tx/index';
 export * from './wallet/index';
+
+// ── Explicit root re-exports for node10 (classic moduleResolution) consumers ──
+// A bare `export *` from a multi-entry tsup build silently drops symbols that the dts bundler assigns
+// to another entry's shared chunk (the note-crypto / keyset helpers land in the `wallet`/`core` chunks
+// and vanish from the root `.d.ts` even though they're present at runtime). The `./core` token layer
+// isn't starred here at all — it's only reachable via the `/core` exports-map subpath, which classic
+// `moduleResolution: Node` consumers (the POC relayer + interface app) can't resolve. Naming these
+// explicitly pins them into the root `.d.ts`, so those consumers can import everything from the
+// package root instead of hand-typed facades. Values first, then the token/keyset types they need.
+export {
+  createTransferNote,
+  encryptNoteToReceiver,
+  tryDecryptCommitment,
+} from './sync/index';
+export { deriveKeyset, deriveKeysetFromMnemonic } from './wallet/index';
+export type { Keyset } from './wallet/index';
+export {
+  getTokenDataERC20,
+  getTokenDataHash,
+  initPoseidonPromise,
+  ChainType,
+} from './core/index';
+export type {
+  TokenData,
+  TokenDataGetter,
+  Chain,
+  AddressData,
+  Ciphertext,
+} from './core/index';
