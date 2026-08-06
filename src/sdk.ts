@@ -4,14 +4,16 @@
 import { JsonRpcProvider, FallbackProvider, Interface, type Provider } from 'ethers';
 import {
   WalletScanState,
-  fetchLogsRanged,
-  decodePoolEvents,
+  RpcEventSource,
+  IndexerEventSource,
   tryDecryptCommitment,
   tryDecryptShield,
   ownedNoteFromTransactNote,
   saveScanState,
   loadScanState,
   POOL_V2_EVENT_ABI,
+  type EventSource,
+  type WalletDecryptors,
   type ParsedPoolLog,
   type ReceiverNoteKeys,
   type TokenBalance,
@@ -42,13 +44,18 @@ import {
   type Chain,
 } from './core/index';
 import type { ProveOptions, ProverAdapter, ArtifactSource } from './prover/index';
-import { NoSpendCapabilityError } from './errors';
+import { NoSpendCapabilityError, RootMismatchError } from './errors';
 import type { ArmadaSdk, ArmadaSdkConfig } from './index';
 
 // Per-instance shared context handed to each wallet.
 interface SdkContext {
   readonly provider: Provider;
-  readonly getLogs: (fromBlock: number, toBlock: number) => Promise<ParsedPoolLog[]>;
+  /** Primary event source — the indexer when configured, else the RPC source. */
+  readonly eventSource: EventSource;
+  /** Always the RPC source: covers any tail the indexer lags, and is the verification fallback. */
+  readonly rpcEventSource: RpcEventSource;
+  /** On-chain pool commitment root at a given block — used to verify indexer-sourced batches. */
+  readonly merkleRootAt: (blockTag: number) => Promise<string>;
   readonly tokenDataGetter: TokenDataGetter;
   readonly chain: Chain;
   readonly chainId: number;
@@ -98,21 +105,74 @@ class ArmadaWallet implements Wallet {
     this.hydrated = true;
   }
 
-  async sync(): Promise<{ syncedThrough: number }> {
-    await this.hydrate();
-    const head = await this.ctx.provider.getBlockNumber();
-    if (head <= this.syncedThrough) return { syncedThrough: this.syncedThrough };
-
-    const parsed = await fetchLogsRanged(this.ctx.getLogs, { fromBlock: this.syncedThrough + 1, toBlock: head });
-    const decoded = decodePoolEvents(parsed);
+  // Trial-decrypt closures over this wallet's viewing key — shared by the primary + tail applies.
+  private decryptors(): WalletDecryptors {
     const receiver = this.receiver();
-    await this.scanState.apply(decoded, {
+    return {
       transact: async (c) => {
         const note = await tryDecryptCommitment(c.ciphertext, receiver, this.ctx.tokenDataGetter, this.ctx.chain);
         return note ? ownedNoteFromTransactNote(note) : undefined;
       },
       shield: (c) => tryDecryptShield(c, receiver),
-    });
+    };
+  }
+
+  // Apply a source's batch for [from, to] and report how far it covered.
+  private async applyBatch(source: EventSource, from: number, to: number, decryptors: WalletDecryptors): Promise<number> {
+    const batch = await source.getEvents(from, to);
+    await this.scanState.apply(batch.events, decryptors);
+    return batch.syncedThroughBlock;
+  }
+
+  // Sync [from, head] from the primary source, RPC-covering any tail the (indexer) source lagged.
+  private async applyToHead(from: number, head: number, decryptors: WalletDecryptors): Promise<void> {
+    const covered = await this.applyBatch(this.ctx.eventSource, from, head, decryptors);
+    if (covered < head) await this.applyBatch(this.ctx.rpcEventSource, covered + 1, head, decryptors);
+  }
+
+  /**
+   * Verify the built commitment tree reproduces the on-chain root at `head`. Any dropped/reordered
+   * commitment cascades leaf positions across tree boundaries, so the current (highest) tree's root
+   * diverges — checking it against `merkleRoot()` at the same block is sufficient to detect a bad batch.
+   */
+  private async verifyCurrentRoot(head: number): Promise<void> {
+    const trees = this.scanState.treeNumbers();
+    if (trees.length === 0) return;
+    const currentTree = trees[trees.length - 1]!;
+    const computed = this.scanState.treeRoot(currentTree);
+    const onChain = await this.ctx.merkleRootAt(head);
+    const norm = (r: string): string => (r.startsWith('0x') ? r.slice(2) : r).toLowerCase();
+    if (norm(computed) !== norm(onChain)) {
+      throw new RootMismatchError(
+        `indexer sync: tree ${currentTree} root ${computed} != on-chain merkleRoot ${onChain} @block ${head}`,
+      );
+    }
+  }
+
+  async sync(): Promise<{ syncedThrough: number }> {
+    await this.hydrate();
+    const head = await this.ctx.provider.getBlockNumber();
+    if (head <= this.syncedThrough) return { syncedThrough: this.syncedThrough };
+
+    const from = this.syncedThrough + 1;
+    const decryptors = this.decryptors();
+    // Only the indexer source is untrusted; snapshot so we can roll back a bad batch.
+    const usingIndexer = this.ctx.eventSource !== this.ctx.rpcEventSource;
+    const rollback = usingIndexer ? this.scanState.snapshot() : undefined;
+
+    await this.applyToHead(from, head, decryptors);
+
+    if (usingIndexer) {
+      try {
+        await this.verifyCurrentRoot(head);
+      } catch (err) {
+        if (!(err instanceof RootMismatchError)) throw err;
+        // Indexer served a tree that doesn't match chain — discard it and re-scan from RPC (truth).
+        this.scanState = WalletScanState.restore(rollback!);
+        await this.applyBatch(this.ctx.rpcEventSource, from, head, decryptors);
+      }
+    }
+
     this.syncedThrough = head;
     await saveScanState(this.ctx.storage, this.keyset.railgunAddress, this.scanState, head);
     return { syncedThrough: head };
@@ -234,9 +294,26 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
     },
   };
 
+  // RPC source is always built (source of truth + tail/verification fallback). An indexer, when
+  // configured, becomes the primary fast path serving the native `/v2/quick-sync` wire contract.
+  const rpcEventSource = new RpcEventSource(getLogs);
+  const eventSource: EventSource = config.indexer
+    ? new IndexerEventSource({ baseUrl: config.indexer.url, chainId: config.pool.chainId })
+    : rpcEventSource;
+
+  // On-chain commitment root at a block — read at the synced head so verification compares like-for-like.
+  const rootIface = new Interface(['function merkleRoot() view returns (bytes32)']);
+  const merkleRootAt = async (blockTag: number): Promise<string> => {
+    const data = rootIface.encodeFunctionData('merkleRoot', []);
+    const res = await provider.call({ to: config.pool.poolAddress, data, blockTag });
+    return rootIface.decodeFunctionResult('merkleRoot', res)[0] as string;
+  };
+
   const ctx: SdkContext = {
     provider,
-    getLogs,
+    eventSource,
+    rpcEventSource,
+    merkleRootAt,
     tokenDataGetter,
     chain: { type: ChainType.EVM, id: config.pool.chainId },
     chainId: config.pool.chainId,

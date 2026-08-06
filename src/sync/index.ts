@@ -1,20 +1,25 @@
-// ABOUTME: Sync contracts (SPEC §4.4) — event scan from RPC building the UTXO merkletree, with a
-// ABOUTME: pluggable indexer-backed EventSource (deferred impl) and typed progress/balance events. FROZEN.
+// ABOUTME: Sync contracts (SPEC §4.4) — event scan building the UTXO merkletree, behind a pluggable
+// ABOUTME: EventSource (RPC getLogs default, native indexer quick-sync optional) + typed sync events.
 
-/** Raw pool events accumulated over a block range; shapes come from `core`. */
-export interface AccumulatedEvents {
-  readonly commitmentEvents: readonly unknown[];
-  readonly unshieldEvents: readonly unknown[];
-  readonly nullifierEvents: readonly unknown[];
+import type { DecodedPoolEvents } from './event-decoder';
+
+/** A batch of decoded pool events plus the highest block it fully covers. */
+export interface EventBatch {
+  readonly events: DecodedPoolEvents;
+  /**
+   * Highest block the batch fully covers. May be < the requested `toBlock` when an indexer lags the
+   * chain head — the SDK then RPC-covers the `(syncedThroughBlock, toBlock]` tail itself.
+   */
+  readonly syncedThroughBlock: number;
 }
 
 /**
- * Optional indexer-backed snapshot source (SPEC §4.4, decision #3 — interface now, impl later).
- * RPC scan is always the verification fallback: quick-sync results are verified against on-chain
- * roots before acceptance.
+ * Pluggable event source (SPEC §4.4, decision #3). The default RPC source (getLogs → decode) is the
+ * source of truth; an optional indexer source (native `/v2/quick-sync`) is a fast path whose batches
+ * are verified against on-chain roots before acceptance, falling back to RPC on any mismatch.
  */
 export interface EventSource {
-  getEvents(fromBlock: number, toBlock: number): Promise<AccumulatedEvents>;
+  getEvents(fromBlock: number, toBlock: number): Promise<EventBatch>;
 }
 
 export interface SyncStatus {
@@ -43,6 +48,10 @@ export interface SyncEventMap {
 // Ranged log fetch.
 export { fetchLogsRanged } from './ranged-fetch';
 export type { GetLogsFn, RangedFetchOptions } from './ranged-fetch';
+
+// EventSource implementations — RPC getLogs (default) + native-indexer quick-sync.
+export { RpcEventSource, IndexerEventSource } from './event-source';
+export type { IndexerEventSourceOptions } from './event-source';
 
 // Scan checkpoints + resumable scan.
 export { CheckpointStore } from './checkpoints';
@@ -101,3 +110,14 @@ export type {
   DecodedNullifier,
   DecodedPoolEvents,
 } from './event-decoder';
+
+// Native quick-sync wire contract — the canonical schema an indexer serves + the SDK consumes.
+export { QUICK_SYNC_SCHEMA_VERSION, serializeQuickSync, parseQuickSync } from './quick-sync-wire';
+export type {
+  QuickSyncResponse,
+  WireShieldCommitment,
+  WireTransactCommitment,
+  WireNullifier,
+  WireCommitmentCiphertext,
+  WireTokenData,
+} from './quick-sync-wire';

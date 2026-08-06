@@ -31,6 +31,12 @@ export interface ArmadaSdkConfig {
   readonly prover: ProverAdapter;
   readonly artifacts: ArtifactSource;
   readonly telemetry?: TelemetrySink;
+  /**
+   * Optional native quick-sync indexer (e.g. the relayer-v2 watcher) serving the `/v2/quick-sync`
+   * wire contract. When set it is the primary event source, with RPC getLogs covering the tail and
+   * verifying results against the on-chain root. Omit to sync purely from RPC.
+   */
+  readonly indexer?: { readonly url: string };
 }
 
 /**

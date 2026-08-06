@@ -38,3 +38,8 @@ export class NoSpendCapabilityError extends ArmadaError {
 export class InsufficientBalanceError extends ArmadaError {
   readonly code = 'INSUFFICIENT_BALANCE';
 }
+
+/** A quick-sync response failed schema validation (unknown version, missing/mistyped fields). */
+export class QuickSyncSchemaError extends ArmadaError {
+  readonly code = 'QUICK_SYNC_SCHEMA';
+}

@@ -150,6 +150,11 @@ export class WalletScanState {
     return (merkletree ?? new UTXOMerkletree()).root();
   }
 
+  /** Tree numbers with at least one inserted leaf, ascending. */
+  treeNumbers(): number[] {
+    return [...this.trees.keys()].sort((a, b) => a - b);
+  }
+
   /**
    * Verify each tree's locally-built root against the on-chain root (0x-prefixed or bare). Throws a
    * typed `RootMismatchError` (code `ROOT_MISMATCH`) carrying tree context on the first mismatch.
