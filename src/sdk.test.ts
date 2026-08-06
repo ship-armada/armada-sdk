@@ -5,7 +5,8 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { createArmadaSdk } from './sdk';
 import { deriveKeyset, LocalSigner } from './wallet/index';
 import { MemoryStorageAdapter } from './storage/index';
-import { initPoseidonPromise } from './core/index';
+import { NoSpendCapabilityError } from './errors';
+import { initPoseidonPromise, Mnemonic } from './core/index';
 import type { ProverAdapter, ArtifactSource, ArtifactSet, Groth16Proof } from './prover/index';
 import type { ArmadaSdkConfig } from './index';
 
@@ -61,13 +62,43 @@ describe('createArmadaSdk (§4.1)', () => {
     expect(proverClosed).toBe(true);
   });
 
-  it('exportDisclosure + non-rootSecret factory methods throw documented not-implemented errors', async () => {
+  it('fromMnemonic derives the same 0zk as the equivalent rootSecret', async () => {
+    const sdk = await createArmadaSdk(makeConfig());
+    const bytesToHex = (b: Uint8Array): string => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+    const mnemonic = Mnemonic.fromEntropy(bytesToHex(seed(0x11)));
+    const wallet = await sdk.wallet.fromMnemonic(mnemonic, { creationBlock: 1 });
+    expect(wallet.railgunAddress).toBe((await deriveKeyset(seed(0x11))).railgunAddress);
+    expect(wallet.canSpend).toBe(false);
+  });
+
+  it('ephemeralFromSeed derives a spendable wallet (auto-attached signer)', async () => {
+    const sdk = await createArmadaSdk(makeConfig());
+    const wallet = await sdk.wallet.ephemeralFromSeed(seed(0x55));
+    expect(wallet.railgunAddress).toBe((await deriveKeyset(seed(0x55))).railgunAddress);
+    expect(wallet.canSpend).toBe(true);
+  });
+
+  it('exportDisclosure throws a documented not-implemented error', async () => {
     const sdk = await createArmadaSdk(makeConfig());
     const wallet = await sdk.wallet.fromRootSecret(seed(0x33), { creationBlock: 1 });
     await expect(wallet.exportDisclosure('ref')).rejects.toThrow(/not implemented/);
-    await expect(sdk.wallet.ephemeralFromSeed(seed(0x33))).rejects.toThrow(/not implemented/);
-    await expect(sdk.wallet.fromMnemonic('m', { creationBlock: 1 })).rejects.toThrow(/not implemented/);
-    await expect(sdk.wallet.viewOnlyFromViewingKey('vk', { creationBlock: 1 })).rejects.toThrow(/not implemented/);
+  });
+
+  it('shareViewingKey round-trips into a view-only wallet (same 0zk, no spend)', async () => {
+    const sdk = await createArmadaSdk(makeConfig());
+    const full = await sdk.wallet.fromRootSecret(seed(0x11), {
+      creationBlock: 1,
+      signer: await LocalSigner.fromRootSecret(seed(0x11)),
+    });
+    expect(full.canSpend).toBe(true);
+
+    const viewOnly = await sdk.wallet.viewOnlyFromViewingKey(full.shareViewingKey(), { creationBlock: 1 });
+    expect(viewOnly.railgunAddress).toBe(full.railgunAddress);
+    expect(viewOnly.canSpend).toBe(false);
+
+    // Spend-path calls on a view-only wallet throw NoSpendCapabilityError.
+    const fee = { schedule: { transfer: '0' }, broadcasterRailgunAddress: '0zk', feesCacheId: 'x', expiresAt: 0 };
+    await expect(viewOnly.planTransfer({ outputs: [{ to0zk: '0zk', amount: 1n }], fee })).rejects.toThrow(NoSpendCapabilityError);
   });
 
   it('supports multiple independent instances (no shared module state)', async () => {

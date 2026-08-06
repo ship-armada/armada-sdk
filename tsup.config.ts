@@ -19,5 +19,5 @@ export default defineConfig({
   target: 'es2022',
   // ethers (tx/ ABI codec) + snarkjs (prover) are runtime imports — keep external so consumers dedupe
   // them rather than bundling copies (snarkjs especially is large and pulls native-ish deps).
-  external: ['ethers', 'snarkjs'],
+  external: ['ethers', 'snarkjs', 'msgpack-lite'],
 });
