@@ -18,6 +18,8 @@ import { planTransfer, prove, type Plan, type ProofHandle } from './tx/index';
 import type { WitnessOutputRequest } from './tx/witness';
 import {
   deriveKeyset,
+  deriveKeysetFromMnemonic,
+  LocalSigner,
   type Keyset,
   type Wallet,
   type WalletFactory,
@@ -214,22 +216,26 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
     artifacts: config.artifacts,
   };
 
-  const notImplemented = (name: string): never => {
-    throw new Error(`${name}: not implemented — custody lifecycle lands separately (SPEC §4.2 / §6)`);
-  };
   const wallet: WalletFactory = {
     async fromRootSecret(rootSecret, opts) {
       const keyset = await deriveKeyset(rootSecret);
       return new ArmadaWallet(keyset, opts.creationBlock, opts.signer, ctx);
     },
-    async ephemeralFromSeed() {
-      return notImplemented('ephemeralFromSeed');
+    async fromMnemonic(mnemonic, opts) {
+      const keyset = await deriveKeysetFromMnemonic(mnemonic);
+      return new ArmadaWallet(keyset, opts.creationBlock, opts.signer, ctx);
     },
-    async fromMnemonic() {
-      return notImplemented('fromMnemonic');
+    // Ephemeral (claimable payments, SPEC §6): in-memory, never persisted, auto-attaches a signer so
+    // the claiming flow can spend. `seed` is the claim's 32-byte root; scans from the pool's genesis.
+    async ephemeralFromSeed(seed) {
+      const keyset = await deriveKeyset(seed);
+      const signer = await LocalSigner.fromRootSecret(seed);
+      return new ArmadaWallet(keyset, 0, signer, ctx);
     },
     async viewOnlyFromViewingKey() {
-      return notImplemented('viewOnlyFromViewingKey');
+      // Needs the shareable-viewing-key wire codec (a flagged format decision) + its export
+      // counterpart; view-only wallets land in a separate increment (SPEC §4.2.2).
+      throw new Error('viewOnlyFromViewingKey: not implemented — pending the shareable-viewing-key wire codec');
     },
   };
 
