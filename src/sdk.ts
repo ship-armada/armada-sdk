@@ -19,6 +19,9 @@ import type { WitnessOutputRequest } from './tx/witness';
 import {
   deriveKeyset,
   deriveKeysetFromMnemonic,
+  deriveViewOnlyIdentity,
+  decodeShareableViewingKey,
+  encodeShareableViewingKey,
   LocalSigner,
   type Keyset,
   type Wallet,
@@ -164,6 +167,13 @@ class ArmadaWallet implements Wallet {
   async exportDisclosure(): Promise<Uint8Array> {
     throw new Error('exportDisclosure: not implemented — selective disclosure lands separately (SPEC §5.3)');
   }
+
+  shareViewingKey(): string {
+    return encodeShareableViewingKey({
+      viewingPrivateKey: this.keyset.viewingPrivateKey,
+      spendingPublicKey: this.keyset.spendingPublicKey,
+    });
+  }
 }
 
 /**
@@ -232,10 +242,20 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
       const signer = await LocalSigner.fromRootSecret(seed);
       return new ArmadaWallet(keyset, 0, signer, ctx);
     },
-    async viewOnlyFromViewingKey() {
-      // Needs the shareable-viewing-key wire codec (a flagged format decision) + its export
-      // counterpart; view-only wallets land in a separate increment (SPEC §4.2.2).
-      throw new Error('viewOnlyFromViewingKey: not implemented — pending the shareable-viewing-key wire codec');
+    async viewOnlyFromViewingKey(shareableViewingKey, opts) {
+      const { viewingPrivateKey, spendingPublicKey } = decodeShareableViewingKey(shareableViewingKey);
+      const identity = await deriveViewOnlyIdentity(viewingPrivateKey, spendingPublicKey);
+      // View-only: no spending PRIVATE key, no signer → spend-path calls throw NoSpendCapabilityError.
+      const keyset: Keyset = {
+        spendingPublicKey,
+        spendingPrivateKey: new Uint8Array(0),
+        viewingPublicKey: identity.viewingPublicKey,
+        viewingPrivateKey,
+        nullifyingKey: identity.nullifyingKey,
+        masterPublicKey: identity.masterPublicKey,
+        railgunAddress: identity.railgunAddress,
+      };
+      return new ArmadaWallet(keyset, opts.creationBlock, undefined, ctx);
     },
   };
 

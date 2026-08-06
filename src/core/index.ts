@@ -47,3 +47,6 @@ export { deriveNodes, WalletNode } from '../../vendor/railgun-engine/dist/key-de
 export type { SpendingKeyPair, ViewingKeyPair, SpendingPublicKey } from '../../vendor/railgun-engine/dist/key-derivation/wallet-node';
 export { encodeAddress, decodeAddress } from '../../vendor/railgun-engine/dist/key-derivation/bech32';
 export type { AddressData } from '../../vendor/railgun-engine/dist/key-derivation/bech32';
+
+// BabyJubJub point pack/unpack — the spending-public-key compression used by shareable viewing keys.
+export { Babyjubjub } from '../../vendor/railgun-engine/dist/key-derivation/babyjubjub';

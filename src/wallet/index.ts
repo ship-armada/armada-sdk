@@ -46,6 +46,8 @@ export interface Wallet {
   prove(plan: Plan, options?: ProveOptions): Promise<ProofHandle>;
   /** Verifiable single-note disclosure receipt (SPEC §5.3). Available on view-only wallets too. */
   exportDisclosure(txoRef: string): Promise<Uint8Array>;
+  /** Export this wallet's shareable viewing key (Railgun wire format) — grants view-only capability. */
+  shareViewingKey(): string;
 }
 
 export interface PlanTransferRequest {
@@ -74,3 +76,5 @@ export { ExternalSigner } from './external-signer';
 export type { SignBackend, PublicKeyBackend } from './external-signer';
 export { deriveViewOnlyIdentity } from './view-only';
 export type { ViewOnlyIdentity } from './view-only';
+export { encodeShareableViewingKey, decodeShareableViewingKey } from './shareable-viewing-key';
+export type { ShareableViewingKeyMaterial } from './shareable-viewing-key';

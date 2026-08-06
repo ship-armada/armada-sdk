@@ -5,6 +5,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { createArmadaSdk } from './sdk';
 import { deriveKeyset, LocalSigner } from './wallet/index';
 import { MemoryStorageAdapter } from './storage/index';
+import { NoSpendCapabilityError } from './errors';
 import { initPoseidonPromise, Mnemonic } from './core/index';
 import type { ProverAdapter, ArtifactSource, ArtifactSet, Groth16Proof } from './prover/index';
 import type { ArmadaSdkConfig } from './index';
@@ -77,11 +78,27 @@ describe('createArmadaSdk (§4.1)', () => {
     expect(wallet.canSpend).toBe(true);
   });
 
-  it('exportDisclosure + view-only factory throw documented not-implemented errors', async () => {
+  it('exportDisclosure throws a documented not-implemented error', async () => {
     const sdk = await createArmadaSdk(makeConfig());
     const wallet = await sdk.wallet.fromRootSecret(seed(0x33), { creationBlock: 1 });
     await expect(wallet.exportDisclosure('ref')).rejects.toThrow(/not implemented/);
-    await expect(sdk.wallet.viewOnlyFromViewingKey('vk', { creationBlock: 1 })).rejects.toThrow(/not implemented/);
+  });
+
+  it('shareViewingKey round-trips into a view-only wallet (same 0zk, no spend)', async () => {
+    const sdk = await createArmadaSdk(makeConfig());
+    const full = await sdk.wallet.fromRootSecret(seed(0x11), {
+      creationBlock: 1,
+      signer: await LocalSigner.fromRootSecret(seed(0x11)),
+    });
+    expect(full.canSpend).toBe(true);
+
+    const viewOnly = await sdk.wallet.viewOnlyFromViewingKey(full.shareViewingKey(), { creationBlock: 1 });
+    expect(viewOnly.railgunAddress).toBe(full.railgunAddress);
+    expect(viewOnly.canSpend).toBe(false);
+
+    // Spend-path calls on a view-only wallet throw NoSpendCapabilityError.
+    const fee = { schedule: { transfer: '0' }, broadcasterRailgunAddress: '0zk', feesCacheId: 'x', expiresAt: 0 };
+    await expect(viewOnly.planTransfer({ outputs: [{ to0zk: '0zk', amount: 1n }], fee })).rejects.toThrow(NoSpendCapabilityError);
   });
 
   it('supports multiple independent instances (no shared module state)', async () => {
