@@ -170,6 +170,10 @@ export type { PlanTransferParams, TransferOutputRequest, FeeRequest } from './pl
 export { buildTransactCalldata } from './serialize';
 export type { TransactionData, TransactionBoundParams } from './serialize';
 
+// prove() orchestration + ProofHandle — witness → artifacts → proof → calldata.
+export { prove } from './prove';
+export type { ProveParams } from './prove';
+
 // Circuit witness assembly — full notes + merkle proofs + SpendSigner signature → circuit inputs.
 export { buildWitness } from './witness';
 export type {
