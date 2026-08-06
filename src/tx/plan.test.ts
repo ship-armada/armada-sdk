@@ -115,4 +115,16 @@ describe('planTransfer (§4.6)', () => {
       }),
     ).toThrow(InsufficientBalanceError);
   });
+
+  it('returns the selected input TXOs (for the witness builder)', () => {
+    const big = txo(0, 6n, USDC_HASH, 0);
+    const plan = planTransfer({
+      ...base,
+      txos: [big, txo(0, 4n, USDC_HASH, 1)],
+      fee: { broadcasterRailgunAddress: BROADCASTER, value: 1n },
+    });
+    // 3 + 1 fee covered by the single 6-note.
+    expect(plan.selectedInputs).toEqual([big]);
+    expect(plan.selectedInputs[0]!.position).toBe(0);
+  });
 });

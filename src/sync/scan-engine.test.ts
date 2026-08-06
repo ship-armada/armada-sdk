@@ -204,4 +204,35 @@ describe('wallet scan orchestrator (§4.4)', () => {
       { tokenHash: note.tokenHash, spendable: value, pending: 0n },
     ]);
   });
+
+  it('exposes merkle proofs matching a standalone tree', async () => {
+    const state = new WalletScanState();
+    await state.apply(
+      { ...noEvents(), transacts: [mkTransact(0, 0, leafHex(70)), mkTransact(0, 1, leafHex(71))] },
+      { transact: async () => owned(TOKEN, 100n) },
+    );
+    const ref = new UTXOMerkletree();
+    ref.insertMany([leafHex(70), leafHex(71)]);
+    expect(state.merkleProof(0, 1).elements).toEqual(ref.merkleProof(1).elements);
+    expect(state.merkleProof(0, 1).root).toBe(ref.root());
+    expect(() => state.merkleProof(9, 0)).toThrow(/unknown tree/);
+  });
+
+  it('spendableTxos returns unspent notes and drops spent ones', async () => {
+    const state = new WalletScanState();
+    await state.apply(
+      { ...noEvents(), transacts: [mkTransact(0, 0, leafHex(80)), mkTransact(0, 1, leafHex(81))] },
+      { transact: async () => owned(TOKEN, 100n) },
+    );
+    expect(state.spendableTxos(NK)).toHaveLength(2);
+
+    // Spend the note at position 0 → it drops out of the spendable set.
+    await state.apply(
+      { ...noEvents(), nullifiers: [{ tree: 0, nullifier: TransactNote.getNullifier(NK, 0), blockNumber: 1, txid: TXID }] },
+      { transact: async () => undefined },
+    );
+    const spendable = state.spendableTxos(NK);
+    expect(spendable).toHaveLength(1);
+    expect(spendable[0]!.position).toBe(1);
+  });
 });
