@@ -2,7 +2,7 @@
 // ABOUTME: typed adaptParams, in-band fee binding, and the native decode API for verifiers. FROZEN.
 
 import type { CircuitShape } from '../prover/index';
-import type { CommitmentCiphertextV2, ReceiverNoteKeys } from '../sync/index';
+import type { CommitmentCiphertextV2, ReceiverNoteKeys, TXO } from '../sync/index';
 import type { TokenDataGetter, Chain } from '../core/index';
 
 /** Mirrors the relayer `GET /fees` response. */
@@ -59,6 +59,11 @@ export interface Plan {
   readonly merkleRoot: bigint;
   readonly summary: PlanSummary;
   readonly boundParams: DecodedBoundParams;
+  /**
+   * The input notes the plan selected (all from `boundParams.treeNumber`). The witness builder reads
+   * each note's `random`/`value`/`position` from these and pairs it with the tree's merkle proof.
+   */
+  readonly selectedInputs: readonly TXO[];
 }
 
 /** Calldata ready for submission. */

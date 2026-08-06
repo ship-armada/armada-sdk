@@ -125,5 +125,5 @@ export function planTransfer(params: PlanTransferParams): Plan {
     adaptParams: ZERO_BYTES32,
   };
 
-  return { shape, merkleRoot, summary, boundParams };
+  return { shape, merkleRoot, summary, boundParams, selectedInputs: best.selected };
 }

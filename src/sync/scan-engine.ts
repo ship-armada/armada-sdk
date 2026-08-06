@@ -2,7 +2,7 @@
 // ABOUTME: detects owned TXOs via injected decryptors, records nullifiers, verifies roots, projects balances.
 
 import { TransactNote } from '../core/index';
-import { UTXOMerkletree } from './merkletree';
+import { UTXOMerkletree, type MerkleProof } from './merkletree';
 import {
   computeBalances,
   type TXO,
@@ -160,5 +160,25 @@ export class WalletScanState {
   /** Number of leaves inserted into `tree`. */
   treeLength(tree: number): number {
     return this.trees.get(tree)?.length ?? 0;
+  }
+
+  /** Merkle proof for a note at `(tree, position)` — the spend witness's `pathElements`/`leavesIndices`. */
+  merkleProof(tree: number, position: number): MerkleProof {
+    const merkletree = this.trees.get(tree);
+    if (merkletree === undefined) {
+      throw new Error(`merkleProof: unknown tree ${tree}`);
+    }
+    return merkletree.merkleProof(position);
+  }
+
+  /**
+   * Unspent owned TXOs (tree-scoped nullifier–filtered), ready to hand to `planTransfer`. Excludes any
+   * note whose `(tree, getNullifier(nullifyingKey, position))` appears in the recorded spent set.
+   */
+  spendableTxos(nullifyingKey: bigint): TXO[] {
+    const spentSet = new Set(this.spent.map((s) => `${s.tree}:${s.nullifier.toString()}`));
+    return this.txos.filter(
+      (t) => !spentSet.has(`${t.tree}:${TransactNote.getNullifier(nullifyingKey, t.position).toString()}`),
+    );
   }
 }
