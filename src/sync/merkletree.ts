@@ -46,6 +46,11 @@ export class UTXOMerkletree {
     return this.leaves.length;
   }
 
+  /** The inserted leaves in position order — used to snapshot the tree for persistence. */
+  getLeaves(): readonly string[] {
+    return this.leaves;
+  }
+
   private buildLevels(): string[][] {
     const levels: string[][] = [this.leaves.slice()];
     for (let level = 0; level < TREE_DEPTH; level += 1) {

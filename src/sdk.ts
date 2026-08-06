@@ -9,11 +9,14 @@ import {
   tryDecryptCommitment,
   tryDecryptShield,
   ownedNoteFromTransactNote,
+  saveScanState,
+  loadScanState,
   POOL_V2_EVENT_ABI,
   type ParsedPoolLog,
   type ReceiverNoteKeys,
   type TokenBalance,
 } from './sync/index';
+import type { StorageAdapter } from './storage/index';
 import { planTransfer, prove, type Plan, type ProofHandle } from './tx/index';
 import type { WitnessOutputRequest } from './tx/witness';
 import {
@@ -53,11 +56,13 @@ interface SdkContext {
   readonly poolAddress: `0x${string}`;
   readonly prover: ProverAdapter;
   readonly artifacts: ArtifactSource;
+  readonly storage: StorageAdapter;
 }
 
 class ArmadaWallet implements Wallet {
-  private readonly scanState = new WalletScanState();
+  private scanState = new WalletScanState();
   private syncedThrough: number;
+  private hydrated = false;
 
   constructor(
     private readonly keyset: Keyset,
@@ -82,7 +87,19 @@ class ArmadaWallet implements Wallet {
     };
   }
 
+  // Restore persisted scan state on first use so we resume instead of rescanning from genesis.
+  private async hydrate(): Promise<void> {
+    if (this.hydrated) return;
+    const persisted = await loadScanState(this.ctx.storage, this.keyset.railgunAddress);
+    if (persisted !== undefined && persisted.syncedThrough > this.syncedThrough) {
+      this.scanState = persisted.state;
+      this.syncedThrough = persisted.syncedThrough;
+    }
+    this.hydrated = true;
+  }
+
   async sync(): Promise<{ syncedThrough: number }> {
+    await this.hydrate();
     const head = await this.ctx.provider.getBlockNumber();
     if (head <= this.syncedThrough) return { syncedThrough: this.syncedThrough };
 
@@ -97,6 +114,7 @@ class ArmadaWallet implements Wallet {
       shield: (c) => tryDecryptShield(c, receiver),
     });
     this.syncedThrough = head;
+    await saveScanState(this.ctx.storage, this.keyset.railgunAddress, this.scanState, head);
     return { syncedThrough: head };
   }
 
@@ -181,12 +199,14 @@ class ArmadaWallet implements Wallet {
  * Multiple instances per process are supported; all state is instance-scoped. `close()` releases the
  * prover's workers.
  *
- * NOTE: scan state is in-memory per wallet for now; persisting it through `config.storage`
- * (checkpoints + TXO records) is a follow-up. Custody factory methods beyond `fromRootSecret`
- * (ephemeral / mnemonic / view-only) land with the custody-lifecycle work.
+ * Scan state persists through `config.storage` (namespaced by pool/deployBlock): a wallet's `sync()`
+ * resumes from the last synced block rather than rescanning from genesis.
  */
 export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSdk> {
   await initPoseidonPromise;
+
+  // Namespace the store by (schema, chain, pool, deployBlock); a mismatch resets chain-derived state.
+  await config.storage.open({ schemaVersion: 1, chainId: config.pool.chainId, poolAddress: config.pool.poolAddress, deployBlock: config.pool.deployBlock });
 
   const provider: Provider =
     config.rpc.urls.length > 1
@@ -224,6 +244,7 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
     poolAddress: config.pool.poolAddress,
     prover: config.prover,
     artifacts: config.artifacts,
+    storage: config.storage,
   };
 
   const wallet: WalletFactory = {
@@ -263,6 +284,7 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
     wallet,
     async close() {
       await config.prover.close();
+      await config.storage.close();
     },
   };
 }

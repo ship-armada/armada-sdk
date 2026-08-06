@@ -52,7 +52,10 @@ export type { ScanOptions, ScanResult } from './scan';
 
 // Wallet scan orchestrator — folds decoded events into trees/TXOs/balances with root verification.
 export { WalletScanState, ownedNoteFromTransactNote } from './scan-engine';
-export type { WalletDecryptors, Decryptor, OwnedNote, ApplyResult } from './scan-engine';
+export type { WalletDecryptors, Decryptor, OwnedNote, ApplyResult, ScanStateSnapshot } from './scan-engine';
+
+// Scan-state persistence — resume sync from the last synced block instead of rescanning from genesis.
+export { saveScanState, loadScanState, scanStateKey } from './scan-persistence';
 
 // UTXO merkletree.
 export { UTXOMerkletree } from './merkletree';
