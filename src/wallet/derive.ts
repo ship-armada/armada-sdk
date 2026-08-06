@@ -21,16 +21,12 @@ function bytesToHex(bytes: Uint8Array): string {
 }
 
 /**
- * rootSecret (32 bytes) → full canonical keyset. Path: entropy → BIP-39 mnemonic → BIP-32 wallet
- * nodes → spending/viewing keypairs → nullifyingKey → masterPublicKey → 0zk address. Byte-identical
- * to the stock engine's `createWalletFromMnemonic` (Phase 0 Spike 1); closes the deferred keyset vector.
+ * BIP-39 mnemonic (+ derivation index) → full canonical keyset. Path: BIP-32 wallet nodes →
+ * spending/viewing keypairs → nullifyingKey → masterPublicKey → 0zk address. Byte-identical to the
+ * stock engine's `createWalletFromMnemonic`. The relayer's mnemonic-provisioned wallet uses this.
  */
-export async function deriveKeyset(rootSecret: Uint8Array): Promise<Keyset> {
-  if (rootSecret.length !== 32) {
-    throw new Error(`deriveKeyset: expected 32-byte rootSecret, got ${rootSecret.length}`);
-  }
-  const mnemonic = Mnemonic.fromEntropy(bytesToHex(rootSecret));
-  const nodes = deriveNodes(mnemonic, 0);
+export async function deriveKeysetFromMnemonic(mnemonic: string, index = 0): Promise<Keyset> {
+  const nodes = deriveNodes(mnemonic, index);
   const spending = nodes.spending.getSpendingKeyPair();
   const viewing = await nodes.viewing.getViewingKeyPair();
   const nullifyingKey = await nodes.viewing.getNullifyingKey();
@@ -45,4 +41,15 @@ export async function deriveKeyset(rootSecret: Uint8Array): Promise<Keyset> {
     masterPublicKey,
     railgunAddress,
   };
+}
+
+/**
+ * rootSecret (32 bytes) → full canonical keyset via the entropy → BIP-39 mnemonic detour (SPEC §4.2,
+ * decision 6). Verified vs keyset-vectors.json (Phase 0 Spike 1); closes the deferred keyset vector.
+ */
+export async function deriveKeyset(rootSecret: Uint8Array): Promise<Keyset> {
+  if (rootSecret.length !== 32) {
+    throw new Error(`deriveKeyset: expected 32-byte rootSecret, got ${rootSecret.length}`);
+  }
+  return deriveKeysetFromMnemonic(Mnemonic.fromEntropy(bytesToHex(rootSecret)), 0);
 }
