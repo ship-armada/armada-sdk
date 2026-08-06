@@ -40,6 +40,7 @@ export const WalletInfo = ((WalletInfoDefault as unknown as { default?: typeof W
 
 // Shield notes: ownership decryption (decryptRandom via shieldKey ECDH) + note-public-key/hash helpers.
 export { ShieldNote } from '../../vendor/railgun-engine/dist/note/shield-note';
+export { ShieldNoteERC20 } from '../../vendor/railgun-engine/dist/note/erc20/shield-note-erc20';
 
 // Key derivation — mnemonic → wallet nodes → keypairs/masterPublicKey; 0zk address encode/decode.
 export { Mnemonic } from '../../vendor/railgun-engine/dist/key-derivation/bip39';

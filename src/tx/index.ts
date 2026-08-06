@@ -179,6 +179,10 @@ export type { TransactionData, TransactionBoundParams } from './serialize';
 export { prove } from './prove';
 export type { ProveParams } from './prove';
 
+// Shield-request builder — the ShieldRequest struct for privacyPool.shield() (#410).
+export { buildShieldRequest, generateShieldPrivateKey } from './shield';
+export type { ShieldRequest, ShieldRequestInput } from './shield';
+
 // Circuit witness assembly — full notes + merkle proofs + SpendSigner signature → circuit inputs.
 export { buildWitness } from './witness';
 export type {
