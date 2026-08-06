@@ -3,6 +3,7 @@
 
 import type { DecodedBoundParams, PlanSummary, Plan, ProofHandle, FeeQuote } from '../tx/index';
 import type { ProveOptions } from '../prover/index';
+import type { TokenBalance } from '../sync/index';
 
 export type EddsaSignature = { readonly R8: readonly [bigint, bigint]; readonly S: bigint };
 
@@ -36,6 +37,10 @@ export interface SpendSigner {
 export interface Wallet {
   readonly railgunAddress: string;
   readonly canSpend: boolean;
+  /** Scan the pool from the wallet's creation block to chain head, updating its TXO/balance state. */
+  sync(): Promise<{ syncedThrough: number }>;
+  /** Per-token spendable/pending balances over the synced TXO set. */
+  balances(): Promise<TokenBalance[]>;
   planTransfer(request: PlanTransferRequest): Promise<Plan>;
   /** Requests signatures from the attached SpendSigner during witness assembly, then proves. */
   prove(plan: Plan, options?: ProveOptions): Promise<ProofHandle>;

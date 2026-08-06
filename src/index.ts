@@ -45,12 +45,9 @@ export interface ArmadaSdk {
 
 /**
  * Construct an SDK instance — replaces `startRailgunEngine` + `loadProvider` + NETWORK_CONFIG
- * patching. Multiple instances per process are supported. (Phase 2 implementation.)
+ * patching. Multiple instances per process are supported; state is instance-scoped.
  */
-export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSdk> {
-  void config;
-  throw new Error('createArmadaSdk: not implemented yet — Phase 2 (SPEC §4.1)');
-}
+export { createArmadaSdk } from './sdk';
 
 export const VERSION = '0.0.0';
 
