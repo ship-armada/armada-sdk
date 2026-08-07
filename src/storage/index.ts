@@ -33,4 +33,5 @@ export interface StorageAdapter {
 
 // Implementations.
 export { MemoryStorageAdapter } from './memory';
+export { IndexedDBStorageAdapter } from './indexeddb';
 export { EncryptedStore, deriveStorageKey } from './encrypted';
