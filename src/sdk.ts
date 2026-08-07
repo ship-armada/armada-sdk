@@ -75,6 +75,19 @@ interface SdkContext {
   readonly storage: StorageAdapter;
 }
 
+/**
+ * Decide a sync's resume window from the last synced block + current chain head. Pure so the
+ * resume decision (the thing that must never regress to a genesis rescan) is unit-testable without
+ * a provider. `fromBlock` is the resume point (checkpoint + 1); `scanned` is false when the head
+ * hasn't advanced past the checkpoint, so no getLogs work is done.
+ */
+export function planSyncWindow(
+  syncedThrough: number,
+  head: number,
+): { fromBlock: number; scanned: boolean } {
+  return { fromBlock: syncedThrough + 1, scanned: head > syncedThrough };
+}
+
 class ArmadaWallet implements Wallet {
   private scanState = new WalletScanState();
   private syncedThrough: number;
@@ -173,12 +186,13 @@ class ArmadaWallet implements Wallet {
     }
   }
 
-  async sync(): Promise<{ syncedThrough: number }> {
+  async sync(): Promise<{ fromBlock: number; syncedThrough: number; scanned: boolean }> {
     await this.hydrate();
     const head = await this.ctx.provider.getBlockNumber();
-    if (head <= this.syncedThrough) return { syncedThrough: this.syncedThrough };
+    const { fromBlock, scanned } = planSyncWindow(this.syncedThrough, head);
+    if (!scanned) return { fromBlock, syncedThrough: this.syncedThrough, scanned: false };
 
-    const from = this.syncedThrough + 1;
+    const from = fromBlock;
     const decryptors = this.decryptors();
     // Only the indexer source is untrusted; snapshot so we can roll back a bad batch.
     const usingIndexer = this.ctx.eventSource !== this.ctx.rpcEventSource;
@@ -199,7 +213,7 @@ class ArmadaWallet implements Wallet {
 
     this.syncedThrough = head;
     await saveScanState(this.ctx.storage, this.keyset.railgunAddress, this.scanState, head);
-    return { syncedThrough: head };
+    return { fromBlock, syncedThrough: head, scanned: true };
   }
 
   async balances(): Promise<TokenBalance[]> {

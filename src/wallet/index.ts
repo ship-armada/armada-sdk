@@ -37,8 +37,13 @@ export interface SpendSigner {
 export interface Wallet {
   readonly railgunAddress: string;
   readonly canSpend: boolean;
-  /** Scan the pool from the wallet's creation block to chain head, updating its TXO/balance state. */
-  sync(): Promise<{ syncedThrough: number }>;
+  /**
+   * Scan the pool from the wallet's last synced block to chain head, updating its TXO/balance state.
+   * Resumes from the persisted checkpoint (no rescan from genesis). Returns the window that was
+   * covered: `fromBlock` (the resume point = checkpoint + 1), the new `syncedThrough` (chain head),
+   * and `scanned` (false when head hadn't advanced past the checkpoint, i.e. no work was done).
+   */
+  sync(): Promise<{ fromBlock: number; syncedThrough: number; scanned: boolean }>;
   /** Per-token spendable/pending balances over the synced TXO set. */
   balances(): Promise<TokenBalance[]>;
   /** Reconstructed transaction history from the wallet's own scan state (SPEC §5). Works view-only. */
