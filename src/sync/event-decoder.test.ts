@@ -136,7 +136,7 @@ describe('pool event decoder (§4.4)', () => {
     expect(recovered).toBeDefined();
     expect(recovered!.value).toBe(value);
 
-    const txo = txoFromNote(recovered!, decoded!.tree, decoded!.position, decoded!.blockNumber);
+    const txo = txoFromNote(recovered!, decoded!.tree, decoded!.position, decoded!.blockNumber, decoded!.txid, 'transact');
     const balances = computeBalances([txo], [], receiver.nullifyingKey, { currentBlock: 200, finalityThreshold: 10 });
     expect(balances).toEqual([{ tokenHash: recovered!.tokenHash, spendable: value, pending: 0n }]);
   });

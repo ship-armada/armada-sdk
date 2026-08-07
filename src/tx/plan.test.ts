@@ -16,7 +16,7 @@ const RECIPIENT = '0zk_recipient';
 const BROADCASTER = '0zk_broadcaster';
 
 const txo = (tree: number, value: bigint, tokenHash = USDC_HASH, position = 0): TXO => ({
-  tree, position, tokenHash, value, blockNumber: 1, random: '00'.repeat(16), notePublicKey: 0n,
+  tree, position, tokenHash, value, blockNumber: 1, txid: `0x${'ee'.repeat(32)}`, origin: 'transact', random: '00'.repeat(16), notePublicKey: 0n,
 });
 const roots = new Map<number, bigint>([[0, 111n], [1, 222n]]);
 

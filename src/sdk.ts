@@ -9,11 +9,14 @@ import {
   tryDecryptCommitment,
   tryDecryptShield,
   ownedNoteFromTransactNote,
+  reconstructReceiveHistory,
   saveScanState,
   loadScanState,
   POOL_V2_EVENT_ABI,
   type EventSource,
   type WalletDecryptors,
+  type HistoryEntry,
+  type TokenAddressResolver,
   type ParsedPoolLog,
   type ReceiverNoteKeys,
   type TokenBalance,
@@ -60,6 +63,8 @@ interface SdkContext {
   readonly chain: Chain;
   readonly chainId: number;
   readonly usdcAddress: `0x${string}`;
+  /** Canonical 32-byte hash (no 0x) of USDC — maps owned-note token hashes back to the address. */
+  readonly usdcHash: string;
   readonly poolAddress: `0x${string}`;
   readonly prover: ProverAdapter;
   readonly artifacts: ArtifactSource;
@@ -181,6 +186,33 @@ class ArmadaWallet implements Wallet {
   async balances(): Promise<TokenBalance[]> {
     const head = await this.ctx.provider.getBlockNumber();
     return this.scanState.balances(this.keyset.nullifyingKey, { currentBlock: head, finalityThreshold: 0 });
+  }
+
+  async history(options?: { sinceBlock?: number }): Promise<HistoryEntry[]> {
+    const resolveToken: TokenAddressResolver = (hash) =>
+      (hash.startsWith('0x') ? hash.slice(2) : hash) === this.ctx.usdcHash ? this.ctx.usdcAddress : undefined;
+    let entries = reconstructReceiveHistory(
+      this.scanState.ownedTxos(),
+      this.scanState.spentNullifiers(),
+      this.keyset.nullifyingKey,
+      resolveToken,
+    );
+    if (options?.sinceBlock !== undefined) {
+      const since = options.sinceBlock;
+      entries = entries.filter((e) => e.blockNumber >= since);
+    }
+    // Attach block timestamps, batched over the distinct blocks the entries touch.
+    const times = new Map<number, number>();
+    await Promise.all(
+      [...new Set(entries.map((e) => e.blockNumber))].map(async (b) => {
+        const block = await this.ctx.provider.getBlock(b);
+        if (block !== null) times.set(b, block.timestamp);
+      }),
+    );
+    return entries.map((e) => {
+      const ts = times.get(e.blockNumber);
+      return ts !== undefined ? { ...e, timestamp: ts } : e;
+    });
   }
 
   async planTransfer(request: PlanTransferRequest): Promise<Plan> {
@@ -318,6 +350,7 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
     chain: { type: ChainType.EVM, id: config.pool.chainId },
     chainId: config.pool.chainId,
     usdcAddress: config.pool.usdcAddress,
+    usdcHash,
     poolAddress: config.pool.poolAddress,
     prover: config.prover,
     artifacts: config.artifacts,

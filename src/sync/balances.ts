@@ -8,12 +8,25 @@ import { TransactNote } from '../core/index';
  * come from the commitment's insertion context; `blockNumber` is the block the commitment landed in.
  * `tokenHash` is the canonical 32-byte token hash (no `0x`); address mapping is the caller's job.
  */
+/** Whether an owned note was created by a Shield event (self-deposit) or a Transact (transfer/change). */
+export type NoteOrigin = 'shield' | 'transact';
+
 export interface TXO {
   readonly tree: number;
   readonly position: number;
   readonly tokenHash: string;
   readonly value: bigint;
   readonly blockNumber: number;
+  /** Transaction that created this commitment — groups a wallet's receives per tx for history. */
+  readonly txid: string;
+  /** Which event created it — distinguishes a received shield from a received transfer/change. */
+  readonly origin: NoteOrigin;
+  /** Memo the sender attached (transfer receives), if any. */
+  readonly memo?: string;
+  /** Sender's 0zk, present only if disclosed (transfer receives). */
+  readonly senderRailgunAddress?: string;
+  /** The shield fee charged on this deposit (shield origin only) — from the Shield event's `fees`. */
+  readonly shieldFee?: bigint;
   /** 16-byte note random (hex, no 0x) — required to rebuild the spend witness (`randomIn`). */
   readonly random: string;
   /** Note public key `poseidon(masterPublicKey, random)` — the commitment's npk. */
@@ -29,6 +42,9 @@ export interface TXO {
 export interface SpentNullifier {
   readonly tree: number;
   readonly nullifier: bigint;
+  /** Transaction + block that spent the note — locates/dates the spend for send/unshield history. */
+  readonly txid: string;
+  readonly blockNumber: number;
 }
 
 /** Per-token aggregated balance. `tokenHash` is the canonical 32-byte hash (no `0x`). */
@@ -89,12 +105,14 @@ export function computeBalances(
     .sort((a, b) => (a.tokenHash < b.tokenHash ? -1 : a.tokenHash > b.tokenHash ? 1 : 0));
 }
 
-/** Build a TXO from a decrypted note plus its merkletree location and commitment block. */
+/** Build a TXO from a decrypted note plus its merkletree location, commitment block, and event context. */
 export function txoFromNote(
   note: TransactNote,
   tree: number,
   position: number,
   blockNumber: number,
+  txid: string,
+  origin: NoteOrigin,
 ): TXO {
   return {
     tree,
@@ -102,6 +120,8 @@ export function txoFromNote(
     tokenHash: note.tokenHash,
     value: note.value,
     blockNumber,
+    txid,
+    origin,
     random: note.random,
     notePublicKey: note.notePublicKey,
   };

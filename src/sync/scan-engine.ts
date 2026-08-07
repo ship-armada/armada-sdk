@@ -1,7 +1,7 @@
 // ABOUTME: Wallet scan orchestrator (SPEC §4.4) — folds decoded pool events into per-tree merkletrees,
 // ABOUTME: detects owned TXOs via injected decryptors, records nullifiers, verifies roots, projects balances.
 
-import { TransactNote } from '../core/index';
+import { TransactNote, encodeAddress } from '../core/index';
 import { UTXOMerkletree, type MerkleProof } from './merkletree';
 import {
   computeBalances,
@@ -9,6 +9,7 @@ import {
   type SpentNullifier,
   type TokenBalance,
   type BalanceOptions,
+  type NoteOrigin,
 } from './balances';
 import type {
   DecodedPoolEvents,
@@ -25,6 +26,10 @@ export interface OwnedNote {
   readonly random: string;
   /** Note public key `poseidon(masterPublicKey, random)`. */
   readonly notePublicKey: bigint;
+  /** Memo the sender attached, if any (transfer receives). */
+  readonly memo?: string;
+  /** Sender's 0zk, present only if they disclosed it (`showSenderAddressToRecipient`). */
+  readonly senderRailgunAddress?: string;
 }
 
 /** Returns the owned note if the commitment belongs to the wallet, else `undefined`. */
@@ -32,7 +37,16 @@ export type Decryptor<C> = (commitment: C) => Promise<OwnedNote | undefined>;
 
 /** Map a decrypted transact note to an `OwnedNote` — the transact-decryptor's note→result adapter. */
 export function ownedNoteFromTransactNote(note: TransactNote): OwnedNote {
-  return { tokenHash: note.tokenHash, value: note.value, random: note.random, notePublicKey: note.notePublicKey };
+  return {
+    tokenHash: note.tokenHash,
+    value: note.value,
+    random: note.random,
+    notePublicKey: note.notePublicKey,
+    ...(note.memoText !== undefined && note.memoText !== '' ? { memo: note.memoText } : {}),
+    ...(note.senderAddressData !== undefined
+      ? { senderRailgunAddress: encodeAddress(note.senderAddressData) }
+      : {}),
+  };
 }
 
 /**
@@ -60,10 +74,17 @@ export interface ScanStateSnapshot {
     readonly tokenHash: string;
     readonly value: string;
     readonly blockNumber: number;
+    readonly txid: string;
+    readonly origin: NoteOrigin;
     readonly random: string;
     readonly notePublicKey: string;
   }>;
-  readonly spent: ReadonlyArray<{ readonly tree: number; readonly nullifier: string }>;
+  readonly spent: ReadonlyArray<{
+    readonly tree: number;
+    readonly nullifier: string;
+    readonly txid: string;
+    readonly blockNumber: number;
+  }>;
 }
 
 // Compare two commitment roots regardless of 0x-prefix / leading-zero padding.
@@ -101,7 +122,7 @@ export class WalletScanState {
 
     const ownedTxos: TXO[] = [];
     for (const leaf of leaves) {
-      const { tree, position, hash, blockNumber } = leaf.c;
+      const { tree, position, hash, blockNumber, txid } = leaf.c;
       this.insertLeaf(tree, position, hash);
 
       const owned =
@@ -109,12 +130,20 @@ export class WalletScanState {
           ? await decryptors.transact(leaf.c)
           : await decryptors.shield?.(leaf.c);
       if (owned !== undefined) {
+        const shieldFee = leaf.kind === 'shield' ? leaf.c.fee : undefined;
         const txo: TXO = {
           tree,
           position,
           tokenHash: owned.tokenHash,
           value: owned.value,
           blockNumber,
+          txid,
+          origin: leaf.kind,
+          ...(owned.memo !== undefined ? { memo: owned.memo } : {}),
+          ...(owned.senderRailgunAddress !== undefined
+            ? { senderRailgunAddress: owned.senderRailgunAddress }
+            : {}),
+          ...(shieldFee !== undefined ? { shieldFee } : {}),
           random: owned.random,
           notePublicKey: owned.notePublicKey,
         };
@@ -123,7 +152,12 @@ export class WalletScanState {
       }
     }
 
-    const nullifiers: SpentNullifier[] = events.nullifiers.map((n) => ({ tree: n.tree, nullifier: n.nullifier }));
+    const nullifiers: SpentNullifier[] = events.nullifiers.map((n) => ({
+      tree: n.tree,
+      nullifier: n.nullifier,
+      txid: n.txid,
+      blockNumber: n.blockNumber,
+    }));
     this.spent.push(...nullifiers);
 
     return { ownedTxos, nullifiers };
@@ -153,6 +187,16 @@ export class WalletScanState {
   /** Tree numbers with at least one inserted leaf, ascending. */
   treeNumbers(): number[] {
     return [...this.trees.keys()].sort((a, b) => a - b);
+  }
+
+  /** All owned notes ever received (spent or not) — the receive side of history reconstruction. */
+  ownedTxos(): readonly TXO[] {
+    return this.txos;
+  }
+
+  /** All spent-note markers seen (with txid/block) — the spend side of history reconstruction. */
+  spentNullifiers(): readonly SpentNullifier[] {
+    return this.spent;
   }
 
   /**
@@ -212,10 +256,17 @@ export class WalletScanState {
         tokenHash: t.tokenHash,
         value: t.value.toString(),
         blockNumber: t.blockNumber,
+        txid: t.txid,
+        origin: t.origin,
         random: t.random,
         notePublicKey: t.notePublicKey.toString(),
       })),
-      spent: this.spent.map((s) => ({ tree: s.tree, nullifier: s.nullifier.toString() })),
+      spent: this.spent.map((s) => ({
+        tree: s.tree,
+        nullifier: s.nullifier.toString(),
+        txid: s.txid,
+        blockNumber: s.blockNumber,
+      })),
     };
   }
 
@@ -235,11 +286,15 @@ export class WalletScanState {
         tokenHash: t.tokenHash,
         value: BigInt(t.value),
         blockNumber: t.blockNumber,
+        txid: t.txid,
+        origin: t.origin,
         random: t.random,
         notePublicKey: BigInt(t.notePublicKey),
       });
     }
-    for (const s of snapshot.spent) state.spent.push({ tree: s.tree, nullifier: BigInt(s.nullifier) });
+    for (const s of snapshot.spent) {
+      state.spent.push({ tree: s.tree, nullifier: BigInt(s.nullifier), txid: s.txid, blockNumber: s.blockNumber });
+    }
     return state;
   }
 }
