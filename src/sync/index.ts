@@ -55,7 +55,7 @@ export type { IndexerEventSourceOptions } from './event-source';
 
 // Native tx-history reconstruction from scan state (SPEC §5).
 export { reconstructReceiveHistory, reconstructHistory } from './history';
-export type { HistoryEntry, HistoryCategory, TokenAddressResolver, ReconstructHistoryInput } from './history';
+export type { HistoryEntry, HistoryCategory, TokenAddressResolver, ReconstructHistoryInput, SentRecipient } from './history';
 
 // Scan checkpoints + resumable scan.
 export { CheckpointStore } from './checkpoints';
@@ -65,7 +65,7 @@ export type { ScanOptions, ScanResult } from './scan';
 
 // Wallet scan orchestrator — folds decoded events into trees/TXOs/balances with root verification.
 export { WalletScanState, ownedNoteFromTransactNote } from './scan-engine';
-export type { WalletDecryptors, Decryptor, OwnedNote, ApplyResult, ScanStateSnapshot } from './scan-engine';
+export type { WalletDecryptors, Decryptor, OwnedNote, SentOutput, ApplyResult, ScanStateSnapshot } from './scan-engine';
 
 // Scan-state persistence — resume sync from the last synced block instead of rescanning from genesis.
 export { saveScanState, loadScanState, scanStateKey } from './scan-persistence';
@@ -78,6 +78,7 @@ export type { MerkleProof } from './merkletree';
 export {
   encryptNoteToReceiver,
   tryDecryptCommitment,
+  tryDecryptSentCommitment,
   createTransferNote,
   DEFAULT_EVM_CHAIN,
 } from './note-crypto';

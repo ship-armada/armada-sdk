@@ -6,6 +6,7 @@ import { initPoseidonPromise, TransactNote } from '../core/index';
 import type { TXO, SpentNullifier } from './balances';
 import { reconstructReceiveHistory, reconstructHistory } from './history';
 import type { DecodedUnshield } from './event-decoder';
+import type { SentOutput } from './scan-engine';
 
 const USDC_HASH = 'aa'.repeat(32);
 const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' as const;
@@ -76,7 +77,7 @@ describe('reconstructHistory (H2 — sends / unshields / yield)', () => {
   const changeNote = txo({ tree: 0, position: 6, value: 400_000n, txid: SPEND, origin: 'transact', blockNumber: 30 });
   const spent: SpentNullifier[] = [{ tree: 0, nullifier: TransactNote.getNullifier(NK, 5), txid: SPEND, blockNumber: 30 }];
 
-  const base = { spentNullifiers: spent, nullifyingKey: NK, usdcHash: USDC_HASH, usdcAddress: USDC };
+  const base = { spentNullifiers: spent, sentOutputs: [], nullifyingKey: NK, usdcHash: USDC_HASH, usdcAddress: USDC };
   const unshield = (over: Partial<DecodedUnshield>): DecodedUnshield => ({
     to: RECIPIENT,
     tokenData: { tokenType: 0, tokenAddress: USDC, tokenSubID: '0' },
@@ -113,6 +114,21 @@ describe('reconstructHistory (H2 — sends / unshields / yield)', () => {
       yieldAdapterAddress: ADAPTER,
     });
     expect(entries.find((e) => e.txid === SPEND)).toMatchObject({ category: 'yield-deposit', value: -500_000n });
+  });
+
+  it('transfer-sent splits recipient outputs from the broadcaster fee (H3)', () => {
+    // WHY: parity — a send should show WHO got WHAT (recipient + amount + memo) and the relayer fee
+    // separately, recovered sender-side and classified by OutputType (Transfer vs BroadcasterFee).
+    const sentOutputs: SentOutput[] = [
+      { txid: SPEND, blockNumber: 30, tokenHash: USDC_HASH, value: 480_000n, recipientRailgunAddress: '0zk_bob', outputType: 0, memo: 'hi' },
+      { txid: SPEND, blockNumber: 30, tokenHash: USDC_HASH, value: 20_000n, recipientRailgunAddress: '0zk_relayer', outputType: 1 },
+    ];
+    const entries = reconstructHistory({ ...base, ownedTxos: [inputNote, changeNote], unshields: [], sentOutputs });
+    const sent = entries.find((e) => e.txid === SPEND)!;
+    expect(sent.category).toBe('transfer-sent');
+    expect(sent.value).toBe(-500_000n);
+    expect(sent.broadcasterFee).toBe(20_000n);
+    expect(sent.sentOutputs).toEqual([{ recipientRailgunAddress: '0zk_bob', value: 480_000n, memo: 'hi' }]);
   });
 
   it('yield-withdraw: USDC receive in a tx that also carries the adapter Unshield leg', () => {
