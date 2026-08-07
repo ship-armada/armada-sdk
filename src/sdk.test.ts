@@ -2,7 +2,7 @@
 // ABOUTME: spend-capability gating, close(), and documented not-implemented factory methods. No network.
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { createArmadaSdk } from './sdk';
+import { createArmadaSdk, planSyncWindow } from './sdk';
 import { deriveKeyset, LocalSigner } from './wallet/index';
 import { MemoryStorageAdapter } from './storage/index';
 import { NoSpendCapabilityError } from './errors';
@@ -107,5 +107,28 @@ describe('createArmadaSdk (§4.1)', () => {
     const wa = await a.wallet.fromRootSecret(seed(0x11), { creationBlock: 1 });
     const wb = await b.wallet.fromRootSecret(seed(0x44), { creationBlock: 1 });
     expect(wa.railgunAddress).not.toBe(wb.railgunAddress);
+  });
+});
+
+describe('planSyncWindow — sync resume decision', () => {
+  it('first run scans from the creation block (syncedThrough starts at creationBlock - 1)', () => {
+    // WHY: a fresh wallet (creationBlock 10 → syncedThrough 9) with head 20 must cover 10..20.
+    expect(planSyncWindow(9, 20)).toEqual({ fromBlock: 10, scanned: true });
+  });
+
+  it('resume scans ONLY the delta past the persisted checkpoint, never from genesis', () => {
+    // WHY: this is the whole point of persistence. After a reload hydrate() restores
+    // syncedThrough=20; a head of 25 must scan 21..25. A regression here (fromBlock reverting to
+    // the deploy block) turns every reload into a full-history rescan — the exact failure this
+    // observability work is meant to catch.
+    expect(planSyncWindow(20, 25)).toEqual({ fromBlock: 21, scanned: true });
+  });
+
+  it('does no work when the head has not advanced past the checkpoint', () => {
+    // WHY: the cheap path — a reload with no new blocks issues zero getLogs. `scanned:false` is
+    // the greppable signal that the SDK resumed rather than rescanned. Also covers head < checkpoint
+    // (transient RPC lag / reorg) as a no-op rather than a negative-range scan.
+    expect(planSyncWindow(20, 20)).toEqual({ fromBlock: 21, scanned: false });
+    expect(planSyncWindow(20, 15)).toEqual({ fromBlock: 21, scanned: false });
   });
 });
