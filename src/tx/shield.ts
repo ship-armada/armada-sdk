@@ -34,13 +34,19 @@ export function generateShieldPrivateKey(): Uint8Array {
  * Build a shield request for `privacyPool.shield([request], integrator)` — a shielded deposit of
  * `amount` of `tokenAddress` to `railgunAddress`. `random` (returned) is the note's 16-byte randomness,
  * recoverable by the recipient's viewing key via the shield ECIES bundle.
+ *
+ * `random` (optional, 16-byte hex, no `0x`) is normally generated fresh per deposit. Supply it to
+ * make the **commitment** reproducible — for parity vectors and for a consumer running this builder
+ * as a differential against another shield implementation: same key + same random → identical
+ * `preimage` (npk/token/value) and `shieldKey`. The `encryptedBundle` is NOT reproducible (fresh
+ * AES-GCM IV per call); its correctness property is decryptability by the recipient, not byte-equality.
  */
 export async function buildShieldRequest(
   input: ShieldRequestInput,
   shieldPrivateKey: Uint8Array,
+  random: string = randomHex(16),
 ): Promise<{ shieldRequest: ShieldRequest; random: string }> {
   const { masterPublicKey, viewingPublicKey } = decodeAddress(input.railgunAddress);
-  const random = randomHex(16);
   const note = new ShieldNoteERC20(masterPublicKey, random, input.amount, input.tokenAddress);
   const shieldRequest = (await note.serialize(shieldPrivateKey, viewingPublicKey)) as unknown as ShieldRequest;
   return { shieldRequest, random };

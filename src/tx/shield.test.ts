@@ -67,6 +67,36 @@ describe('shield-request builder (§4.6, #410)', () => {
     expect(await tryDecryptShield(asCommitment(shieldRequest), receiverKeys(stranger))).toBeUndefined();
   });
 
+  it('reproduces the commitment (npk/token/value + shieldKey) when an explicit random is supplied', async () => {
+    // WHY: a consumer runs this builder as a differential against another shield implementation.
+    // The COMMITMENT fields — npk = Poseidon(masterPublicKey, random), token, value — plus the
+    // ephemeral `shieldKey` (public key of shieldPrivateKey) are deterministic given the same
+    // key + random, so parity is byte-checkable. The `encryptedBundle` is deliberately NOT — it
+    // uses a fresh AES-GCM IV per call, so its correctness property is decryptability (the decrypt
+    // test above), not byte-equality. A differential must compare the preimage + shieldKey only.
+    const key = generateShieldPrivateKey();
+    const random = 'ab'.repeat(16); // 16 bytes hex, no 0x
+    const input = { railgunAddress: receiver.railgunAddress, amount: 7_000_000n, tokenAddress: USDC };
+    const r1 = await buildShieldRequest(input, key, random);
+    const r2 = await buildShieldRequest(input, key, random);
+    expect(r1.random).toBe(random);
+    expect(r2.shieldRequest.preimage).toEqual(r1.shieldRequest.preimage);
+    expect(r2.shieldRequest.ciphertext.shieldKey).toBe(r1.shieldRequest.ciphertext.shieldKey);
+    // Fresh IV per call — the bundle is intentionally not byte-reproducible.
+    expect(r2.shieldRequest.ciphertext.encryptedBundle).not.toEqual(r1.shieldRequest.ciphertext.encryptedBundle);
+  });
+
+  it('generates a fresh random per call when none is supplied', async () => {
+    // WHY: the default path must stay non-deterministic — reused randomness across deposits would
+    // link notes. Two default-random builds of the same note differ at the commitment (npk).
+    const key = generateShieldPrivateKey();
+    const input = { railgunAddress: receiver.railgunAddress, amount: 7_000_000n, tokenAddress: USDC };
+    const a = await buildShieldRequest(input, key);
+    const b = await buildShieldRequest(input, key);
+    expect(a.random).not.toBe(b.random);
+    expect(a.shieldRequest.preimage.npk).not.toBe(b.shieldRequest.preimage.npk);
+  });
+
   it('generateShieldPrivateKey returns 32 random bytes', () => {
     const a = generateShieldPrivateKey();
     expect(a).toHaveLength(32);
