@@ -77,7 +77,9 @@ export {
   createTransferNote,
   encryptNoteToReceiver,
   tryDecryptCommitment,
+  reconstructReceiveHistory,
 } from './sync/index';
+export type { HistoryEntry, HistoryCategory, TokenAddressResolver } from './sync/index';
 export { deriveKeyset, deriveKeysetFromMnemonic } from './wallet/index';
 export type { Keyset } from './wallet/index';
 export {

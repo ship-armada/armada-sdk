@@ -53,6 +53,10 @@ export type { GetLogsFn, RangedFetchOptions } from './ranged-fetch';
 export { RpcEventSource, IndexerEventSource } from './event-source';
 export type { IndexerEventSourceOptions } from './event-source';
 
+// Native tx-history reconstruction from scan state (SPEC §5).
+export { reconstructReceiveHistory } from './history';
+export type { HistoryEntry, HistoryCategory, TokenAddressResolver } from './history';
+
 // Scan checkpoints + resumable scan.
 export { CheckpointStore } from './checkpoints';
 export type { ScanCheckpoint } from './checkpoints';

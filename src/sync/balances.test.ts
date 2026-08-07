@@ -14,11 +14,15 @@ const NULLIFYING_KEY = 1234567890123456789n;
 const spentFor = (tree: number, position: number): SpentNullifier => ({
   tree,
   nullifier: TransactNote.getNullifier(NULLIFYING_KEY, position),
+  txid: `0x${'ff'.repeat(32)}`,
+  blockNumber: 100,
 });
 
 const txo = (over: Partial<TXO> & Pick<TXO, 'tree' | 'position' | 'value'>): TXO => ({
   tokenHash: TOKEN_A,
   blockNumber: 100,
+  txid: `0x${'ee'.repeat(32)}`,
+  origin: 'transact',
   random: '00'.repeat(16),
   notePublicKey: 0n,
   ...over,
@@ -108,13 +112,15 @@ describe('balance aggregation (§4.4)', () => {
       { tokenAddress: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', tokenType: 0, tokenSubID: '0x00' },
       500n,
     );
-    const built = txoFromNote(note, 2, 17, 640);
+    const built = txoFromNote(note, 2, 17, 640, `0x${'ab'.repeat(32)}`, 'transact');
     expect(built).toEqual({
       tree: 2,
       position: 17,
       tokenHash: note.tokenHash,
       value: 500n,
       blockNumber: 640,
+      txid: `0x${'ab'.repeat(32)}`,
+      origin: 'transact',
       random: note.random,
       notePublicKey: note.notePublicKey,
     });
