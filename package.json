@@ -5,24 +5,57 @@
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
-  "files": ["dist", "SPEC.md", "NOTICE.md", "vendor/railgun-engine/LICENSE"],
+  "files": [
+    "dist",
+    "SPEC.md",
+    "NOTICE.md",
+    "vendor/railgun-engine/LICENSE"
+  ],
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "typesVersions": {
     "*": {
-      "core": ["./dist/core/index.d.ts"],
-      "wallet": ["./dist/wallet/index.d.ts"],
-      "payments": ["./dist/payments/index.d.ts"],
-      "ops": ["./dist/ops/index.d.ts"]
+      "core": [
+        "./dist/core/index.d.ts"
+      ],
+      "wallet": [
+        "./dist/wallet/index.d.ts"
+      ],
+      "payments": [
+        "./dist/payments/index.d.ts"
+      ],
+      "ops": [
+        "./dist/ops/index.d.ts"
+      ]
     }
   },
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "require": "./dist/index.cjs" },
-    "./core": { "types": "./dist/core/index.d.ts", "import": "./dist/core/index.js", "require": "./dist/core/index.cjs" },
-    "./wallet": { "types": "./dist/wallet/index.d.ts", "import": "./dist/wallet/index.js", "require": "./dist/wallet/index.cjs" },
-    "./payments": { "types": "./dist/payments/index.d.ts", "import": "./dist/payments/index.js", "require": "./dist/payments/index.cjs" },
-    "./ops": { "types": "./dist/ops/index.d.ts", "import": "./dist/ops/index.js", "require": "./dist/ops/index.cjs" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core/index.js",
+      "require": "./dist/core/index.cjs"
+    },
+    "./wallet": {
+      "types": "./dist/wallet/index.d.ts",
+      "import": "./dist/wallet/index.js",
+      "require": "./dist/wallet/index.cjs"
+    },
+    "./payments": {
+      "types": "./dist/payments/index.d.ts",
+      "import": "./dist/payments/index.js",
+      "require": "./dist/payments/index.cjs"
+    },
+    "./ops": {
+      "types": "./dist/ops/index.d.ts",
+      "import": "./dist/ops/index.js",
+      "require": "./dist/ops/index.cjs"
+    }
   },
   "scripts": {
     "build:vendor": "tsc -p vendor/railgun-engine/tsconfig.build.json && node scripts/postbuild-vendor.mjs",
@@ -46,6 +79,7 @@
     "@railgun-community/curve25519-scalarmult-wasm": "0.1.5",
     "@railgun-community/poseidon-hash-wasm": "1.0.1",
     "@scure/base": "^1.1.1",
+    "assert": "^2.1.0",
     "buffer-xor": "^2.0.2",
     "ethereum-cryptography": "^2.0.0",
     "ethers": "^6.14.3",
@@ -57,6 +91,7 @@
     "@types/node": "^20.11.0",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
+    "esbuild-plugin-polyfill-node": "^0.3.0",
     "eslint": "^8.57.0",
     "tsup": "^8.0.0",
     "typescript": "^5.4.2",
