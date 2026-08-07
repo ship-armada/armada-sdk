@@ -33,6 +33,18 @@ export interface OwnedNote {
   readonly senderRailgunAddress?: string;
 }
 
+/** An output the wallet AUTHORED (recovered sender-side) — a transfer, broadcaster fee, or change. */
+export interface SentOutput {
+  readonly txid: string;
+  readonly blockNumber: number;
+  readonly tokenHash: string;
+  readonly value: bigint;
+  readonly recipientRailgunAddress: string;
+  /** OutputType: 0 Transfer, 1 BroadcasterFee, 2 Change. */
+  readonly outputType: number;
+  readonly memo?: string;
+}
+
 /** Returns the owned note if the commitment belongs to the wallet, else `undefined`. */
 export type Decryptor<C> = (commitment: C) => Promise<OwnedNote | undefined>;
 
@@ -58,6 +70,8 @@ export function ownedNoteFromTransactNote(note: TransactNote): OwnedNote {
 export interface WalletDecryptors {
   readonly transact: Decryptor<DecodedTransactCommitment>;
   readonly shield?: Decryptor<DecodedShieldCommitment>;
+  /** Sender-side recovery of notes the wallet AUTHORED (transfer/fee outputs), for send history. */
+  readonly sentTransact?: (c: DecodedTransactCommitment) => Promise<SentOutput | undefined>;
 }
 
 /** The wallet-owned deltas produced by applying one event batch (for `note:received`/`balance:updated`). */
@@ -94,6 +108,15 @@ export interface ScanStateSnapshot {
     readonly blockNumber: number;
     readonly txid: string;
   }>;
+  readonly sent: ReadonlyArray<{
+    readonly txid: string;
+    readonly blockNumber: number;
+    readonly tokenHash: string;
+    readonly value: string;
+    readonly recipientRailgunAddress: string;
+    readonly outputType: number;
+    readonly memo?: string;
+  }>;
 }
 
 // Compare two commitment roots regardless of 0x-prefix / leading-zero padding.
@@ -114,6 +137,7 @@ export class WalletScanState {
   private readonly txos: TXO[] = [];
   private readonly spent: SpentNullifier[] = [];
   private readonly unshields: DecodedUnshield[] = [];
+  private readonly sent: SentOutput[] = [];
 
   /**
    * Fold a decoded event batch into wallet state. Batches MUST arrive in scan order (ascending
@@ -159,6 +183,13 @@ export class WalletScanState {
         };
         this.txos.push(txo);
         ownedTxos.push(txo);
+      }
+
+      // Sender-side: a note WE authored (transfer/fee output) — recovered for send history. Change
+      // is filtered by the decryptor (it's already handled receive-side as an owned TXO above).
+      if (leaf.kind === 'transact' && decryptors.sentTransact !== undefined) {
+        const sent = await decryptors.sentTransact(leaf.c);
+        if (sent !== undefined) this.sent.push(sent);
       }
     }
 
@@ -216,6 +247,11 @@ export class WalletScanState {
   /** All public withdrawals seen — matched to the wallet's own spend txids for unshield/yield history. */
   unshieldEvents(): readonly DecodedUnshield[] {
     return this.unshields;
+  }
+
+  /** Notes the wallet authored (recovered sender-side) — the recipient/fee detail of its own sends. */
+  sentOutputs(): readonly SentOutput[] {
+    return this.sent;
   }
 
   /**
@@ -294,6 +330,15 @@ export class WalletScanState {
         blockNumber: u.blockNumber,
         txid: u.txid,
       })),
+      sent: this.sent.map((s) => ({
+        txid: s.txid,
+        blockNumber: s.blockNumber,
+        tokenHash: s.tokenHash,
+        value: s.value.toString(),
+        recipientRailgunAddress: s.recipientRailgunAddress,
+        outputType: s.outputType,
+        ...(s.memo !== undefined ? { memo: s.memo } : {}),
+      })),
     };
   }
 
@@ -330,6 +375,17 @@ export class WalletScanState {
         fee: BigInt(u.fee),
         blockNumber: u.blockNumber,
         txid: u.txid,
+      });
+    }
+    for (const s of snapshot.sent) {
+      state.sent.push({
+        txid: s.txid,
+        blockNumber: s.blockNumber,
+        tokenHash: s.tokenHash,
+        value: BigInt(s.value),
+        recipientRailgunAddress: s.recipientRailgunAddress,
+        outputType: s.outputType,
+        ...(s.memo !== undefined ? { memo: s.memo } : {}),
       });
     }
     return state;

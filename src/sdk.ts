@@ -7,6 +7,7 @@ import {
   RpcEventSource,
   IndexerEventSource,
   tryDecryptCommitment,
+  tryDecryptSentCommitment,
   tryDecryptShield,
   ownedNoteFromTransactNote,
   reconstructHistory,
@@ -40,6 +41,8 @@ import {
   getTokenDataERC20,
   getTokenDataHash,
   ChainType,
+  OutputType,
+  encodeAddress,
   initPoseidonPromise,
   type TokenData,
   type TokenDataGetter,
@@ -120,6 +123,21 @@ class ArmadaWallet implements Wallet {
         return note ? ownedNoteFromTransactNote(note) : undefined;
       },
       shield: (c) => tryDecryptShield(c, receiver),
+      sentTransact: async (c) => {
+        const note = await tryDecryptSentCommitment(c.ciphertext, receiver, this.ctx.tokenDataGetter, this.ctx.chain);
+        if (note === undefined) return undefined;
+        const outputType = note.outputType ?? OutputType.Transfer;
+        if (outputType === OutputType.Change) return undefined; // change is handled receive-side
+        return {
+          txid: c.txid,
+          blockNumber: c.blockNumber,
+          tokenHash: note.tokenHash,
+          value: note.value,
+          recipientRailgunAddress: encodeAddress(note.receiverAddressData),
+          outputType,
+          ...(note.memoText !== undefined && note.memoText !== '' ? { memo: note.memoText } : {}),
+        };
+      },
     };
   }
 
@@ -194,6 +212,7 @@ class ArmadaWallet implements Wallet {
       ownedTxos: this.scanState.ownedTxos(),
       spentNullifiers: this.scanState.spentNullifiers(),
       unshields: this.scanState.unshieldEvents(),
+      sentOutputs: this.scanState.sentOutputs(),
       nullifyingKey: this.keyset.nullifyingKey,
       usdcHash: this.ctx.usdcHash,
       usdcAddress: this.ctx.usdcAddress,

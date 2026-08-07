@@ -10,6 +10,7 @@ import {
   createTransferNote,
   encryptNoteToReceiver,
   tryDecryptCommitment,
+  tryDecryptSentCommitment,
   type SenderNoteKeys,
   type ReceiverNoteKeys,
 } from './note-crypto';
@@ -118,5 +119,35 @@ describe('note ECIES V2 codec (§4.4)', () => {
       expect(entry.blindedSenderViewingKey).toMatch(/^0x[0-9a-f]{64}$/);
       expect(entry.blindedReceiverViewingKey).toMatch(/^0x[0-9a-f]{64}$/);
     }
+  });
+
+  it('sender recovers its OWN sent note via the viewing key (view-only send history, H3)', async () => {
+    // WHY: a view-only wallet (viewing key only, no spend key) must see the shared identity's SENDS,
+    // not just receives. Sender-side decryption recovers a note WE authored — recipient, value, memo —
+    // using only the viewing key + the author-encrypted annotationData. This is what makes a shared
+    // viewing key show full activity.
+    const note = createTransferNote({
+      receiverAddressData: { masterPublicKey: receiver.masterPublicKey, viewingPublicKey: receiver.viewingPublicKey },
+      senderAddressData: { masterPublicKey: sender.masterPublicKey, viewingPublicKey: sender.viewingPublicKey },
+      value: 250_000n,
+      tokenData,
+      memoText: 'ty',
+    });
+    const commitment = await encryptNoteToReceiver(note, senderKeys(sender), receiver.viewingPublicKey);
+
+    // The sender — or any view-only wallet holding the sender's viewing key — recovers it.
+    const recovered = await tryDecryptSentCommitment(commitment, receiverKeys(sender), tokenDataGetter);
+    expect(recovered).toBeDefined();
+    expect(recovered!.value).toBe(250_000n);
+    expect(recovered!.memoText).toBe('ty');
+    // The recovered note points at the RECIPIENT (who we sent to).
+    expect(recovered!.receiverAddressData.masterPublicKey).toBe(receiver.masterPublicKey);
+
+    // A stranger's viewing key cannot recover our send.
+    const byStranger = await tryDecryptSentCommitment(commitment, receiverKeys(stranger), tokenDataGetter);
+    expect(byStranger).toBeUndefined();
+    // Nor does the receive-side decryptor treat it as an incoming note for the sender.
+    const asReceive = await tryDecryptCommitment(commitment, receiverKeys(sender), tokenDataGetter);
+    expect(asReceive).toBeUndefined();
   });
 });

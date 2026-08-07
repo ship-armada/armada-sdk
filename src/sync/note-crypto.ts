@@ -171,3 +171,44 @@ export async function tryDecryptCommitment(
     return undefined;
   }
 }
+
+/**
+ * Sender side: recover a note WE sent from its on-chain ciphertext, using our own viewing key + the
+ * note's `annotationData` (only the author can decrypt it). The returned `TransactNote` has
+ * `receiverAddressData` = the RECIPIENT and `outputType` marking it a transfer / broadcaster fee /
+ * change. Returns `undefined` for commitments we did not author. Uses only the viewing key, so a
+ * view-only wallet recovers its shared identity's send history too.
+ */
+export async function tryDecryptSentCommitment(
+  commitment: CommitmentCiphertextV2,
+  sender: ReceiverNoteKeys,
+  tokenDataGetter: TokenDataGetter,
+  chain: Chain = DEFAULT_EVM_CHAIN,
+): Promise<TransactNote | undefined> {
+  // Mirror of the receive path: the author derives the shared key against the blinded RECEIVER key.
+  const sharedKey = await getSharedSymmetricKey(sender.viewingPrivateKey, commitment.blindedReceiverViewingKey);
+  if (sharedKey === undefined) {
+    return undefined;
+  }
+  try {
+    return await TransactNote.decrypt(
+      TXIDVersion.V2_PoseidonMerkle,
+      chain,
+      sender.addressData,
+      unpackCiphertext(commitment.ciphertext),
+      sharedKey,
+      commitment.memo,
+      commitment.annotationData,
+      sender.viewingPrivateKey,
+      commitment.blindedReceiverViewingKey,
+      commitment.blindedSenderViewingKey,
+      true, // isSentNote — sender-side recovery
+      false, // isLegacyDecryption
+      tokenDataGetter,
+      undefined,
+      undefined,
+    );
+  } catch {
+    return undefined;
+  }
+}

@@ -1,9 +1,17 @@
 // ABOUTME: Native tx-history reconstruction (SPEC §5) — derives HistoryEntry[] from the wallet's own
 // ABOUTME: scan state (owned notes + spent nullifiers), NOT a port of Railgun's getWalletTransactionHistory.
 
-import { TransactNote } from '../core/index';
+import { TransactNote, OutputType } from '../core/index';
 import type { TXO, SpentNullifier } from './balances';
 import type { DecodedUnshield } from './event-decoder';
+import type { SentOutput } from './scan-engine';
+
+/** A recipient output of one of the wallet's own sends (recovered sender-side). */
+export interface SentRecipient {
+  readonly recipientRailgunAddress: string;
+  readonly value: bigint;
+  readonly memo?: string;
+}
 
 export type HistoryCategory =
   | 'shield'
@@ -34,6 +42,8 @@ export interface HistoryEntry {
   readonly recipient?: string;
   /** Sender's 0zk, if they disclosed it (transfer receives). */
   readonly senderRailgunAddress?: string;
+  /** Recipient outputs of a send (transfer-sent), recovered sender-side — recipient 0zk + amount + memo. */
+  readonly sentOutputs?: readonly SentRecipient[];
   readonly memo?: string;
   /** Unix seconds — attached by `wallet.history()` from the block; absent in the pure reconstruction. */
   readonly timestamp?: number;
@@ -105,6 +115,8 @@ export interface ReconstructHistoryInput {
   readonly ownedTxos: readonly TXO[];
   readonly spentNullifiers: readonly SpentNullifier[];
   readonly unshields: readonly DecodedUnshield[];
+  /** Notes the wallet authored (recovered sender-side) — recipient/fee detail of its own sends. */
+  readonly sentOutputs: readonly SentOutput[];
   readonly nullifyingKey: bigint;
   /** Canonical 32-byte hash (no 0x) of the tracked token (USDC). */
   readonly usdcHash: string;
@@ -128,7 +140,7 @@ export interface ReconstructHistoryInput {
  * rest of the SDK: aUSDC legs of yield ops aren't tracked, so a withdrawal is seen via its USDC return.
  */
 export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry[] {
-  const { ownedTxos, spentNullifiers, unshields, nullifyingKey, usdcHash, usdcAddress } = input;
+  const { ownedTxos, spentNullifiers, unshields, sentOutputs, nullifyingKey, usdcHash, usdcAddress } = input;
   const yieldAdapter = input.yieldAdapterAddress?.toLowerCase();
   const isUsdc = (tokenHash: string): boolean => tokenHash === usdcHash;
 
@@ -138,6 +150,14 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
     const list = unshieldsByTxid.get(u.txid);
     if (list === undefined) unshieldsByTxid.set(u.txid, [u]);
     else list.push(u);
+  }
+  // Our authored outputs per txid (USDC only) — recipient transfers + broadcaster fee.
+  const sentByTxid = new Map<string, SentOutput[]>();
+  for (const s of sentOutputs) {
+    if (!isUsdc(s.tokenHash)) continue;
+    const list = sentByTxid.get(s.txid);
+    if (list === undefined) sentByTxid.set(s.txid, [s]);
+    else list.push(s);
   }
 
   // Which owned notes we spent, and in which txid.
@@ -185,8 +205,22 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
 
     if (ownSpendTxids.has(txid)) {
       const net = a.change - a.inputs; // negative: shielded balance decreased
+      // Sender-side detail: split our authored outputs into recipient transfers vs the broadcaster fee.
+      const outs = sentByTxid.get(txid) ?? [];
+      const transfers = outs.filter((o) => (o.outputType ?? OutputType.Transfer) === OutputType.Transfer);
+      const broadcasterFee = outs
+        .filter((o) => o.outputType === OutputType.BroadcasterFee)
+        .reduce((acc, o) => acc + o.value, 0n);
+      const feeField = broadcasterFee > 0n ? { broadcasterFee } : {};
+      const recipients: SentRecipient[] = transfers.map((o) => ({
+        recipientRailgunAddress: o.recipientRailgunAddress,
+        value: o.value,
+        ...(o.memo !== undefined ? { memo: o.memo } : {}),
+      }));
+      const sentField = recipients.length > 0 ? { sentOutputs: recipients } : {};
+
       if (toAdapter) {
-        entries.push({ txid, blockNumber: a.blockNumber, category: 'yield-deposit', tokenAddress: usdcAddress, value: net });
+        entries.push({ txid, blockNumber: a.blockNumber, category: 'yield-deposit', tokenAddress: usdcAddress, value: net, ...feeField });
       } else if (external.length > 0) {
         const u = external[0]!;
         entries.push({
@@ -197,9 +231,10 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
           value: net,
           unshieldFee: u.fee,
           recipient: u.to,
+          ...feeField,
         });
       } else {
-        entries.push({ txid, blockNumber: a.blockNumber, category: 'transfer-sent', tokenAddress: usdcAddress, value: net });
+        entries.push({ txid, blockNumber: a.blockNumber, category: 'transfer-sent', tokenAddress: usdcAddress, value: net, ...feeField, ...sentField });
       }
       continue;
     }
