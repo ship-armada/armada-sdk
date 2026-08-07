@@ -15,6 +15,7 @@ import type {
   DecodedPoolEvents,
   DecodedShieldCommitment,
   DecodedTransactCommitment,
+  DecodedUnshield,
 } from './event-decoder';
 import { RootMismatchError } from '../errors';
 
@@ -85,6 +86,14 @@ export interface ScanStateSnapshot {
     readonly txid: string;
     readonly blockNumber: number;
   }>;
+  readonly unshields: ReadonlyArray<{
+    readonly to: string;
+    readonly tokenData: { readonly tokenType: number; readonly tokenAddress: string; readonly tokenSubID: string };
+    readonly amount: string;
+    readonly fee: string;
+    readonly blockNumber: number;
+    readonly txid: string;
+  }>;
 }
 
 // Compare two commitment roots regardless of 0x-prefix / leading-zero padding.
@@ -104,6 +113,7 @@ export class WalletScanState {
   private readonly nextPosition = new Map<number, number>();
   private readonly txos: TXO[] = [];
   private readonly spent: SpentNullifier[] = [];
+  private readonly unshields: DecodedUnshield[] = [];
 
   /**
    * Fold a decoded event batch into wallet state. Batches MUST arrive in scan order (ascending
@@ -160,6 +170,10 @@ export class WalletScanState {
     }));
     this.spent.push(...nullifiers);
 
+    // Unshields are public (not commitments) — recorded globally like nullifiers; history matches
+    // them to the wallet's own spend txids. (Pruning to our txids is a possible future optimization.)
+    this.unshields.push(...events.unshields);
+
     return { ownedTxos, nullifiers };
   }
 
@@ -197,6 +211,11 @@ export class WalletScanState {
   /** All spent-note markers seen (with txid/block) — the spend side of history reconstruction. */
   spentNullifiers(): readonly SpentNullifier[] {
     return this.spent;
+  }
+
+  /** All public withdrawals seen — matched to the wallet's own spend txids for unshield/yield history. */
+  unshieldEvents(): readonly DecodedUnshield[] {
+    return this.unshields;
   }
 
   /**
@@ -267,6 +286,14 @@ export class WalletScanState {
         txid: s.txid,
         blockNumber: s.blockNumber,
       })),
+      unshields: this.unshields.map((u) => ({
+        to: u.to,
+        tokenData: { ...u.tokenData },
+        amount: u.amount.toString(),
+        fee: u.fee.toString(),
+        blockNumber: u.blockNumber,
+        txid: u.txid,
+      })),
     };
   }
 
@@ -294,6 +321,16 @@ export class WalletScanState {
     }
     for (const s of snapshot.spent) {
       state.spent.push({ tree: s.tree, nullifier: BigInt(s.nullifier), txid: s.txid, blockNumber: s.blockNumber });
+    }
+    for (const u of snapshot.unshields) {
+      state.unshields.push({
+        to: u.to,
+        tokenData: { ...u.tokenData },
+        amount: BigInt(u.amount),
+        fee: BigInt(u.fee),
+        blockNumber: u.blockNumber,
+        txid: u.txid,
+      });
     }
     return state;
   }

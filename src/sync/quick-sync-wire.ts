@@ -6,6 +6,7 @@ import type {
   DecodedShieldCommitment,
   DecodedTransactCommitment,
   DecodedNullifier,
+  DecodedUnshield,
 } from './event-decoder';
 import type { CommitmentCiphertextV2 } from './note-crypto';
 import { QuickSyncSchemaError } from '../errors';
@@ -66,6 +67,15 @@ export interface WireNullifier {
   readonly txid: string;
 }
 
+export interface WireUnshield {
+  readonly to: string;
+  readonly tokenData: WireTokenData;
+  readonly amount: string; // bigint → decimal string
+  readonly fee: string; // bigint → decimal string
+  readonly blockNumber: number;
+  readonly txid: string;
+}
+
 /**
  * The full quick-sync response envelope. `syncedThroughBlock` is the highest block the indexer has
  * fully covered — it may lag the requested range's head, in which case the SDK RPC-covers the tail.
@@ -76,6 +86,7 @@ export interface QuickSyncResponse {
   readonly shields: readonly WireShieldCommitment[];
   readonly transacts: readonly WireTransactCommitment[];
   readonly nullifiers: readonly WireNullifier[];
+  readonly unshields: readonly WireUnshield[];
 }
 
 // ── Serialize (producer side; also used by tests + any SDK-side indexer) ─────
@@ -127,6 +138,18 @@ export function serializeQuickSync(
       nullifier: n.nullifier.toString(),
       blockNumber: n.blockNumber,
       txid: n.txid,
+    })),
+    unshields: events.unshields.map((u) => ({
+      to: u.to,
+      tokenData: {
+        tokenType: u.tokenData.tokenType,
+        tokenAddress: u.tokenData.tokenAddress,
+        tokenSubID: u.tokenData.tokenSubID,
+      },
+      amount: u.amount.toString(),
+      fee: u.fee.toString(),
+      blockNumber: u.blockNumber,
+      txid: u.txid,
     })),
   };
 }
@@ -229,6 +252,24 @@ function parseNullifier(v: unknown, i: number): DecodedNullifier {
   };
 }
 
+function parseUnshield(v: unknown, i: number): DecodedUnshield {
+  if (!isObject(v)) throw new QuickSyncSchemaError(`quick-sync: unshields[${i}] must be an object`);
+  const td = v.tokenData;
+  if (!isObject(td)) throw new QuickSyncSchemaError(`quick-sync: unshields[${i}].tokenData must be an object`);
+  return {
+    to: str(v.to, `unshields[${i}].to`),
+    tokenData: {
+      tokenType: num(td.tokenType, `unshields[${i}].tokenData.tokenType`),
+      tokenAddress: str(td.tokenAddress, `unshields[${i}].tokenData.tokenAddress`),
+      tokenSubID: str(td.tokenSubID, `unshields[${i}].tokenData.tokenSubID`),
+    },
+    amount: big(v.amount, `unshields[${i}].amount`),
+    fee: big(v.fee, `unshields[${i}].fee`),
+    blockNumber: num(v.blockNumber, `unshields[${i}].blockNumber`),
+    txid: str(v.txid, `unshields[${i}].txid`),
+  };
+}
+
 /**
  * Validate + decode a quick-sync response into the scanner's native `DecodedPoolEvents` plus the
  * indexer's `syncedThroughBlock`. Throws `QuickSyncSchemaError` (code `QUICK_SYNC_SCHEMA`) on any
@@ -244,13 +285,19 @@ export function parseQuickSync(raw: unknown): {
       `quick-sync: unsupported schemaVersion ${String(raw.schemaVersion)} (expected ${QUICK_SYNC_SCHEMA_VERSION})`,
     );
   const syncedThroughBlock = num(raw.syncedThroughBlock, 'syncedThroughBlock');
-  if (!Array.isArray(raw.shields) || !Array.isArray(raw.transacts) || !Array.isArray(raw.nullifiers))
-    throw new QuickSyncSchemaError('quick-sync: shields/transacts/nullifiers must be arrays');
+  if (
+    !Array.isArray(raw.shields) ||
+    !Array.isArray(raw.transacts) ||
+    !Array.isArray(raw.nullifiers) ||
+    !Array.isArray(raw.unshields)
+  )
+    throw new QuickSyncSchemaError('quick-sync: shields/transacts/nullifiers/unshields must be arrays');
   return {
     events: {
       shields: raw.shields.map(parseShield),
       transacts: raw.transacts.map(parseTransact),
       nullifiers: raw.nullifiers.map(parseNullifier),
+      unshields: raw.unshields.map(parseUnshield),
     },
     syncedThroughBlock,
   };

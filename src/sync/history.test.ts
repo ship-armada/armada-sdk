@@ -4,7 +4,8 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initPoseidonPromise, TransactNote } from '../core/index';
 import type { TXO, SpentNullifier } from './balances';
-import { reconstructReceiveHistory } from './history';
+import { reconstructReceiveHistory, reconstructHistory } from './history';
+import type { DecodedUnshield } from './event-decoder';
 
 const USDC_HASH = 'aa'.repeat(32);
 const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' as const;
@@ -58,5 +59,72 @@ describe('reconstructReceiveHistory (H1)', () => {
     const b = txo({ tree: 0, position: 1, value: 1n, txid: tx('aa'), origin: 'shield', blockNumber: 10 });
     const entries = reconstructReceiveHistory([a, b], [], NK, resolveToken);
     expect(entries.map((e) => e.blockNumber)).toEqual([10, 50]);
+  });
+});
+
+describe('reconstructHistory (H2 — sends / unshields / yield)', () => {
+  beforeAll(async () => {
+    await initPoseidonPromise;
+  });
+
+  const ADAPTER = '0xada9700000000000000000000000000000000000';
+  const RECIPIENT = '0xbeef000000000000000000000000000000000000';
+  const SPEND = tx('55');
+
+  // An input note we own (received earlier at 0xaa) and later spend in SPEND.
+  const inputNote = txo({ tree: 0, position: 5, value: 900_000n, txid: tx('aa'), origin: 'transact', blockNumber: 5 });
+  const changeNote = txo({ tree: 0, position: 6, value: 400_000n, txid: SPEND, origin: 'transact', blockNumber: 30 });
+  const spent: SpentNullifier[] = [{ tree: 0, nullifier: TransactNote.getNullifier(NK, 5), txid: SPEND, blockNumber: 30 }];
+
+  const base = { spentNullifiers: spent, nullifyingKey: NK, usdcHash: USDC_HASH, usdcAddress: USDC };
+  const unshield = (over: Partial<DecodedUnshield>): DecodedUnshield => ({
+    to: RECIPIENT,
+    tokenData: { tokenType: 0, tokenAddress: USDC, tokenSubID: '0' },
+    amount: 500_000n,
+    fee: 2_500n,
+    blockNumber: 30,
+    txid: SPEND,
+    ...over,
+  });
+
+  it('transfer-sent: net outflow (inputs − change), no unshield event', () => {
+    const entries = reconstructHistory({ ...base, ownedTxos: [inputNote, changeNote], unshields: [] });
+    const sent = entries.find((e) => e.txid === SPEND);
+    expect(sent).toMatchObject({ category: 'transfer-sent', value: -500_000n, tokenAddress: USDC });
+    // The earlier receipt of the input note still surfaces.
+    expect(entries.find((e) => e.txid === tx('aa'))).toMatchObject({ category: 'transfer-received', value: 900_000n });
+  });
+
+  it('unshield: spend + Unshield to an external recipient → recipient + protocol fee', () => {
+    const entries = reconstructHistory({ ...base, ownedTxos: [inputNote, changeNote], unshields: [unshield({})] });
+    expect(entries.find((e) => e.txid === SPEND)).toMatchObject({
+      category: 'unshield',
+      value: -500_000n,
+      recipient: RECIPIENT,
+      unshieldFee: 2_500n,
+    });
+  });
+
+  it('yield-deposit: spend + Unshield to the configured adapter', () => {
+    const entries = reconstructHistory({
+      ...base,
+      ownedTxos: [inputNote, changeNote],
+      unshields: [unshield({ to: ADAPTER })],
+      yieldAdapterAddress: ADAPTER,
+    });
+    expect(entries.find((e) => e.txid === SPEND)).toMatchObject({ category: 'yield-deposit', value: -500_000n });
+  });
+
+  it('yield-withdraw: USDC receive in a tx that also carries the adapter Unshield leg', () => {
+    const WITHDRAW = tx('66');
+    const returned = txo({ tree: 0, position: 9, value: 950_000n, txid: WITHDRAW, origin: 'transact', blockNumber: 40 });
+    const entries = reconstructHistory({
+      ...base,
+      spentNullifiers: [],
+      ownedTxos: [returned],
+      unshields: [unshield({ to: ADAPTER, txid: WITHDRAW, amount: 0n })],
+      yieldAdapterAddress: ADAPTER,
+    });
+    expect(entries.find((e) => e.txid === WITHDRAW)).toMatchObject({ category: 'yield-withdraw', value: 950_000n });
   });
 });

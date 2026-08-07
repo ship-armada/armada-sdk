@@ -9,14 +9,13 @@ import {
   tryDecryptCommitment,
   tryDecryptShield,
   ownedNoteFromTransactNote,
-  reconstructReceiveHistory,
+  reconstructHistory,
   saveScanState,
   loadScanState,
   POOL_V2_EVENT_ABI,
   type EventSource,
   type WalletDecryptors,
   type HistoryEntry,
-  type TokenAddressResolver,
   type ParsedPoolLog,
   type ReceiverNoteKeys,
   type TokenBalance,
@@ -65,6 +64,8 @@ interface SdkContext {
   readonly usdcAddress: `0x${string}`;
   /** Canonical 32-byte hash (no 0x) of USDC — maps owned-note token hashes back to the address. */
   readonly usdcHash: string;
+  /** Yield adapter address (lowercased), when configured — an unshield to it marks a yield op. */
+  readonly yieldAdapterAddress?: string;
   readonly poolAddress: `0x${string}`;
   readonly prover: ProverAdapter;
   readonly artifacts: ArtifactSource;
@@ -189,14 +190,15 @@ class ArmadaWallet implements Wallet {
   }
 
   async history(options?: { sinceBlock?: number }): Promise<HistoryEntry[]> {
-    const resolveToken: TokenAddressResolver = (hash) =>
-      (hash.startsWith('0x') ? hash.slice(2) : hash) === this.ctx.usdcHash ? this.ctx.usdcAddress : undefined;
-    let entries = reconstructReceiveHistory(
-      this.scanState.ownedTxos(),
-      this.scanState.spentNullifiers(),
-      this.keyset.nullifyingKey,
-      resolveToken,
-    );
+    let entries = reconstructHistory({
+      ownedTxos: this.scanState.ownedTxos(),
+      spentNullifiers: this.scanState.spentNullifiers(),
+      unshields: this.scanState.unshieldEvents(),
+      nullifyingKey: this.keyset.nullifyingKey,
+      usdcHash: this.ctx.usdcHash,
+      usdcAddress: this.ctx.usdcAddress,
+      ...(this.ctx.yieldAdapterAddress !== undefined ? { yieldAdapterAddress: this.ctx.yieldAdapterAddress } : {}),
+    });
     if (options?.sinceBlock !== undefined) {
       const since = options.sinceBlock;
       entries = entries.filter((e) => e.blockNumber >= since);
@@ -351,6 +353,9 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
     chainId: config.pool.chainId,
     usdcAddress: config.pool.usdcAddress,
     usdcHash,
+    ...(config.pool.wrappers?.yieldAdapter !== undefined
+      ? { yieldAdapterAddress: config.pool.wrappers.yieldAdapter.toLowerCase() }
+      : {}),
     poolAddress: config.pool.poolAddress,
     prover: config.prover,
     artifacts: config.artifacts,
