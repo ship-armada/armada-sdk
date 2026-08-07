@@ -4,6 +4,7 @@
 import type { CircuitShape } from '../prover/index';
 import type { CommitmentCiphertextV2, ReceiverNoteKeys, TXO } from '../sync/index';
 import type { TokenDataGetter, Chain } from '../core/index';
+import type { TransactionData } from './serialize';
 
 /** Mirrors the relayer `GET /fees` response. */
 export interface FeeQuote {
@@ -81,6 +82,12 @@ export interface TransactCalldata {
  */
 export interface ProofHandle {
   toTransactCalldata(): TransactCalldata;
+  /**
+   * The proved `Transaction` struct itself — for embedding in a WRAPPER call (cross-chain unshield,
+   * yield lend/redeem) via `transactionToTuple` + `Interface.encodeFunctionData`, instead of the bare
+   * `transact()` calldata `toTransactCalldata` produces. Throws once invalidated.
+   */
+  toTransactionData(): TransactionData;
   invalidate(): void;
   readonly isValid: boolean;
   readonly expiresAt?: number;
@@ -172,7 +179,7 @@ export { planTransfer } from './plan';
 export type { PlanTransferParams, TransferOutputRequest, FeeRequest } from './plan';
 
 // transact() calldata serializer (inverse of decodeTransact) — proof G2 swap + Transaction structs.
-export { buildTransactCalldata } from './serialize';
+export { buildTransactCalldata, transactionToTuple } from './serialize';
 export type { TransactionData, TransactionBoundParams } from './serialize';
 
 // prove() orchestration + ProofHandle — witness → artifacts → proof → calldata.

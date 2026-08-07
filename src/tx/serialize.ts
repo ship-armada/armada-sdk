@@ -69,7 +69,14 @@ function proofTuple(p: Groth16Proof): unknown[] {
   ];
 }
 
-function transactionTuple(tx: TransactionData): unknown[] {
+/**
+ * The on-chain `Transaction` struct as an ABI positional tuple (proof G2-swapped, fields b32-encoded).
+ * Exposed so consumers can embed a proved transaction inside a WRAPPER call (e.g.
+ * `atomicCrossChainUnshield(transaction, ...)`, `lendAndShield(transaction, ...)`) via
+ * `Interface.encodeFunctionData` — without re-deriving the swap/encoding. For a bare `transact()` use
+ * `buildTransactCalldata` instead.
+ */
+export function transactionToTuple(tx: TransactionData): unknown[] {
   const bp = tx.boundParams;
   const preimage = tx.unshieldPreimage
     ? [
@@ -93,6 +100,6 @@ function transactionTuple(tx: TransactionData): unknown[] {
  * `value` is 0 (a shielded transaction carries no native value).
  */
 export function buildTransactCalldata(transactions: readonly TransactionData[], poolAddress: `0x${string}`): TransactCalldata {
-  const data = iface.encodeFunctionData('transact', [transactions.map(transactionTuple)]) as `0x${string}`;
+  const data = iface.encodeFunctionData('transact', [transactions.map(transactionToTuple)]) as `0x${string}`;
   return { to: poolAddress, data, value: 0n };
 }
