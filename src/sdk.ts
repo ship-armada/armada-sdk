@@ -340,9 +340,17 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
 
   const usdcTokenData = getTokenDataERC20(config.pool.usdcAddress);
   const usdcHash = getTokenDataHash(usdcTokenData);
+  // Resolve a note's token hash → tokenData for USDC + any configured additional tokens (yield vault
+  // shares, etc.). A hash isn't reversible to an address, so only pre-registered tokens are scannable.
+  const tokenByHash = new Map<string, TokenData>();
+  for (const address of [config.pool.usdcAddress, ...(config.pool.additionalTokens ?? [])]) {
+    const tokenData = getTokenDataERC20(address);
+    tokenByHash.set(getTokenDataHash(tokenData), tokenData);
+  }
   const tokenDataGetter: TokenDataGetter = {
     getTokenDataFromHash: async (_v: unknown, _c: unknown, tokenHash: string): Promise<TokenData> => {
-      if ((tokenHash.startsWith('0x') ? tokenHash.slice(2) : tokenHash) === usdcHash) return usdcTokenData;
+      const tokenData = tokenByHash.get(tokenHash.startsWith('0x') ? tokenHash.slice(2) : tokenHash);
+      if (tokenData !== undefined) return tokenData;
       throw new Error(`createArmadaSdk: unknown token hash ${tokenHash}`);
     },
   };
