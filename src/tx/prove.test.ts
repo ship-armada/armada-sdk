@@ -8,6 +8,7 @@ import { LocalSigner } from '../wallet/local-signer';
 import { UTXOMerkletree } from '../sync/merkletree';
 import { createTransferNote } from '../sync/index';
 import { prove } from './prove';
+import { buildTransactCalldata, transactionToTuple } from './serialize';
 import { decodeTransact } from './decode';
 import type { BuildWitnessParams } from './witness';
 import type { ArtifactSource, ArtifactSet, ProverAdapter, Groth16Proof, CircuitShape } from '../prover/index';
@@ -103,5 +104,22 @@ describe('prove() + ProofHandle (§4.6)', () => {
     handle.invalidate();
     expect(handle.isValid).toBe(false);
     expect(() => handle.toTransactCalldata()).toThrow(/invalidated/);
+  });
+
+  it('exposes the proved Transaction struct for wrapper embedding, then refuses it once invalidated', async () => {
+    // WHY: cross-chain unshield + yield hand-encode the proved Transaction inside a wrapper call
+    // (atomicCrossChainUnshield / lendAndShield) — they need the struct, not just transact() calldata.
+    const artifacts: ArtifactSource = { resolve: async () => DUMMY_ARTIFACTS };
+    const prover: ProverAdapter = { prove: async () => DUMMY_PROOF, verify: async () => true, close: async () => {} };
+    const handle = await prove({ witness: await witnessParams(), artifacts, prover, poolAddress: POOL });
+
+    const tx = handle.toTransactionData();
+    // Re-serializing the exposed struct reproduces the handle's own transact() calldata (self-consistent).
+    expect(buildTransactCalldata([tx], POOL).data).toBe(handle.toTransactCalldata().data);
+    // The ABI tuple is embeddable in a wrapper's Transaction arg (arity: proof, root, nulls, cmts, bound, preimage).
+    expect(transactionToTuple(tx)).toHaveLength(6);
+
+    handle.invalidate();
+    expect(() => handle.toTransactionData()).toThrow(/invalidated/);
   });
 });

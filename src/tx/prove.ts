@@ -30,6 +30,7 @@ class ProvedTransaction implements ProofHandle {
 
   constructor(
     private readonly calldata: TransactCalldata,
+    private readonly transaction: TransactionData,
     expiresAt: number | undefined,
   ) {
     if (expiresAt !== undefined) {
@@ -42,6 +43,13 @@ class ProvedTransaction implements ProofHandle {
       throw new Error('ProofHandle: invalidated — re-plan and re-prove');
     }
     return this.calldata;
+  }
+
+  toTransactionData(): TransactionData {
+    if (!this.valid) {
+      throw new Error('ProofHandle: invalidated — re-plan and re-prove');
+    }
+    return this.transaction;
   }
 
   invalidate(): void {
@@ -72,5 +80,5 @@ export async function prove(params: ProveParams, options?: ProveOptions): Promis
   };
   const calldata = buildTransactCalldata([transaction], params.poolAddress);
 
-  return new ProvedTransaction(calldata, params.expiresAt);
+  return new ProvedTransaction(calldata, transaction, params.expiresAt);
 }
