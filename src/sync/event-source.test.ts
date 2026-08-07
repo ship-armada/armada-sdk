@@ -41,6 +41,16 @@ const EVENTS: DecodedPoolEvents = {
     },
   ],
   nullifiers: [{ tree: 0, nullifier: 42n, blockNumber: 12, txid: `0x${h('ef')}` }],
+  unshields: [
+    {
+      to: '0x1111111111111111111111111111111111111111',
+      tokenData: { tokenType: 0, tokenAddress: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', tokenSubID: '0' },
+      amount: 500_000n,
+      fee: 2_500n,
+      blockNumber: 13,
+      txid: `0x${h('ef')}`,
+    },
+  ],
 };
 
 function jsonResponse(body: unknown, ok = true, status = 200): Response {

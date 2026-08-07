@@ -14,6 +14,7 @@ export const POOL_V2_EVENT_ABI = [
   'event Shield(uint256 treeNumber, uint256 startPosition, tuple(bytes32 npk, tuple(uint8 tokenType, address tokenAddress, uint256 tokenSubID) token, uint120 value)[] commitments, tuple(bytes32[3] encryptedBundle, bytes32 shieldKey)[] shieldCiphertext, uint256[] fees)',
   'event Transact(uint256 treeNumber, uint256 startPosition, bytes32[] hash, tuple(bytes32[4] ciphertext, bytes32 blindedSenderViewingKey, bytes32 blindedReceiverViewingKey, bytes annotationData, bytes memo)[] ciphertext)',
   'event Nullified(uint16 treeNumber, bytes32[] nullifier)',
+  'event Unshield(address to, tuple(uint8 tokenType, address tokenAddress, uint256 tokenSubID) token, uint256 amount, uint256 fee)',
 ] as const;
 
 /** Per-log context the raw event args don't carry. */
@@ -62,6 +63,12 @@ export interface RawNullifiedArgs {
   readonly treeNumber: bigint | number;
   readonly nullifier: readonly string[];
 }
+export interface RawUnshieldArgs {
+  readonly to: string;
+  readonly token: RawTokenData;
+  readonly amount: bigint | number;
+  readonly fee: bigint | number;
+}
 
 // --- decoded output shapes ---
 
@@ -96,16 +103,27 @@ export interface DecodedNullifier extends SpentNullifier {
   readonly txid: string;
 }
 
+/** A public withdrawal to `to` (feeds send/unshield/yield history via its txid). */
+export interface DecodedUnshield {
+  readonly to: string;
+  readonly tokenData: TokenData;
+  readonly amount: bigint;
+  readonly fee: bigint;
+  readonly blockNumber: number;
+  readonly txid: string;
+}
+
 export interface DecodedPoolEvents {
   readonly shields: DecodedShieldCommitment[];
   readonly transacts: DecodedTransactCommitment[];
   readonly nullifiers: DecodedNullifier[];
+  readonly unshields: DecodedUnshield[];
 }
 
 /** A parsed log ready to format: the event name + its decoded args + per-log context. */
 export interface ParsedPoolLog extends LogMeta {
-  readonly name: 'Shield' | 'Transact' | 'Nullified' | string;
-  readonly args: RawShieldArgs | RawTransactArgs | RawNullifiedArgs;
+  readonly name: 'Shield' | 'Transact' | 'Nullified' | 'Unshield' | string;
+  readonly args: RawShieldArgs | RawTransactArgs | RawNullifiedArgs | RawUnshieldArgs;
 }
 
 // Browser-safe helpers (core does not re-export ByteUtils; keep this bundlable).
@@ -193,9 +211,25 @@ export function formatNullifiedEvent(args: RawNullifiedArgs, meta: LogMeta): Dec
   }));
 }
 
+/** Format an Unshield event — one public withdrawal, tied to its transaction. */
+export function formatUnshieldEvent(args: RawUnshieldArgs, meta: LogMeta): DecodedUnshield {
+  return {
+    to: String(args.to),
+    tokenData: {
+      tokenType: Number(args.token.tokenType),
+      tokenAddress: String(args.token.tokenAddress).toLowerCase(),
+      tokenSubID: BigInt(args.token.tokenSubID).toString(),
+    },
+    amount: BigInt(args.amount),
+    fee: BigInt(args.fee),
+    blockNumber: meta.blockNumber,
+    txid: meta.txid,
+  };
+}
+
 /** Dispatch a batch of parsed logs into the aggregated decoded-event set. Unknown names are ignored. */
 export function decodePoolEvents(logs: readonly ParsedPoolLog[]): DecodedPoolEvents {
-  const out: DecodedPoolEvents = { shields: [], transacts: [], nullifiers: [] };
+  const out: DecodedPoolEvents = { shields: [], transacts: [], nullifiers: [], unshields: [] };
   for (const log of logs) {
     const meta: LogMeta = { blockNumber: log.blockNumber, txid: log.txid };
     switch (log.name) {
@@ -208,8 +242,11 @@ export function decodePoolEvents(logs: readonly ParsedPoolLog[]): DecodedPoolEve
       case 'Nullified':
         out.nullifiers.push(...formatNullifiedEvent(log.args as RawNullifiedArgs, meta));
         break;
+      case 'Unshield':
+        out.unshields.push(formatUnshieldEvent(log.args as RawUnshieldArgs, meta));
+        break;
       default:
-        break; // not a pool commitment/nullifier event
+        break; // not a pool commitment/nullifier/unshield event
     }
   }
   return out;

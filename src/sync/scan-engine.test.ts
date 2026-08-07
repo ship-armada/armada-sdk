@@ -40,7 +40,7 @@ const mkShield = (tree: number, position: number, hash: string, value = 0n): Dec
   shieldKey: leafHex(0),
 });
 
-const noEvents = (): DecodedPoolEvents => ({ shields: [], transacts: [], nullifiers: [] });
+const noEvents = (): DecodedPoolEvents => ({ shields: [], transacts: [], nullifiers: [], unshields: [] });
 
 describe('wallet scan orchestrator (§4.4)', () => {
   beforeAll(async () => {

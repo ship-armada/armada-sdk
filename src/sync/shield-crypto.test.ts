@@ -74,7 +74,7 @@ describe('shield-note ownership decryption (§4.4)', () => {
     const commitment = await makeShieldCommitment(receiver);
     const state = new WalletScanState();
     await state.apply(
-      { shields: [commitment], transacts: [], nullifiers: [] },
+      { shields: [commitment], transacts: [], nullifiers: [], unshields: [] },
       {
         transact: async () => undefined,
         shield: (c) => tryDecryptShield(c, receiverKeys(receiver)),

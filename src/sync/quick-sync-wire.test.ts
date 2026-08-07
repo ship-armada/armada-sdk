@@ -62,6 +62,16 @@ const EVENTS: DecodedPoolEvents = {
   nullifiers: [
     { tree: 0, nullifier: 123_456_789_012_345_678_901n, blockNumber: 102, txid: `0x${h('ef')}` },
   ],
+  unshields: [
+    {
+      to: '0x1111111111111111111111111111111111111111',
+      tokenData: { tokenType: 0, tokenAddress: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', tokenSubID: '0' },
+      amount: 750_000n,
+      fee: 3_750n,
+      blockNumber: 103,
+      txid: `0x${h('ef')}`,
+    },
+  ],
 };
 
 describe('quick-sync wire contract', () => {

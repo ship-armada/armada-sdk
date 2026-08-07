@@ -26,7 +26,7 @@ const dummyCt = (): CommitmentCiphertextV2 => ({
 const mkTransact = (tree: number, position: number, hash: string): DecodedTransactCommitment => ({
   tree, position, blockNumber: 100, txid: TXID, hash, ciphertext: dummyCt(),
 });
-const noEvents = (): DecodedPoolEvents => ({ shields: [], transacts: [], nullifiers: [] });
+const noEvents = (): DecodedPoolEvents => ({ shields: [], transacts: [], nullifiers: [], unshields: [] });
 
 async function buildState(): Promise<WalletScanState> {
   const state = new WalletScanState();
