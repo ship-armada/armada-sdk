@@ -10,6 +10,12 @@ export interface PoolConfig {
   readonly poolAddress: `0x${string}`;
   readonly deployBlock: number;
   readonly usdcAddress: `0x${string}`;
+  /**
+   * Extra ERC20s to scan + report balances for beyond USDC (e.g. the yield vault's share token).
+   * The token getter can only resolve a note's hash back to an address for a KNOWN token, so notes
+   * in a token not listed here (nor USDC) are skipped during scan. History stays USDC-scoped.
+   */
+  readonly additionalTokens?: readonly `0x${string}`[];
   readonly wrappers?: { gaslessShield?: `0x${string}`; yieldAdapter?: `0x${string}` };
   readonly cctp?: { domain: number; messenger: `0x${string}` };
 }
