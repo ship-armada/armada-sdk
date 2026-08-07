@@ -18,8 +18,9 @@ const inlineWasmUrl: Plugin = {
     build.onLoad({ filter: /_wasm\.js$/ }, async ({ path }) => {
       let code = await readFile(path, 'utf8')
       const ref = code.match(/new URL\('([^']+_bg\.wasm)', ?import\.meta\.url\)/)
-      if (ref) {
-        const wasmBytes = await readFile(resolve(dirname(path), ref[1]))
+      const wasmFile = ref?.[1]
+      if (ref && wasmFile) {
+        const wasmBytes = await readFile(resolve(dirname(path), wasmFile))
         const dataUrl = `data:application/wasm;base64,${wasmBytes.toString('base64')}`
         code = code.replace(ref[0], `new URL('${dataUrl}')`)
       }
