@@ -93,6 +93,32 @@ describe('buildWitness (§4.6)', () => {
     expect(ok).toBe(true);
   });
 
+  it('appends the unshield as the LAST commitment — npk = recipient, no ciphertext (public output)', async () => {
+    // WHY: the engine pushes UnshieldNoteERC20 (npk=recipient) as the last output and its hash is the
+    // last commitmentsOut; it has no commitmentCiphertext (it's public). A wrong npk / an extra
+    // ciphertext / wrong ordering makes the proof revert on-chain — pin all three deterministically.
+    const { input, merkleRoot } = await makeInput(10n);
+    const recipient = '0x1111111111111111111111111111111111111111' as const;
+    const built = await buildWitness({
+      inputs: [input],
+      outputs: [{ receiverAddress: broadcaster.railgunAddress, value: 1n }], // shielded fee only
+      tokenAddress: USDC, sender: senderCtx(), signer, summary,
+      merkleRoot, treeNumber: 0, chainType: 0, chainId: 31337,
+      unshield: 1,
+      unshieldOutput: { recipient, value: 5n },
+    });
+    const fi = built.formattedInputs;
+    // fee (shielded) + unshield (public) = 2 commitments; unshield is LAST.
+    expect(built.shape.commitments).toBe(2);
+    expect(built.publicInputs.commitmentsOut).toHaveLength(2);
+    expect(fi.npkOut).toHaveLength(2);
+    expect(fi.npkOut[fi.npkOut.length - 1]).toBe(BigInt(recipient)); // unshield npk = recipient address
+    expect(fi.valueOut).toEqual([1n, 5n]); // fee, unshield
+    // Ciphertexts cover ONLY the internal (shielded) output — the unshield carries none.
+    expect(built.boundParams.commitmentCiphertext).toHaveLength(1);
+    expect(built.boundParams.unshield).toBe(1);
+  });
+
   it('fee note (first output) decrypts to the broadcaster; recipient note to the recipient', async () => {
     const { input, merkleRoot } = await makeInput(10n);
     const built = await buildWitness({

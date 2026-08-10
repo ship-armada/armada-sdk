@@ -28,11 +28,21 @@ export interface PlanTransferParams {
   readonly tokenAddress: `0x${string}`;
   readonly outputs: readonly TransferOutputRequest[];
   readonly fee?: FeeRequest;
+  /**
+   * Unshield output — sends `value` to an EVM `recipient` (funds leave the pool). Modelled as the
+   * LAST output commitment (a public `UnshieldNoteERC20`, npk = recipient), so it counts toward the
+   * spend target + circuit shape but carries no ciphertext.
+   */
+  readonly unshield?: { readonly recipient: `0x${string}`; readonly value: bigint };
   /** Per-tree merkle roots (the input notes' tree must have an entry). */
   readonly roots: ReadonlyMap<number, bigint>;
   readonly chainID: bigint;
   readonly minGasPrice?: bigint;
 }
+
+/** Railgun unshield flag (boundParams). NONE = plain transfer; UNSHIELD = a normal unshield. */
+const UNSHIELD_FLAG_NONE = 0;
+const UNSHIELD_FLAG_UNSHIELD = 1;
 
 // Greedy largest-first selection within one tree; returns the covering set or undefined.
 function selectWithinTree(txos: readonly TXO[], target: bigint): { selected: TXO[]; total: bigint } | undefined {
@@ -60,9 +70,10 @@ function selectWithinTree(txos: readonly TXO[], target: bigint): { selected: TXO
 export function planTransfer(params: PlanTransferParams): Plan {
   const outputTotal = params.outputs.reduce((sum, o) => sum + o.value, 0n);
   const feeValue = params.fee?.value ?? 0n;
-  const target = outputTotal + feeValue;
+  const unshieldValue = params.unshield?.value ?? 0n;
+  const target = outputTotal + feeValue + unshieldValue;
   if (target <= 0n) {
-    throw new Error('planTransfer: total output (outputs + fee) must be positive');
+    throw new Error('planTransfer: total output (outputs + fee + unshield) must be positive');
   }
 
   const tokenHash = getTokenDataHash(getTokenDataERC20(params.tokenAddress));
@@ -105,7 +116,9 @@ export function planTransfer(params: PlanTransferParams): Plan {
     ? { toRailgunAddress: params.fee.broadcasterRailgunAddress, value: params.fee.value, tokenAddress: params.tokenAddress }
     : undefined;
 
-  const commitments = outputs.length + (feeOutput ? 1 : 0) + (changeValue > 0n ? 1 : 0);
+  // The unshield is the LAST output commitment (public), so it counts in the circuit shape.
+  const commitments =
+    outputs.length + (feeOutput ? 1 : 0) + (changeValue > 0n ? 1 : 0) + (params.unshield ? 1 : 0);
   const shape: CircuitShape = { nullifiers: best.selected.length, commitments };
 
   const summary: PlanSummary = {
@@ -114,12 +127,13 @@ export function planTransfer(params: PlanTransferParams): Plan {
     outputs,
     changeValue,
     ...(feeOutput ? { feeOutput } : {}),
+    ...(params.unshield ? { unshield: { recipient: params.unshield.recipient, value: params.unshield.value } } : {}),
   };
 
   const boundParams: DecodedBoundParams = {
     treeNumber: best.tree,
     minGasPrice: params.minGasPrice ?? 0n,
-    unshield: 0, // UnshieldType.NONE — a plain transfer
+    unshield: params.unshield ? UNSHIELD_FLAG_UNSHIELD : UNSHIELD_FLAG_NONE,
     chainID: params.chainID,
     adaptContract: ZERO_ADDRESS,
     adaptParams: ZERO_BYTES32,

@@ -7,6 +7,10 @@ export { poseidon, poseidonHex, initPoseidonPromise } from '../../vendor/railgun
 // Notes: commitment hash `getHash(npk, tokenHash, value)` + `getNullifier(nullifyingKey, leafIndex)`.
 export { TransactNote } from '../../vendor/railgun-engine/dist/note/transact-note';
 
+// Unshield output note — npk = recipient EVM address; `.hash` is the (public) unshield commitment,
+// `.preImage` the plaintext {npk, token, value} the contract pays out on. No ciphertext (it's public).
+export { UnshieldNoteERC20 } from '../../vendor/railgun-engine/dist/note/erc20/unshield-note-erc20';
+
 // boundParams hashing (keccak(abi.encode) % SNARK field) for transact public inputs.
 export { hashBoundParamsV2, hashBoundParamsV3 } from '../../vendor/railgun-engine/dist/transaction/bound-params';
 

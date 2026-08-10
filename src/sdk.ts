@@ -263,6 +263,7 @@ class ArmadaWallet implements Wallet {
       tokenAddress: this.ctx.usdcAddress,
       outputs: request.outputs.map((o) => ({ toRailgunAddress: o.to0zk, value: o.amount, ...(o.memo !== undefined ? { memo: o.memo } : {}) })),
       ...(feeValue > 0n ? { fee: { broadcasterRailgunAddress: request.fee.broadcasterRailgunAddress, value: feeValue } } : {}),
+      ...(request.unshield ? { unshield: { recipient: request.unshield.recipient, value: request.unshield.amount } } : {}),
       roots,
       chainID: BigInt(this.ctx.chainId),
     });
@@ -300,10 +301,24 @@ class ArmadaWallet implements Wallet {
           treeNumber: plan.boundParams.treeNumber,
           chainType: ChainType.EVM,
           chainId: this.ctx.chainId,
+          unshield: plan.boundParams.unshield,
+          ...(plan.summary.unshield ? { unshieldOutput: plan.summary.unshield } : {}),
         },
         artifacts: this.ctx.artifacts,
         prover: this.ctx.prover,
         poolAddress: this.ctx.poolAddress,
+        // The public unshield preimage the contract pays out on (npk = recipient EVM address).
+        ...(plan.summary.unshield
+          ? {
+              unshieldPreimage: {
+                npk: BigInt(plan.summary.unshield.recipient),
+                tokenType: 0,
+                tokenAddress: this.ctx.usdcAddress,
+                tokenSubID: 0n,
+                value: plan.summary.unshield.value,
+              },
+            }
+          : {}),
       },
       options,
     );
