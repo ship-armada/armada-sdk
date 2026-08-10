@@ -59,8 +59,14 @@ export interface Wallet {
 
 export interface PlanTransferRequest {
   readonly outputs: readonly { to0zk: string; amount: bigint; memo?: string }[];
-  readonly unshield?: { recipient: `0x${string}`; amount: bigint; adaptParams?: `0x${string}` };
+  readonly unshield?: { recipient: `0x${string}`; amount: bigint; adaptParams?: `0x${string}`; adaptContract?: `0x${string}` };
   readonly fee: FeeQuote;
+  /**
+   * Token being spent. Defaults to the pool's USDC. Set it to spend a non-USDC shielded balance
+   * (e.g. yield vault shares on redeem) — the wallet scans all pool tokens, so any held balance is
+   * spendable. Must match the token of the selected input notes.
+   */
+  readonly tokenAddress?: `0x${string}`;
 }
 
 /** Enrollment factory (SPEC §4.2). rootSecret is the canonical identity; no mnemonic intermediary. */

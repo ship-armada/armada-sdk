@@ -34,11 +34,19 @@ export interface PlanTransferParams {
    * spend target + circuit shape but carries no ciphertext.
    *
    * `adaptParams` binds a destination commitment into `boundParams.adaptParams` (a SNARK public
-   * input) — e.g. the cross-chain-unshield CCTP tuple from `encodeCctpBinding`. Omitted for a plain
-   * same-chain unshield (defaults to `ZERO_BYTES32`). `adaptContract` stays `ZERO_ADDRESS`: this is
-   * an unshield-to-pool, not a relay-adapt cross-contract call.
+   * input) — e.g. the cross-chain-unshield CCTP tuple from `encodeCctpBinding`, or a yield re-shield
+   * binding. Omitted for a plain same-chain unshield (defaults to `ZERO_BYTES32`).
+   *
+   * `adaptContract` is the cross-contract-call target committed by the proof. Defaults to
+   * `ZERO_ADDRESS` (a plain unshield-to-pool). Set it to the adapter address for a relay-adapt call
+   * (e.g. the yield adapter for `lendAndShield`/`redeemAndShield`), where `recipient` is that adapter.
    */
-  readonly unshield?: { readonly recipient: `0x${string}`; readonly value: bigint; readonly adaptParams?: `0x${string}` };
+  readonly unshield?: {
+    readonly recipient: `0x${string}`;
+    readonly value: bigint;
+    readonly adaptParams?: `0x${string}`;
+    readonly adaptContract?: `0x${string}`;
+  };
   /** Per-tree merkle roots (the input notes' tree must have an entry). */
   readonly roots: ReadonlyMap<number, bigint>;
   readonly chainID: bigint;
@@ -140,7 +148,7 @@ export function planTransfer(params: PlanTransferParams): Plan {
     minGasPrice: params.minGasPrice ?? 0n,
     unshield: params.unshield ? UNSHIELD_FLAG_UNSHIELD : UNSHIELD_FLAG_NONE,
     chainID: params.chainID,
-    adaptContract: ZERO_ADDRESS,
+    adaptContract: params.unshield?.adaptContract ?? ZERO_ADDRESS,
     adaptParams: params.unshield?.adaptParams ?? ZERO_BYTES32,
   };
 
