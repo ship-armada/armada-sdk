@@ -263,7 +263,15 @@ class ArmadaWallet implements Wallet {
       tokenAddress: this.ctx.usdcAddress,
       outputs: request.outputs.map((o) => ({ toRailgunAddress: o.to0zk, value: o.amount, ...(o.memo !== undefined ? { memo: o.memo } : {}) })),
       ...(feeValue > 0n ? { fee: { broadcasterRailgunAddress: request.fee.broadcasterRailgunAddress, value: feeValue } } : {}),
-      ...(request.unshield ? { unshield: { recipient: request.unshield.recipient, value: request.unshield.amount } } : {}),
+      ...(request.unshield
+        ? {
+            unshield: {
+              recipient: request.unshield.recipient,
+              value: request.unshield.amount,
+              ...(request.unshield.adaptParams ? { adaptParams: request.unshield.adaptParams } : {}),
+            },
+          }
+        : {}),
       roots,
       chainID: BigInt(this.ctx.chainId),
     });
@@ -302,6 +310,10 @@ class ArmadaWallet implements Wallet {
           chainType: ChainType.EVM,
           chainId: this.ctx.chainId,
           unshield: plan.boundParams.unshield,
+          // adaptContract/adaptParams are SNARK public inputs (bound-params hash + spend signature);
+          // pass the plan's values so a cross-chain unshield's CCTP binding is committed by the proof.
+          adaptContract: plan.boundParams.adaptContract,
+          adaptParams: plan.boundParams.adaptParams,
           ...(plan.summary.unshield ? { unshieldOutput: plan.summary.unshield } : {}),
         },
         artifacts: this.ctx.artifacts,

@@ -32,8 +32,13 @@ export interface PlanTransferParams {
    * Unshield output — sends `value` to an EVM `recipient` (funds leave the pool). Modelled as the
    * LAST output commitment (a public `UnshieldNoteERC20`, npk = recipient), so it counts toward the
    * spend target + circuit shape but carries no ciphertext.
+   *
+   * `adaptParams` binds a destination commitment into `boundParams.adaptParams` (a SNARK public
+   * input) — e.g. the cross-chain-unshield CCTP tuple from `encodeCctpBinding`. Omitted for a plain
+   * same-chain unshield (defaults to `ZERO_BYTES32`). `adaptContract` stays `ZERO_ADDRESS`: this is
+   * an unshield-to-pool, not a relay-adapt cross-contract call.
    */
-  readonly unshield?: { readonly recipient: `0x${string}`; readonly value: bigint };
+  readonly unshield?: { readonly recipient: `0x${string}`; readonly value: bigint; readonly adaptParams?: `0x${string}` };
   /** Per-tree merkle roots (the input notes' tree must have an entry). */
   readonly roots: ReadonlyMap<number, bigint>;
   readonly chainID: bigint;
@@ -136,7 +141,7 @@ export function planTransfer(params: PlanTransferParams): Plan {
     unshield: params.unshield ? UNSHIELD_FLAG_UNSHIELD : UNSHIELD_FLAG_NONE,
     chainID: params.chainID,
     adaptContract: ZERO_ADDRESS,
-    adaptParams: ZERO_BYTES32,
+    adaptParams: params.unshield?.adaptParams ?? ZERO_BYTES32,
   };
 
   return { shape, merkleRoot, summary, boundParams, selectedInputs: best.selected };

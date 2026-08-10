@@ -69,6 +69,20 @@ describe('planTransfer (§4.6)', () => {
     expect(plan.boundParams.unshield).toBe(1); // UNSHIELD flag
   });
 
+  it('binds unshield.adaptParams into boundParams.adaptParams (cross-chain CCTP binding); adaptContract stays zero', () => {
+    const RECIPIENT_EVM = `0x${'ab'.repeat(20)}` as const;
+    const BINDING = `0x${'cd'.repeat(32)}` as const; // e.g. encodeCctpBinding(finalRecipient, domain, maxFee)
+    const plan = planTransfer({
+      ...base,
+      outputs: [],
+      txos: [txo(0, 5n)],
+      unshield: { recipient: RECIPIENT_EVM, value: 5n, adaptParams: BINDING },
+    });
+    expect(plan.boundParams.adaptParams).toBe(BINDING);
+    expect(plan.boundParams.adaptContract).toBe('0x0000000000000000000000000000000000000000');
+    expect(plan.boundParams.unshield).toBe(1);
+  });
+
   it('omits the unshield change commitment on an exact-cover unshield', () => {
     const RECIPIENT_EVM = `0x${'ab'.repeat(20)}` as const;
     const plan = planTransfer({
