@@ -4,6 +4,7 @@
 import {
   poseidon,
   TransactNote,
+  UnshieldNoteERC20,
   hashBoundParamsV2,
   getTokenDataERC20,
   getTokenDataHash,
@@ -60,7 +61,13 @@ export interface BuildWitnessParams {
   readonly chainType: number;
   readonly chainId: number;
   readonly minGasPrice?: bigint;
+  /** UnshieldFlag for boundParams (0 NONE / 1 UNSHIELD / 2 OVERRIDE). */
   readonly unshield?: number;
+  /**
+   * When unshielding: the public output. Built as `UnshieldNoteERC20` (npk = recipient) and appended
+   * as the LAST commitment (no ciphertext — it's public). `unshield` (the flag) must be set alongside.
+   */
+  readonly unshieldOutput?: { readonly recipient: `0x${string}`; readonly value: bigint };
   readonly adaptContract?: `0x${string}`;
   readonly adaptParams?: `0x${string}`;
 }
@@ -138,9 +145,16 @@ export async function buildWitness(params: BuildWitnessParams): Promise<BuiltWit
     ciphertexts.push(ciphertext);
   }
 
-  const npkOut = outNotes.map((n) => n.notePublicKey);
-  const valueOut = outNotes.map((n) => n.value);
-  const commitmentsOut = outNotes.map((n) => n.hash);
+  // The unshield output (if any) is a PUBLIC commitment appended LAST — npk = recipient EVM address,
+  // no ciphertext (it isn't encrypted to anyone). Its hash is `commitmentsOut[last]`, matching the
+  // engine's `allOutputs.push(unshieldNote)` + `commitmentsOut = allOutputs.map(n => n.hash)`.
+  const unshieldNote = params.unshieldOutput
+    ? new UnshieldNoteERC20(params.unshieldOutput.recipient, params.unshieldOutput.value, params.tokenAddress)
+    : undefined;
+
+  const npkOut = [...outNotes.map((n) => n.notePublicKey), ...(unshieldNote ? [unshieldNote.notePublicKey] : [])];
+  const valueOut = [...outNotes.map((n) => n.value), ...(unshieldNote ? [unshieldNote.value] : [])];
+  const commitmentsOut = [...outNotes.map((n) => n.hash), ...(unshieldNote ? [unshieldNote.hash] : [])];
   const nullifiers = params.inputs.map((i) => TransactNote.getNullifier(params.sender.nullifyingKey, i.position));
 
   const chainID = fullNetworkID(params.chainType, params.chainId);
@@ -208,6 +222,6 @@ export async function buildWitness(params: BuildWitnessParams): Promise<BuiltWit
     formattedInputs,
     publicInputs: { merkleRoot: params.merkleRoot, boundParamsHash, nullifiers, commitmentsOut },
     boundParams,
-    shape: { nullifiers: params.inputs.length, commitments: params.outputs.length },
+    shape: { nullifiers: params.inputs.length, commitments: commitmentsOut.length },
   };
 }

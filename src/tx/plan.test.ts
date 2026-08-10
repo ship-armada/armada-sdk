@@ -50,6 +50,38 @@ describe('planTransfer (§4.6)', () => {
     expect(plan.boundParams.adaptParams).toBe(`0x${'00'.repeat(32)}`);
   });
 
+  it('counts the unshield toward the spend target, shape, and boundParams flag', () => {
+    const RECIPIENT_EVM = `0x${'ab'.repeat(20)}` as const;
+    const plan = planTransfer({
+      ...base,
+      outputs: [], // pure unshield: no shielded recipients
+      txos: [txo(0, 10n)],
+      fee: { broadcasterRailgunAddress: BROADCASTER, value: 1n },
+      unshield: { recipient: RECIPIENT_EVM, value: 5n },
+    });
+    // commitments = fee(1) + change(1) + unshield(1)
+    expect(plan.shape.commitments).toBe(3);
+    expect(plan.shape.nullifiers).toBe(1);
+    expect(plan.summary.inputTotal).toBe(10n);
+    expect(plan.summary.changeValue).toBe(4n); // 10 - 5 unshield - 1 fee
+    expect(plan.summary.unshield).toEqual({ recipient: RECIPIENT_EVM, value: 5n });
+    expect(plan.summary.outputs).toEqual([]);
+    expect(plan.boundParams.unshield).toBe(1); // UNSHIELD flag
+  });
+
+  it('omits the unshield change commitment on an exact-cover unshield', () => {
+    const RECIPIENT_EVM = `0x${'ab'.repeat(20)}` as const;
+    const plan = planTransfer({
+      ...base,
+      outputs: [],
+      txos: [txo(0, 5n)],
+      unshield: { recipient: RECIPIENT_EVM, value: 5n },
+    });
+    expect(plan.summary.changeValue).toBe(0n);
+    expect(plan.shape.commitments).toBe(1); // unshield only, no change, no fee
+    expect(plan.boundParams.unshield).toBe(1);
+  });
+
   it('omits the change commitment on an exact spend', () => {
     const plan = planTransfer({
       ...base,
