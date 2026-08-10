@@ -83,6 +83,35 @@ describe('planTransfer (§4.6)', () => {
     expect(plan.boundParams.unshield).toBe(1);
   });
 
+  it('binds unshield.adaptContract into boundParams.adaptContract (relay-adapt / yield adapter)', () => {
+    const ADAPTER = `0x${'ad'.repeat(20)}` as const;
+    const BINDING = `0x${'ef'.repeat(32)}` as const; // e.g. encodeYieldDepositBinding(...)
+    const plan = planTransfer({
+      ...base,
+      outputs: [],
+      txos: [txo(0, 5n)],
+      unshield: { recipient: ADAPTER, value: 5n, adaptContract: ADAPTER, adaptParams: BINDING },
+    });
+    // For a yield lend/redeem the unshield goes TO the adapter, and adaptContract commits it.
+    expect(plan.boundParams.adaptContract).toBe(ADAPTER);
+    expect(plan.boundParams.adaptParams).toBe(BINDING);
+    expect(plan.boundParams.unshield).toBe(1);
+  });
+
+  it('plans a spend in a non-USDC token (multi-token wallets)', () => {
+    // The wallet scans all pool tokens; the spend path must honour a non-USDC tokenAddress
+    // (e.g. yield vault shares on redeem), selecting only that token's notes.
+    const plan = planTransfer({
+      ...base,
+      tokenAddress: DAI,
+      outputs: [{ toRailgunAddress: RECIPIENT, value: 3n }],
+      txos: [txo(0, 6n, DAI_HASH), txo(0, 100n, USDC_HASH, 1)], // the USDC note must be ignored
+    });
+    expect(plan.summary.tokenAddress).toBe(DAI);
+    expect(plan.shape.nullifiers).toBe(1);
+    expect(plan.summary.inputTotal).toBe(6n);
+  });
+
   it('omits the unshield change commitment on an exact-cover unshield', () => {
     const RECIPIENT_EVM = `0x${'ab'.repeat(20)}` as const;
     const plan = planTransfer({

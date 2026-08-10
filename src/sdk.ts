@@ -260,7 +260,8 @@ class ArmadaWallet implements Wallet {
     const feeValue = BigInt(request.fee.schedule['transfer'] ?? '0');
     return planTransfer({
       txos,
-      tokenAddress: this.ctx.usdcAddress,
+      // Defaults to USDC; a caller can spend any pool token (e.g. yield vault shares on redeem).
+      tokenAddress: request.tokenAddress ?? this.ctx.usdcAddress,
       outputs: request.outputs.map((o) => ({ toRailgunAddress: o.to0zk, value: o.amount, ...(o.memo !== undefined ? { memo: o.memo } : {}) })),
       ...(feeValue > 0n ? { fee: { broadcasterRailgunAddress: request.fee.broadcasterRailgunAddress, value: feeValue } } : {}),
       ...(request.unshield
@@ -269,6 +270,7 @@ class ArmadaWallet implements Wallet {
               recipient: request.unshield.recipient,
               value: request.unshield.amount,
               ...(request.unshield.adaptParams ? { adaptParams: request.unshield.adaptParams } : {}),
+              ...(request.unshield.adaptContract ? { adaptContract: request.unshield.adaptContract } : {}),
             },
           }
         : {}),
@@ -294,7 +296,8 @@ class ArmadaWallet implements Wallet {
         witness: {
           inputs,
           outputs,
-          tokenAddress: this.ctx.usdcAddress,
+          // The spent token comes from the plan (defaults to USDC; e.g. yield-share token on redeem).
+          tokenAddress: plan.summary.tokenAddress,
           sender: {
             masterPublicKey: this.keyset.masterPublicKey,
             viewingPublicKey: this.keyset.viewingPublicKey,
@@ -325,7 +328,7 @@ class ArmadaWallet implements Wallet {
               unshieldPreimage: {
                 npk: BigInt(plan.summary.unshield.recipient),
                 tokenType: 0,
-                tokenAddress: this.ctx.usdcAddress,
+                tokenAddress: plan.summary.tokenAddress,
                 tokenSubID: 0n,
                 value: plan.summary.unshield.value,
               },
