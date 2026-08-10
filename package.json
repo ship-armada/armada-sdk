@@ -55,6 +55,11 @@
       "types": "./dist/ops/index.d.ts",
       "import": "./dist/ops/index.js",
       "require": "./dist/ops/index.cjs"
+    },
+    "./prover": {
+      "types": "./dist/prover/index.d.ts",
+      "import": "./dist/prover/index.js",
+      "require": "./dist/prover/index.cjs"
     }
   },
   "scripts": {

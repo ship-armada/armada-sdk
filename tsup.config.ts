@@ -35,6 +35,9 @@ const entry = {
   'wallet/index': 'src/wallet/index.ts',
   'payments/index': 'src/payments/index.ts',
   'ops/index': 'src/ops/index.ts',
+  // Lean prover entry — prover code + snarkjs only, NO vendored engine/core/wasm. A browser Web
+  // Worker imports this (not the 13MB wasm-inlined root) so the worker chunk stays small + bundles fast.
+  'prover/index': 'src/prover/index.ts',
 }
 
 export default defineConfig([
