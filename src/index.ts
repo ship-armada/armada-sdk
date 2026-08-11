@@ -88,6 +88,8 @@ export {
   reconstructHistory,
 } from './sync/index';
 export type { HistoryEntry, HistoryCategory, TokenAddressResolver, ReconstructHistoryInput, SentRecipient } from './sync/index';
+// Scan/balance event surface — consumers subscribe via `wallet.on(...)` and type listeners/unsubscribes.
+export type { SyncEventMap, Unsubscribe } from './sync/index';
 export { deriveKeyset, deriveKeysetFromMnemonic } from './wallet/index';
 export type { Keyset } from './wallet/index';
 export {

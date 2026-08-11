@@ -3,7 +3,7 @@
 
 import type { DecodedBoundParams, PlanSummary, Plan, ProofHandle, FeeQuote } from '../tx/index';
 import type { ProveOptions } from '../prover/index';
-import type { TokenBalance, HistoryEntry } from '../sync/index';
+import type { TokenBalance, HistoryEntry, SyncEventMap, Unsubscribe } from '../sync/index';
 
 export type EddsaSignature = { readonly R8: readonly [bigint, bigint]; readonly S: bigint };
 
@@ -55,6 +55,13 @@ export interface Wallet {
   exportDisclosure(txoRef: string): Promise<Uint8Array>;
   /** Export this wallet's shareable viewing key (Railgun wire format) — grants view-only capability. */
   shareViewingKey(): string;
+  /**
+   * Subscribe to scan/balance events (SPEC §5.2); returns an unsubscribe fn. The typed, multi-listener
+   * replacement for the stock engine's single global balance callback. Per `sync()` that does work:
+   * `scan:started` → `scan:complete`, then `balance:updated` for each token whose balance changed
+   * (a token fully spent emits a zero). `scan:error` fires if the scan throws.
+   */
+  on<K extends keyof SyncEventMap>(event: K, listener: (payload: SyncEventMap[K]) => void): Unsubscribe;
 }
 
 export interface PlanTransferRequest {

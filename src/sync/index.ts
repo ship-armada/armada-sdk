@@ -45,6 +45,10 @@ export interface SyncEventMap {
   };
 }
 
+// Typed scan/balance event bus — a wallet owns one and emits on sync().
+export { SyncEmitter } from './emitter';
+export type { Unsubscribe } from './emitter';
+
 // Ranged log fetch.
 export { fetchLogsRanged } from './ranged-fetch';
 export type { GetLogsFn, RangedFetchOptions } from './ranged-fetch';

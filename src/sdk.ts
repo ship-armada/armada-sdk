@@ -6,6 +6,7 @@ import {
   WalletScanState,
   RpcEventSource,
   IndexerEventSource,
+  SyncEmitter,
   tryDecryptCommitment,
   tryDecryptSentCommitment,
   tryDecryptShield,
@@ -15,6 +16,8 @@ import {
   loadScanState,
   POOL_V2_EVENT_ABI,
   type EventSource,
+  type SyncEventMap,
+  type Unsubscribe,
   type WalletDecryptors,
   type HistoryEntry,
   type ParsedPoolLog,
@@ -67,6 +70,9 @@ interface SdkContext {
   readonly usdcAddress: `0x${string}`;
   /** Canonical 32-byte hash (no 0x) of USDC — maps owned-note token hashes back to the address. */
   readonly usdcHash: string;
+  /** hash (no 0x) → TokenData for every registered token (USDC + additionalTokens) — resolves a
+   *  balance's tokenHash back to its address for `balance:updated` emission. */
+  readonly tokenByHash: ReadonlyMap<string, TokenData>;
   /** Yield adapter address (lowercased), when configured — an unshield to it marks a yield op. */
   readonly yieldAdapterAddress?: string;
   readonly poolAddress: `0x${string}`;
@@ -92,6 +98,10 @@ class ArmadaWallet implements Wallet {
   private scanState = new WalletScanState();
   private syncedThrough: number;
   private hydrated = false;
+  private readonly emitter = new SyncEmitter();
+  // Last-emitted per-token balance (keyed by tokenHash, no 0x) so a sync only pushes `balance:updated`
+  // for tokens that actually changed — the diff that lets consumers avoid redundant re-reads.
+  private readonly lastBalances = new Map<string, { spendable: bigint; pending: bigint }>();
 
   constructor(
     private readonly keyset: Keyset,
@@ -186,34 +196,73 @@ class ArmadaWallet implements Wallet {
     }
   }
 
+  on<K extends keyof SyncEventMap>(event: K, listener: (payload: SyncEventMap[K]) => void): Unsubscribe {
+    return this.emitter.on(event, listener);
+  }
+
   async sync(): Promise<{ fromBlock: number; syncedThrough: number; scanned: boolean }> {
     await this.hydrate();
     const head = await this.ctx.provider.getBlockNumber();
     const { fromBlock, scanned } = planSyncWindow(this.syncedThrough, head);
     if (!scanned) return { fromBlock, syncedThrough: this.syncedThrough, scanned: false };
 
-    const from = fromBlock;
-    const decryptors = this.decryptors();
-    // Only the indexer source is untrusted; snapshot so we can roll back a bad batch.
-    const usingIndexer = this.ctx.eventSource !== this.ctx.rpcEventSource;
-    const rollback = usingIndexer ? this.scanState.snapshot() : undefined;
+    this.emitter.emit('scan:started', { fromBlock, toBlock: head });
+    try {
+      const from = fromBlock;
+      const decryptors = this.decryptors();
+      // Only the indexer source is untrusted; snapshot so we can roll back a bad batch.
+      const usingIndexer = this.ctx.eventSource !== this.ctx.rpcEventSource;
+      const rollback = usingIndexer ? this.scanState.snapshot() : undefined;
 
-    await this.applyToHead(from, head, decryptors);
+      await this.applyToHead(from, head, decryptors);
 
-    if (usingIndexer) {
-      try {
-        await this.verifyCurrentRoot(head);
-      } catch (err) {
-        if (!(err instanceof RootMismatchError)) throw err;
-        // Indexer served a tree that doesn't match chain — discard it and re-scan from RPC (truth).
-        this.scanState = WalletScanState.restore(rollback!);
-        await this.applyBatch(this.ctx.rpcEventSource, from, head, decryptors);
+      if (usingIndexer) {
+        try {
+          await this.verifyCurrentRoot(head);
+        } catch (err) {
+          if (!(err instanceof RootMismatchError)) throw err;
+          // Indexer served a tree that doesn't match chain — discard it and re-scan from RPC (truth).
+          this.scanState = WalletScanState.restore(rollback!);
+          await this.applyBatch(this.ctx.rpcEventSource, from, head, decryptors);
+        }
       }
-    }
 
-    this.syncedThrough = head;
-    await saveScanState(this.ctx.storage, this.keyset.railgunAddress, this.scanState, head);
-    return { fromBlock, syncedThrough: head, scanned: true };
+      this.syncedThrough = head;
+      await saveScanState(this.ctx.storage, this.keyset.railgunAddress, this.scanState, head);
+      this.emitter.emit('scan:complete', { syncedThrough: head });
+      this.emitBalanceUpdates(head);
+      return { fromBlock, syncedThrough: head, scanned: true };
+    } catch (err) {
+      this.emitter.emit('scan:error', { error: err instanceof Error ? err : new Error(String(err)) });
+      throw err;
+    }
+  }
+
+  // Push `balance:updated` for each token whose (spendable, pending) changed since the last emit —
+  // including a token fully spent (drops out of `balances()`, so we emit a zero). Unregistered tokens
+  // (unknown hash → no address) are skipped. First sync after load emits the baseline for held tokens.
+  private emitBalanceUpdates(head: number): void {
+    const balances = this.scanState.balances(this.keyset.nullifyingKey, { currentBlock: head, finalityThreshold: 0 });
+    const seen = new Set<string>();
+    for (const b of balances) {
+      seen.add(b.tokenHash);
+      const prev = this.lastBalances.get(b.tokenHash);
+      if (prev !== undefined && prev.spendable === b.spendable && prev.pending === b.pending) continue;
+      this.lastBalances.set(b.tokenHash, { spendable: b.spendable, pending: b.pending });
+      this.emitTokenBalance(b.tokenHash, b.spendable, b.pending);
+    }
+    for (const [tokenHash, prev] of this.lastBalances) {
+      if (seen.has(tokenHash) || (prev.spendable === 0n && prev.pending === 0n)) continue;
+      this.lastBalances.set(tokenHash, { spendable: 0n, pending: 0n });
+      this.emitTokenBalance(tokenHash, 0n, 0n);
+    }
+  }
+
+  private emitTokenBalance(tokenHash: string, spendable: bigint, pending: bigint): void {
+    const key = tokenHash.startsWith('0x') ? tokenHash.slice(2) : tokenHash;
+    const tokenData = this.ctx.tokenByHash.get(key);
+    if (tokenData === undefined) return; // unregistered token — can't resolve an address to emit
+    this.emitter.emit('balance:updated', { tokenAddress: tokenData.tokenAddress as `0x${string}`, spendable, pending });
   }
 
   async balances(): Promise<TokenBalance[]> {
@@ -424,6 +473,7 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
     chainId: config.pool.chainId,
     usdcAddress: config.pool.usdcAddress,
     usdcHash,
+    tokenByHash,
     ...(config.pool.wrappers?.yieldAdapter !== undefined
       ? { yieldAdapterAddress: config.pool.wrappers.yieldAdapter.toLowerCase() }
       : {}),
