@@ -42,7 +42,7 @@ export interface SyncEventMap {
     tokenAddress: `0x${string}`;
     value: bigint;
     memo?: string;
-    senderRailgunAddress?: string;
+    senderShieldedAddress?: string;
   };
 }
 

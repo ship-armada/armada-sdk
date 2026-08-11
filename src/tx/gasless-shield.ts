@@ -77,9 +77,9 @@ export interface GaslessShieldInput {
   readonly deadline: bigint;
   readonly nonce: bigint;
   /** The user's own shielded deposit. */
-  readonly userShield: { readonly railgunAddress: string; readonly amount: bigint; readonly tokenAddress: string };
+  readonly userShield: { readonly shieldedAddress: string; readonly amount: bigint; readonly tokenAddress: string };
   /** The relayer's fee note (a shield to the broadcaster's 0zk). */
-  readonly feeShield: { readonly railgunAddress: string; readonly amount: bigint; readonly tokenAddress: string };
+  readonly feeShield: { readonly shieldedAddress: string; readonly amount: bigint; readonly tokenAddress: string };
 }
 
 /**

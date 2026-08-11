@@ -22,7 +22,7 @@ const roots = new Map<number, bigint>([[0, 111n], [1, 222n]]);
 
 const base = {
   tokenAddress: USDC,
-  outputs: [{ toRailgunAddress: RECIPIENT, value: 3n }],
+  outputs: [{ toShieldedAddress: RECIPIENT, value: 3n }],
   roots,
   chainID: 31337n,
 };
@@ -32,7 +32,7 @@ describe('planTransfer (§4.6)', () => {
     const plan = planTransfer({
       ...base,
       txos: [txo(0, 6n, USDC_HASH, 0), txo(0, 4n, USDC_HASH, 1)],
-      fee: { broadcasterRailgunAddress: BROADCASTER, value: 1n },
+      fee: { broadcasterShieldedAddress: BROADCASTER, value: 1n },
     });
     // Largest-first: the single 6-note covers 3+1, so only 1 input.
     expect(plan.shape.nullifiers).toBe(1);
@@ -40,8 +40,8 @@ describe('planTransfer (§4.6)', () => {
     expect(plan.shape.commitments).toBe(3);
     expect(plan.summary.inputTotal).toBe(6n);
     expect(plan.summary.changeValue).toBe(2n); // 6 - 3 - 1
-    expect(plan.summary.outputs).toEqual([{ toRailgunAddress: RECIPIENT, value: 3n, tokenAddress: USDC }]);
-    expect(plan.summary.feeOutput).toEqual({ toRailgunAddress: BROADCASTER, value: 1n, tokenAddress: USDC });
+    expect(plan.summary.outputs).toEqual([{ toShieldedAddress: RECIPIENT, value: 3n, tokenAddress: USDC }]);
+    expect(plan.summary.feeOutput).toEqual({ toShieldedAddress: BROADCASTER, value: 1n, tokenAddress: USDC });
     expect(plan.merkleRoot).toBe(111n);
     expect(plan.boundParams.treeNumber).toBe(0);
     expect(plan.boundParams.unshield).toBe(0);
@@ -56,7 +56,7 @@ describe('planTransfer (§4.6)', () => {
       ...base,
       outputs: [], // pure unshield: no shielded recipients
       txos: [txo(0, 10n)],
-      fee: { broadcasterRailgunAddress: BROADCASTER, value: 1n },
+      fee: { broadcasterShieldedAddress: BROADCASTER, value: 1n },
       unshield: { recipient: RECIPIENT_EVM, value: 5n },
     });
     // commitments = fee(1) + change(1) + unshield(1)
@@ -104,7 +104,7 @@ describe('planTransfer (§4.6)', () => {
     const plan = planTransfer({
       ...base,
       tokenAddress: DAI,
-      outputs: [{ toRailgunAddress: RECIPIENT, value: 3n }],
+      outputs: [{ toShieldedAddress: RECIPIENT, value: 3n }],
       txos: [txo(0, 6n, DAI_HASH), txo(0, 100n, USDC_HASH, 1)], // the USDC note must be ignored
     });
     expect(plan.summary.tokenAddress).toBe(DAI);
@@ -129,7 +129,7 @@ describe('planTransfer (§4.6)', () => {
     const plan = planTransfer({
       ...base,
       txos: [txo(0, 4n)],
-      fee: { broadcasterRailgunAddress: BROADCASTER, value: 1n },
+      fee: { broadcasterShieldedAddress: BROADCASTER, value: 1n },
     });
     expect(plan.summary.changeValue).toBe(0n);
     expect(plan.shape.commitments).toBe(2); // recipient + fee, no change
@@ -145,7 +145,7 @@ describe('planTransfer (§4.6)', () => {
   it('accumulates multiple inputs when no single note covers the spend', () => {
     const plan = planTransfer({
       ...base,
-      outputs: [{ toRailgunAddress: RECIPIENT, value: 5n }],
+      outputs: [{ toShieldedAddress: RECIPIENT, value: 5n }],
       txos: [txo(0, 2n, USDC_HASH, 0), txo(0, 2n, USDC_HASH, 1), txo(0, 2n, USDC_HASH, 2)],
     });
     expect(plan.shape.nullifiers).toBe(3);
@@ -157,7 +157,7 @@ describe('planTransfer (§4.6)', () => {
     expect(() =>
       planTransfer({
         ...base,
-        outputs: [{ toRailgunAddress: RECIPIENT, value: 5n }],
+        outputs: [{ toShieldedAddress: RECIPIENT, value: 5n }],
         txos: [txo(0, 3n), txo(1, 3n)], // neither tree alone covers 5
       }),
     ).toThrow(InsufficientBalanceError);
@@ -166,7 +166,7 @@ describe('planTransfer (§4.6)', () => {
   it('prefers the tree that needs the fewest inputs', () => {
     const plan = planTransfer({
       ...base,
-      outputs: [{ toRailgunAddress: RECIPIENT, value: 5n }],
+      outputs: [{ toShieldedAddress: RECIPIENT, value: 5n }],
       txos: [txo(0, 10n), txo(1, 3n, USDC_HASH, 0), txo(1, 3n, USDC_HASH, 1)],
     });
     // Tree 0 covers with 1 input; tree 1 would need 2 → pick tree 0.
@@ -186,7 +186,7 @@ describe('planTransfer (§4.6)', () => {
       planTransfer({
         ...base,
         txos: [txo(0, 3n)],
-        fee: { broadcasterRailgunAddress: BROADCASTER, value: 1n }, // needs 4, have 3
+        fee: { broadcasterShieldedAddress: BROADCASTER, value: 1n }, // needs 4, have 3
       }),
     ).toThrow(InsufficientBalanceError);
   });
@@ -196,7 +196,7 @@ describe('planTransfer (§4.6)', () => {
     const plan = planTransfer({
       ...base,
       txos: [big, txo(0, 4n, USDC_HASH, 1)],
-      fee: { broadcasterRailgunAddress: BROADCASTER, value: 1n },
+      fee: { broadcasterShieldedAddress: BROADCASTER, value: 1n },
     });
     // 3 + 1 fee covered by the single 6-note.
     expect(plan.selectedInputs).toEqual([big]);

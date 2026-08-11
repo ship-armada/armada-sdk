@@ -8,7 +8,7 @@ import type { SentOutput } from './scan-engine';
 
 /** A recipient output of one of the wallet's own sends (recovered sender-side). */
 export interface SentRecipient {
-  readonly recipientRailgunAddress: string;
+  readonly recipientShieldedAddress: string;
   readonly value: bigint;
   readonly memo?: string;
 }
@@ -41,7 +41,7 @@ export interface HistoryEntry {
   /** Public recipient address (unshield entries). */
   readonly recipient?: string;
   /** Sender's 0zk, if they disclosed it (transfer receives). */
-  readonly senderRailgunAddress?: string;
+  readonly senderShieldedAddress?: string;
   /** Recipient outputs of a send (transfer-sent), recovered sender-side — recipient 0zk + amount + memo. */
   readonly sentOutputs?: readonly SentRecipient[];
   readonly memo?: string;
@@ -143,7 +143,7 @@ export function reconstructReceiveHistory(
       tokenAddress,
       value: txo.value,
       ...(txo.memo !== undefined ? { memo: txo.memo } : {}),
-      ...(txo.senderRailgunAddress !== undefined ? { senderRailgunAddress: txo.senderRailgunAddress } : {}),
+      ...(txo.senderShieldedAddress !== undefined ? { senderShieldedAddress: txo.senderShieldedAddress } : {}),
     });
   }
   return entries.sort(sortEntries);
@@ -251,7 +251,7 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
         .reduce((acc, o) => acc + o.value, 0n);
       const feeField = broadcasterFee > 0n ? { broadcasterFee } : {};
       const recipients: SentRecipient[] = transfers.map((o) => ({
-        recipientRailgunAddress: o.recipientRailgunAddress,
+        recipientShieldedAddress: o.recipientShieldedAddress,
         value: o.value,
         ...(o.memo !== undefined ? { memo: o.memo } : {}),
       }));
@@ -292,7 +292,7 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
         value: r.value,
         ...(r.shieldFee !== undefined ? { shieldFee: r.shieldFee } : {}),
         ...(r.memo !== undefined ? { memo: r.memo } : {}),
-        ...(r.senderRailgunAddress !== undefined ? { senderRailgunAddress: r.senderRailgunAddress } : {}),
+        ...(r.senderShieldedAddress !== undefined ? { senderShieldedAddress: r.senderShieldedAddress } : {}),
       });
     }
   }

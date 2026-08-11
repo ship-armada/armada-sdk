@@ -54,7 +54,7 @@ describe('buildWitness (§4.6)', () => {
     viewingPrivateKey: sender.viewingPrivateKey,
     nullifyingKey: sender.nullifyingKey,
     spendingPublicKey: sender.spendingPublicKey,
-    senderAddress: sender.railgunAddress,
+    senderAddress: sender.shieldedAddress,
   });
   const summary: PlanSummary = { tokenAddress: USDC, inputTotal: 10n, outputs: [], changeValue: 0n };
 
@@ -64,9 +64,9 @@ describe('buildWitness (§4.6)', () => {
       inputs: [input],
       // Fee-first ordering (Spike 2): broadcaster fee, then recipient, then change back to sender.
       outputs: [
-        { receiverAddress: broadcaster.railgunAddress, value: 1n },
-        { receiverAddress: recipient.railgunAddress, value: 6n },
-        { receiverAddress: sender.railgunAddress, value: 3n },
+        { receiverAddress: broadcaster.shieldedAddress, value: 1n },
+        { receiverAddress: recipient.shieldedAddress, value: 6n },
+        { receiverAddress: sender.shieldedAddress, value: 3n },
       ],
       tokenAddress: USDC, sender: senderCtx(), signer, summary,
       merkleRoot, treeNumber: 0, chainType: 0, chainId: 31337,
@@ -101,7 +101,7 @@ describe('buildWitness (§4.6)', () => {
     const recipient = '0x1111111111111111111111111111111111111111' as const;
     const built = await buildWitness({
       inputs: [input],
-      outputs: [{ receiverAddress: broadcaster.railgunAddress, value: 1n }], // shielded fee only
+      outputs: [{ receiverAddress: broadcaster.shieldedAddress, value: 1n }], // shielded fee only
       tokenAddress: USDC, sender: senderCtx(), signer, summary,
       merkleRoot, treeNumber: 0, chainType: 0, chainId: 31337,
       unshield: 1,
@@ -124,9 +124,9 @@ describe('buildWitness (§4.6)', () => {
     const built = await buildWitness({
       inputs: [input],
       outputs: [
-        { receiverAddress: broadcaster.railgunAddress, value: 1n },
-        { receiverAddress: recipient.railgunAddress, value: 6n },
-        { receiverAddress: sender.railgunAddress, value: 3n },
+        { receiverAddress: broadcaster.shieldedAddress, value: 1n },
+        { receiverAddress: recipient.shieldedAddress, value: 6n },
+        { receiverAddress: sender.shieldedAddress, value: 3n },
       ],
       tokenAddress: USDC, sender: senderCtx(), signer, summary,
       merkleRoot, treeNumber: 0, chainType: 0, chainId: 31337,
@@ -152,7 +152,7 @@ describe('buildWitness (§4.6)', () => {
     const { input, merkleRoot } = await makeInput(5n);
     const built = await buildWitness({
       inputs: [input],
-      outputs: [{ receiverAddress: recipient.railgunAddress, value: 5n }],
+      outputs: [{ receiverAddress: recipient.shieldedAddress, value: 5n }],
       tokenAddress: USDC, sender: senderCtx(), signer, summary,
       merkleRoot, treeNumber: 0, chainType: 0, chainId: 31337,
     });

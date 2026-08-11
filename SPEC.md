@@ -68,7 +68,7 @@ acceptance criterion ("this hack no longer exists") for the phase that owns it.
 | `NETWORK_CONFIG` monkey-patch (no register-custom-network API; Sepolia entry neutralized with chainId −1) | `apps/armada-interface/src/lib/railgun/network.ts`, `scripts/check_relayer_railgun_balance.ts` | §4.1 config model, Phase 2 |
 | `overrideArtifact()` injection to bypass IPFS download + hash whitelist | `apps/armada-interface/src/lib/railgun/artifacts.ts`, `lib/sdk/armada-artifacts.ts` | §4.5 artifact model, Phase 2 |
 | POI dummy interfaces / stubs to prevent crashes | `apps/armada-interface/src/lib/railgun/init.ts`, `lib/sdk/init.ts`, `scripts/check_relayer_railgun_balance.ts` | POI dropped entirely, Phase 1 |
-| BIP-39 mnemonic shim for rootSecret enrollment | `apps/armada-interface/src/lib/railgun/wallet.ts` | §4.2, Phase 2 |
+| ~~BIP-39 mnemonic shim for rootSecret enrollment~~ | ~~`kdf.ts` `deriveInternalMnemonic`~~ (deleted — identity is `deriveKeyset(rootSecret)`) | §4.2 — **done** |
 | Decrypted note plaintext at rest; lock-time cleanup via non-exported SDK method | `wallet.ts` `lockWallet` → `clearDecryptedBalancesAllTXIDVersions` | §4.3 storage encryption, Phase 2 |
 | `yieldToPaint()` frame-yield hack; 20–30 s main-thread proof blocking | `unshield.ts`, `transfer.ts` | §4.5 worker prover, Phase 2 |
 | Silent proof-cache contract (generate/populate must repeat byte-identical args or throw) | `unshield.ts`, `transfer.ts` | §4.6 ProofHandle, Phase 2 |
@@ -343,14 +343,15 @@ Requirements:
 - `walletId` derivation stays deterministic per (rootSecret, derivationIndex) so relayer restart
   recovery keeps working.
 
-> **Deferred cleanup — rename `railgunAddress` → `shieldedAddress`.** The public `Wallet` / `Keyset`
-> identity field is currently named `railgunAddress` (carried from the vendored engine). The value is
-> the 0zk bech32m shielded address; there is no technical reason for the `railgun` name on the *public*
-> `@armada/sdk` surface. This does **not** violate the emissions-only naming rule (it's an internal API
-> identifier, not a runtime emission), but for a clean SDK it should be renamed — SDK public field +
-> the interface's `getRailgunAddress()` / `railgunWalletId` / `activeRailgunWalletIdAtom`. Deferred to a
-> scoped rename pass so it doesn't tangle with the engine-teardown diffs. Vendored engine internals keep
-> their names (licensed forked code).
+> **Naming cleanup — `railgunAddress` → `shieldedAddress` (done, SDK side).** The public identity
+> fields carried from the vendored engine — `Keyset.railgunAddress`, `Wallet.railgunAddress`,
+> `HistoryEntry.recipient/senderRailgunAddress`, `PlanSummary.toRailgunAddress`,
+> `FeeRequest.broadcasterRailgunAddress`, `ViewOnlyIdentity.railgunAddress` — are renamed to the
+> `shieldedAddress` family. The value is the 0zk bech32m shielded address; there was no reason for the
+> `railgun` name on the *public* `@armada/sdk` surface. This never violated the emissions-only naming
+> rule (internal API identifier, not a runtime emission) — it's purely a clean-API rename. Interface
+> consumers (`getRailgunAddress()` / `railgunWalletId` / `activeRailgunWalletIdAtom`) migrate in a
+> follow-on interface PR. Vendored engine internals keep their names (licensed forked code).
 
 #### 4.2.1 Custody boundary — `SpendSigner`
 

@@ -20,7 +20,7 @@ interface KeysetVector {
     spendingPrivateKey: string;
     viewingPublicKey: string;
     viewingPrivateKey: string;
-    railgunAddress: string;
+    shieldedAddress: string;
   };
 }
 const VECTORS_PATH = join(dirname(fileURLToPath(import.meta.url)), '../../test/vectors/keyset-vectors.json');
@@ -74,7 +74,7 @@ describe('deriveKeyset — parity vs keyset-vectors.json (closes the Phase 1 def
       expect(bytesToHex(ks.spendingPrivateKey)).toBe(v.keyset.spendingPrivateKey);
       expect(bytesToHex(ks.viewingPublicKey)).toBe(v.keyset.viewingPublicKey);
       expect(bytesToHex(ks.viewingPrivateKey)).toBe(v.keyset.viewingPrivateKey);
-      expect(ks.railgunAddress).toBe(v.keyset.railgunAddress);
+      expect(ks.shieldedAddress).toBe(v.keyset.shieldedAddress);
     });
   }
 

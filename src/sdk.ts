@@ -159,8 +159,8 @@ class ArmadaWallet implements Wallet {
     this.syncedThrough = creationBlock - 1;
   }
 
-  get railgunAddress(): string {
-    return this.keyset.railgunAddress;
+  get shieldedAddress(): string {
+    return this.keyset.shieldedAddress;
   }
   get canSpend(): boolean {
     return this.signer !== undefined;
@@ -176,7 +176,7 @@ class ArmadaWallet implements Wallet {
   // Restore persisted scan state on first use so we resume instead of rescanning from genesis.
   private async hydrate(): Promise<void> {
     if (this.hydrated) return;
-    const persisted = await loadScanState(this.ctx.storage, this.keyset.railgunAddress);
+    const persisted = await loadScanState(this.ctx.storage, this.keyset.shieldedAddress);
     if (persisted !== undefined && persisted.syncedThrough > this.syncedThrough) {
       this.scanState = persisted.state;
       this.syncedThrough = persisted.syncedThrough;
@@ -203,7 +203,7 @@ class ArmadaWallet implements Wallet {
           blockNumber: c.blockNumber,
           tokenHash: note.tokenHash,
           value: note.value,
-          recipientRailgunAddress: encodeAddress(note.receiverAddressData),
+          recipientShieldedAddress: encodeAddress(note.receiverAddressData),
           outputType,
           ...(note.memoText !== undefined && note.memoText !== '' ? { memo: note.memoText } : {}),
         };
@@ -310,7 +310,7 @@ class ArmadaWallet implements Wallet {
       if (qs !== null) this.ctx.telemetry?.emit(qs.event, qs.data as unknown as Readonly<Record<string, unknown>>);
 
       this.syncedThrough = head;
-      await saveScanState(this.ctx.storage, this.keyset.railgunAddress, this.scanState, head);
+      await saveScanState(this.ctx.storage, this.keyset.shieldedAddress, this.scanState, head);
       this.emitter.emit('scan:complete', { syncedThrough: head });
       this.emitBalanceUpdates(head);
       this.emitReceivedNotes();
@@ -343,7 +343,7 @@ class ArmadaWallet implements Wallet {
         tokenAddress: tokenData.tokenAddress as `0x${string}`,
         value: txo.value,
         ...(txo.memo !== undefined ? { memo: txo.memo } : {}),
-        ...(txo.senderRailgunAddress !== undefined ? { senderRailgunAddress: txo.senderRailgunAddress } : {}),
+        ...(txo.senderShieldedAddress !== undefined ? { senderShieldedAddress: txo.senderShieldedAddress } : {}),
       });
     }
   }
@@ -427,8 +427,8 @@ class ArmadaWallet implements Wallet {
       txos,
       // Defaults to USDC; a caller can spend any pool token (e.g. yield vault shares on redeem).
       tokenAddress: request.tokenAddress ?? this.ctx.usdcAddress,
-      outputs: request.outputs.map((o) => ({ toRailgunAddress: o.to0zk, value: o.amount, ...(o.memo !== undefined ? { memo: o.memo } : {}) })),
-      ...(feeValue > 0n ? { fee: { broadcasterRailgunAddress: request.fee.broadcasterRailgunAddress, value: feeValue } } : {}),
+      outputs: request.outputs.map((o) => ({ toShieldedAddress: o.to0zk, value: o.amount, ...(o.memo !== undefined ? { memo: o.memo } : {}) })),
+      ...(feeValue > 0n ? { fee: { broadcasterShieldedAddress: request.fee.broadcasterShieldedAddress, value: feeValue } } : {}),
       ...(request.unshield
         ? {
             unshield: {
@@ -452,9 +452,9 @@ class ArmadaWallet implements Wallet {
     });
     // Emit order (Spike 2): broadcaster fee note FIRST, then recipients, then change back to self.
     const outputs: WitnessOutputRequest[] = [];
-    if (plan.summary.feeOutput) outputs.push({ receiverAddress: plan.summary.feeOutput.toRailgunAddress, value: plan.summary.feeOutput.value });
-    for (const o of plan.summary.outputs) outputs.push({ receiverAddress: o.toRailgunAddress, value: o.value, ...(o.memo !== undefined ? { memo: o.memo } : {}) });
-    if (plan.summary.changeValue > 0n) outputs.push({ receiverAddress: this.keyset.railgunAddress, value: plan.summary.changeValue });
+    if (plan.summary.feeOutput) outputs.push({ receiverAddress: plan.summary.feeOutput.toShieldedAddress, value: plan.summary.feeOutput.value });
+    for (const o of plan.summary.outputs) outputs.push({ receiverAddress: o.toShieldedAddress, value: o.value, ...(o.memo !== undefined ? { memo: o.memo } : {}) });
+    if (plan.summary.changeValue > 0n) outputs.push({ receiverAddress: this.keyset.shieldedAddress, value: plan.summary.changeValue });
 
     return prove(
       {
@@ -469,7 +469,7 @@ class ArmadaWallet implements Wallet {
             viewingPrivateKey: this.keyset.viewingPrivateKey,
             nullifyingKey: this.keyset.nullifyingKey,
             spendingPublicKey: this.keyset.spendingPublicKey,
-            senderAddress: this.keyset.railgunAddress,
+            senderAddress: this.keyset.shieldedAddress,
           },
           signer: this.signer,
           summary: plan.summary,
@@ -627,7 +627,7 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
         viewingPrivateKey,
         nullifyingKey: identity.nullifyingKey,
         masterPublicKey: identity.masterPublicKey,
-        railgunAddress: identity.railgunAddress,
+        shieldedAddress: identity.shieldedAddress,
       };
       return new ArmadaWallet(keyset, opts.creationBlock, undefined, ctx);
     },
