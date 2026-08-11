@@ -50,4 +50,28 @@ describe('fetchLogsRanged', () => {
   it('handles a single-block range', async () => {
     expect(await fetchLogsRanged(fakeGetLogs(), { fromBlock: 7, toBlock: 7 })).toEqual([7]);
   });
+
+  it('reports progress at each window boundary (the covered-through block)', async () => {
+    const covered: number[] = [];
+    await fetchLogsRanged(fakeGetLogs(), {
+      fromBlock: 100,
+      toBlock: 250,
+      maxRange: 50,
+      onProgress: (through) => covered.push(through),
+    });
+    // Windows [100,149], [150,199], [200,249], [250,250] → progress fires at each window end.
+    expect(covered).toEqual([149, 199, 249, 250]);
+  });
+
+  it('reports progress once per top-level window even when bisecting under a range cap', async () => {
+    const covered: number[] = [];
+    await fetchLogsRanged(fakeGetLogs(10), {
+      fromBlock: 0,
+      toBlock: 99,
+      maxRange: 100, // one top-level window, bisected internally by the cap
+      onProgress: (through) => covered.push(through),
+    });
+    // Bisection is an internal recovery detail — progress is reported at the window grain, not per split.
+    expect(covered).toEqual([99]);
+  });
 });

@@ -170,26 +170,30 @@ class ArmadaWallet implements Wallet {
     };
   }
 
-  // Apply a source's batch for [from, to] and report how far it covered.
-  private async applyBatch(source: EventSource, from: number, to: number, decryptors: WalletDecryptors): Promise<number> {
-    const batch = await source.getEvents(from, to);
+  // Apply a source's batch for [from, to] and report how far it covered. `onProgress` is threaded into
+  // the fetch, so it fires per block-window as the source chunks the range — driving granular progress.
+  private async applyBatch(
+    source: EventSource,
+    from: number,
+    to: number,
+    decryptors: WalletDecryptors,
+    onProgress?: (coveredThroughBlock: number) => void,
+  ): Promise<number> {
+    const batch = await source.getEvents(from, to, onProgress);
     await this.scanState.apply(batch.events, decryptors);
     return batch.syncedThroughBlock;
   }
 
   // Sync [from, head] from the primary source, RPC-covering any tail the (indexer) source lagged.
-  // `onProgress` is called after each applied batch with the block covered so far.
   private async applyToHead(
     from: number,
     head: number,
     decryptors: WalletDecryptors,
-    onProgress?: (coveredThrough: number) => void,
+    onProgress?: (coveredThroughBlock: number) => void,
   ): Promise<void> {
-    const covered = await this.applyBatch(this.ctx.eventSource, from, head, decryptors);
-    onProgress?.(covered);
+    const covered = await this.applyBatch(this.ctx.eventSource, from, head, decryptors, onProgress);
     if (covered < head) {
-      const tail = await this.applyBatch(this.ctx.rpcEventSource, covered + 1, head, decryptors);
-      onProgress?.(tail);
+      await this.applyBatch(this.ctx.rpcEventSource, covered + 1, head, decryptors, onProgress);
     }
   }
 
@@ -246,8 +250,7 @@ class ArmadaWallet implements Wallet {
           if (!(err instanceof RootMismatchError)) throw err;
           // Indexer served a tree that doesn't match chain — discard it and re-scan from RPC (truth).
           this.scanState = WalletScanState.restore(rollback!);
-          await this.applyBatch(this.ctx.rpcEventSource, from, head, decryptors);
-          emitProgress(head);
+          await this.applyBatch(this.ctx.rpcEventSource, from, head, decryptors, emitProgress);
         }
       }
 

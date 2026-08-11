@@ -19,7 +19,8 @@ export interface EventBatch {
  * are verified against on-chain roots before acceptance, falling back to RPC on any mismatch.
  */
 export interface EventSource {
-  getEvents(fromBlock: number, toBlock: number): Promise<EventBatch>;
+  /** `onProgress` (when supplied) is called with the highest block covered as the fetch chunks the range. */
+  getEvents(fromBlock: number, toBlock: number, onProgress?: (coveredThroughBlock: number) => void): Promise<EventBatch>;
 }
 
 export interface SyncStatus {

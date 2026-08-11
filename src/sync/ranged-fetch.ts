@@ -10,6 +10,8 @@ export interface RangedFetchOptions {
   readonly maxRange?: number;
   /** Smallest window before a throw is treated as a real error rather than a range-limit. */
   readonly minRange?: number;
+  /** Called after each top-level window with the highest block fetched so far — drives scan progress. */
+  readonly onProgress?: (coveredThroughBlock: number) => void;
 }
 
 const DEFAULT_MAX_RANGE = 5000;
@@ -35,6 +37,7 @@ export async function fetchLogsRanged<T>(
   while (windowStart <= toBlock) {
     const windowEnd = Math.min(windowStart + maxRange - 1, toBlock);
     results.push(...(await fetchWindow(getLogs, windowStart, windowEnd, minRange)));
+    options.onProgress?.(windowEnd);
     windowStart = windowEnd + 1;
   }
   return results;
