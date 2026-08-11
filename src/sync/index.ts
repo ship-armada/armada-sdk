@@ -19,7 +19,8 @@ export interface EventBatch {
  * are verified against on-chain roots before acceptance, falling back to RPC on any mismatch.
  */
 export interface EventSource {
-  getEvents(fromBlock: number, toBlock: number): Promise<EventBatch>;
+  /** `onProgress` (when supplied) is called with the highest block covered as the fetch chunks the range. */
+  getEvents(fromBlock: number, toBlock: number, onProgress?: (coveredThroughBlock: number) => void): Promise<EventBatch>;
 }
 
 export interface SyncStatus {
@@ -45,6 +46,10 @@ export interface SyncEventMap {
   };
 }
 
+// Typed scan/balance event bus — a wallet owns one and emits on sync().
+export { SyncEmitter } from './emitter';
+export type { Unsubscribe } from './emitter';
+
 // Ranged log fetch.
 export { fetchLogsRanged } from './ranged-fetch';
 export type { GetLogsFn, RangedFetchOptions } from './ranged-fetch';
@@ -54,7 +59,7 @@ export { RpcEventSource, IndexerEventSource } from './event-source';
 export type { IndexerEventSourceOptions } from './event-source';
 
 // Native tx-history reconstruction from scan state (SPEC §5).
-export { reconstructReceiveHistory, reconstructHistory } from './history';
+export { reconstructReceiveHistory, reconstructHistory, newReceivedNotes, ownSpendTxids } from './history';
 export type { HistoryEntry, HistoryCategory, TokenAddressResolver, ReconstructHistoryInput, SentRecipient } from './history';
 
 // Scan checkpoints + resumable scan.

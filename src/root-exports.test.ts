@@ -37,6 +37,9 @@ const REQUIRED_ROOT_EXPORTS = [
   'Chain',
   'AddressData',
   'Ciphertext',
+  // scan/balance event surface (sync) — consumed via wallet.on()
+  'SyncEventMap',
+  'Unsubscribe',
 ] as const;
 
 describe('root .d.ts export surface (node10 consumer contract)', () => {

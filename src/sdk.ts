@@ -6,15 +6,19 @@ import {
   WalletScanState,
   RpcEventSource,
   IndexerEventSource,
+  SyncEmitter,
   tryDecryptCommitment,
   tryDecryptSentCommitment,
   tryDecryptShield,
   ownedNoteFromTransactNote,
   reconstructHistory,
+  newReceivedNotes,
   saveScanState,
   loadScanState,
   POOL_V2_EVENT_ABI,
   type EventSource,
+  type SyncEventMap,
+  type Unsubscribe,
   type WalletDecryptors,
   type HistoryEntry,
   type ParsedPoolLog,
@@ -67,6 +71,9 @@ interface SdkContext {
   readonly usdcAddress: `0x${string}`;
   /** Canonical 32-byte hash (no 0x) of USDC — maps owned-note token hashes back to the address. */
   readonly usdcHash: string;
+  /** hash (no 0x) → TokenData for every registered token (USDC + additionalTokens) — resolves a
+   *  balance's tokenHash back to its address for `balance:updated` emission. */
+  readonly tokenByHash: ReadonlyMap<string, TokenData>;
   /** Yield adapter address (lowercased), when configured — an unshield to it marks a yield op. */
   readonly yieldAdapterAddress?: string;
   readonly poolAddress: `0x${string}`;
@@ -92,6 +99,15 @@ class ArmadaWallet implements Wallet {
   private scanState = new WalletScanState();
   private syncedThrough: number;
   private hydrated = false;
+  private readonly emitter = new SyncEmitter();
+  // Last-emitted per-token balance (keyed by tokenHash, no 0x) so a sync only pushes `balance:updated`
+  // for tokens that actually changed — the diff that lets consumers avoid redundant re-reads.
+  private readonly lastBalances = new Map<string, { spendable: bigint; pending: bigint }>();
+  // Received-transfer keys already emitted as `note:received`. The first sync seeds this as a baseline
+  // WITHOUT emitting (so a fresh load doesn't replay all past transfers as "received"); later syncs
+  // emit only genuinely-new incoming notes.
+  private readonly seenReceiveKeys = new Set<string>();
+  private receiveBaselined = false;
 
   constructor(
     private readonly keyset: Keyset,
@@ -154,17 +170,31 @@ class ArmadaWallet implements Wallet {
     };
   }
 
-  // Apply a source's batch for [from, to] and report how far it covered.
-  private async applyBatch(source: EventSource, from: number, to: number, decryptors: WalletDecryptors): Promise<number> {
-    const batch = await source.getEvents(from, to);
+  // Apply a source's batch for [from, to] and report how far it covered. `onProgress` is threaded into
+  // the fetch, so it fires per block-window as the source chunks the range — driving granular progress.
+  private async applyBatch(
+    source: EventSource,
+    from: number,
+    to: number,
+    decryptors: WalletDecryptors,
+    onProgress?: (coveredThroughBlock: number) => void,
+  ): Promise<number> {
+    const batch = await source.getEvents(from, to, onProgress);
     await this.scanState.apply(batch.events, decryptors);
     return batch.syncedThroughBlock;
   }
 
   // Sync [from, head] from the primary source, RPC-covering any tail the (indexer) source lagged.
-  private async applyToHead(from: number, head: number, decryptors: WalletDecryptors): Promise<void> {
-    const covered = await this.applyBatch(this.ctx.eventSource, from, head, decryptors);
-    if (covered < head) await this.applyBatch(this.ctx.rpcEventSource, covered + 1, head, decryptors);
+  private async applyToHead(
+    from: number,
+    head: number,
+    decryptors: WalletDecryptors,
+    onProgress?: (coveredThroughBlock: number) => void,
+  ): Promise<void> {
+    const covered = await this.applyBatch(this.ctx.eventSource, from, head, decryptors, onProgress);
+    if (covered < head) {
+      await this.applyBatch(this.ctx.rpcEventSource, covered + 1, head, decryptors, onProgress);
+    }
   }
 
   /**
@@ -186,6 +216,10 @@ class ArmadaWallet implements Wallet {
     }
   }
 
+  on<K extends keyof SyncEventMap>(event: K, listener: (payload: SyncEventMap[K]) => void): Unsubscribe {
+    return this.emitter.on(event, listener);
+  }
+
   async sync(): Promise<{ fromBlock: number; syncedThrough: number; scanned: boolean }> {
     await this.hydrate();
     const head = await this.ctx.provider.getBlockNumber();
@@ -193,27 +227,97 @@ class ArmadaWallet implements Wallet {
     if (!scanned) return { fromBlock, syncedThrough: this.syncedThrough, scanned: false };
 
     const from = fromBlock;
-    const decryptors = this.decryptors();
-    // Only the indexer source is untrusted; snapshot so we can roll back a bad batch.
-    const usingIndexer = this.ctx.eventSource !== this.ctx.rpcEventSource;
-    const rollback = usingIndexer ? this.scanState.snapshot() : undefined;
+    const span = head - from + 1;
+    const emitProgress = (coveredThrough: number): void => {
+      const done = Math.max(0, Math.min(span, coveredThrough - from + 1));
+      this.emitter.emit('scan:progress', { syncedThrough: coveredThrough, fraction: span <= 0 ? 1 : done / span });
+    };
 
-    await this.applyToHead(from, head, decryptors);
+    this.emitter.emit('scan:started', { fromBlock, toBlock: head });
+    this.emitter.emit('scan:progress', { syncedThrough: from - 1, fraction: 0 });
+    try {
+      const decryptors = this.decryptors();
+      // Only the indexer source is untrusted; snapshot so we can roll back a bad batch.
+      const usingIndexer = this.ctx.eventSource !== this.ctx.rpcEventSource;
+      const rollback = usingIndexer ? this.scanState.snapshot() : undefined;
 
-    if (usingIndexer) {
-      try {
-        await this.verifyCurrentRoot(head);
-      } catch (err) {
-        if (!(err instanceof RootMismatchError)) throw err;
-        // Indexer served a tree that doesn't match chain — discard it and re-scan from RPC (truth).
-        this.scanState = WalletScanState.restore(rollback!);
-        await this.applyBatch(this.ctx.rpcEventSource, from, head, decryptors);
+      await this.applyToHead(from, head, decryptors, emitProgress);
+
+      if (usingIndexer) {
+        try {
+          await this.verifyCurrentRoot(head);
+        } catch (err) {
+          if (!(err instanceof RootMismatchError)) throw err;
+          // Indexer served a tree that doesn't match chain — discard it and re-scan from RPC (truth).
+          this.scanState = WalletScanState.restore(rollback!);
+          await this.applyBatch(this.ctx.rpcEventSource, from, head, decryptors, emitProgress);
+        }
       }
-    }
 
-    this.syncedThrough = head;
-    await saveScanState(this.ctx.storage, this.keyset.railgunAddress, this.scanState, head);
-    return { fromBlock, syncedThrough: head, scanned: true };
+      this.syncedThrough = head;
+      await saveScanState(this.ctx.storage, this.keyset.railgunAddress, this.scanState, head);
+      this.emitter.emit('scan:complete', { syncedThrough: head });
+      this.emitBalanceUpdates(head);
+      this.emitReceivedNotes();
+      return { fromBlock, syncedThrough: head, scanned: true };
+    } catch (err) {
+      this.emitter.emit('scan:error', { error: err instanceof Error ? err : new Error(String(err)) });
+      throw err;
+    }
+  }
+
+  // Push `note:received` for incoming transfers discovered since the last sync (`newReceivedNotes`
+  // handles the classification + `tree:position` de-dup, mutating `seenReceiveKeys`). The first sync
+  // seeds the baseline WITHOUT emitting, so a fresh load doesn't replay history as "received".
+  private emitReceivedNotes(): void {
+    const fresh = newReceivedNotes(
+      this.scanState.ownedTxos(),
+      this.scanState.spentNullifiers(),
+      this.keyset.nullifyingKey,
+      this.seenReceiveKeys,
+    );
+    if (!this.receiveBaselined) {
+      this.receiveBaselined = true;
+      return; // baseline: `seenReceiveKeys` is now seeded; don't emit historical receives on first load
+    }
+    for (const txo of fresh) {
+      const hashKey = txo.tokenHash.startsWith('0x') ? txo.tokenHash.slice(2) : txo.tokenHash;
+      const tokenData = this.ctx.tokenByHash.get(hashKey);
+      if (tokenData === undefined) continue; // unregistered token — can't resolve an address
+      this.emitter.emit('note:received', {
+        tokenAddress: tokenData.tokenAddress as `0x${string}`,
+        value: txo.value,
+        ...(txo.memo !== undefined ? { memo: txo.memo } : {}),
+        ...(txo.senderRailgunAddress !== undefined ? { senderRailgunAddress: txo.senderRailgunAddress } : {}),
+      });
+    }
+  }
+
+  // Push `balance:updated` for each token whose (spendable, pending) changed since the last emit —
+  // including a token fully spent (drops out of `balances()`, so we emit a zero). Unregistered tokens
+  // (unknown hash → no address) are skipped. First sync after load emits the baseline for held tokens.
+  private emitBalanceUpdates(head: number): void {
+    const balances = this.scanState.balances(this.keyset.nullifyingKey, { currentBlock: head, finalityThreshold: 0 });
+    const seen = new Set<string>();
+    for (const b of balances) {
+      seen.add(b.tokenHash);
+      const prev = this.lastBalances.get(b.tokenHash);
+      if (prev !== undefined && prev.spendable === b.spendable && prev.pending === b.pending) continue;
+      this.lastBalances.set(b.tokenHash, { spendable: b.spendable, pending: b.pending });
+      this.emitTokenBalance(b.tokenHash, b.spendable, b.pending);
+    }
+    for (const [tokenHash, prev] of this.lastBalances) {
+      if (seen.has(tokenHash) || (prev.spendable === 0n && prev.pending === 0n)) continue;
+      this.lastBalances.set(tokenHash, { spendable: 0n, pending: 0n });
+      this.emitTokenBalance(tokenHash, 0n, 0n);
+    }
+  }
+
+  private emitTokenBalance(tokenHash: string, spendable: bigint, pending: bigint): void {
+    const key = tokenHash.startsWith('0x') ? tokenHash.slice(2) : tokenHash;
+    const tokenData = this.ctx.tokenByHash.get(key);
+    if (tokenData === undefined) return; // unregistered token — can't resolve an address to emit
+    this.emitter.emit('balance:updated', { tokenAddress: tokenData.tokenAddress as `0x${string}`, spendable, pending });
   }
 
   async balances(): Promise<TokenBalance[]> {
@@ -424,6 +528,7 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
     chainId: config.pool.chainId,
     usdcAddress: config.pool.usdcAddress,
     usdcHash,
+    tokenByHash,
     ...(config.pool.wrappers?.yieldAdapter !== undefined
       ? { yieldAdapterAddress: config.pool.wrappers.yieldAdapter.toLowerCase() }
       : {}),

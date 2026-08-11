@@ -17,11 +17,17 @@ export class RpcEventSource implements EventSource {
     private readonly maxRange?: number,
   ) {}
 
-  async getEvents(fromBlock: number, toBlock: number): Promise<EventBatch> {
-    const opts =
-      this.maxRange === undefined
-        ? { fromBlock, toBlock }
-        : { fromBlock, toBlock, maxRange: this.maxRange };
+  async getEvents(
+    fromBlock: number,
+    toBlock: number,
+    onProgress?: (coveredThroughBlock: number) => void,
+  ): Promise<EventBatch> {
+    const opts = {
+      fromBlock,
+      toBlock,
+      ...(this.maxRange !== undefined ? { maxRange: this.maxRange } : {}),
+      ...(onProgress !== undefined ? { onProgress } : {}),
+    };
     const parsed = await fetchLogsRanged(this.getLogs, opts);
     return { events: decodePoolEvents(parsed), syncedThroughBlock: toBlock };
   }
@@ -53,12 +59,19 @@ export class IndexerEventSource implements EventSource {
     this.fetchFn = options.fetchFn ?? fetch;
   }
 
-  async getEvents(fromBlock: number, toBlock: number): Promise<EventBatch> {
+  async getEvents(
+    fromBlock: number,
+    toBlock: number,
+    onProgress?: (coveredThroughBlock: number) => void,
+  ): Promise<EventBatch> {
     const url = `${this.baseUrl}/v2/quick-sync/${this.chainId}?fromBlock=${fromBlock}&toBlock=${toBlock}`;
     const res = await this.fetchFn(url);
     if (!res.ok) throw new Error(`quick-sync: indexer responded ${res.status} for ${url}`);
     const { events, syncedThroughBlock } = parseQuickSync(await res.json());
     // Never claim past the requested window even if the indexer over-reports its head.
-    return { events, syncedThroughBlock: Math.min(syncedThroughBlock, toBlock) };
+    const covered = Math.min(syncedThroughBlock, toBlock);
+    // The indexer serves the whole window in one pre-indexed response — report the range it covered.
+    onProgress?.(covered);
+    return { events, syncedThroughBlock: covered };
   }
 }

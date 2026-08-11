@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initPoseidonPromise, TransactNote } from '../core/index';
 import type { TXO, SpentNullifier } from './balances';
-import { reconstructReceiveHistory, reconstructHistory } from './history';
+import { reconstructReceiveHistory, reconstructHistory, newReceivedNotes } from './history';
 import type { DecodedUnshield } from './event-decoder';
 import type { SentOutput } from './scan-engine';
 
@@ -60,6 +60,42 @@ describe('reconstructReceiveHistory (H1)', () => {
     const b = txo({ tree: 0, position: 1, value: 1n, txid: tx('aa'), origin: 'shield', blockNumber: 10 });
     const entries = reconstructReceiveHistory([a, b], [], NK, resolveToken);
     expect(entries.map((e) => e.blockNumber)).toEqual([10, 50]);
+  });
+});
+
+describe('newReceivedNotes (incremental note:received detection)', () => {
+  beforeAll(async () => {
+    await initPoseidonPromise;
+  });
+
+  const shieldNote = txo({ tree: 0, position: 0, value: 1_000_000n, txid: tx('11'), origin: 'shield' });
+  const received1 = txo({ tree: 0, position: 1, value: 250_000n, txid: tx('22'), origin: 'transact' });
+  const spentInput = txo({ tree: 0, position: 5, value: 900_000n, txid: tx('aa'), origin: 'transact' });
+  const changeNote = txo({ tree: 0, position: 6, value: 400_000n, txid: tx('33'), origin: 'transact' });
+  // We spent our input (position 5) in tx 0x33 → 0x33 is an own-spend tx, so its change note is excluded.
+  const spent: SpentNullifier[] = [{ tree: 0, nullifier: TransactNote.getNullifier(NK, 5), txid: tx('33'), blockNumber: 30 }];
+
+  it('returns received transfers (excludes shields + own change) and seeds `seen`', () => {
+    const seen = new Set<string>();
+    const fresh = newReceivedNotes([shieldNote, received1, spentInput, changeNote], spent, NK, seen);
+    // received1 + the earlier-received-then-spent input; NOT the shield, NOT the 0x33 change.
+    expect(fresh.map((t) => t.position).sort((a, b) => a - b)).toEqual([1, 5]);
+    expect(seen.has('0:1')).toBe(true);
+    expect(seen.has('0:5')).toBe(true);
+    expect(seen.has('0:0')).toBe(false); // shield not tracked
+    expect(seen.has('0:6')).toBe(false); // change not tracked
+  });
+
+  it('returns only the delta on subsequent calls (seeded notes never re-appear)', () => {
+    const seen = new Set<string>();
+    newReceivedNotes([shieldNote, received1], spent, NK, seen); // baseline seed
+    expect(newReceivedNotes([shieldNote, received1], spent, NK, seen)).toEqual([]); // nothing new
+    // A brand-new incoming transfer surfaces exactly once.
+    const received2 = txo({ tree: 0, position: 9, value: 42n, txid: tx('99'), origin: 'transact', memo: 'hi' });
+    const fresh = newReceivedNotes([shieldNote, received1, received2], spent, NK, seen);
+    expect(fresh.map((t) => t.position)).toEqual([9]);
+    expect(fresh[0]!.memo).toBe('hi');
+    expect(newReceivedNotes([shieldNote, received1, received2], spent, NK, seen)).toEqual([]); // now seen
   });
 });
 
