@@ -57,6 +57,52 @@ const nullifierKey = (tree: number, nullifier: bigint): string => `${tree}:${nul
 const sortEntries = (a: HistoryEntry, b: HistoryEntry): number =>
   a.blockNumber - b.blockNumber || (a.txid < b.txid ? -1 : a.txid > b.txid ? 1 : 0);
 
+/** The wallet's unique note id — stable across syncs (a leaf never moves once inserted). */
+const noteId = (txo: TXO): string => `${txo.tree}:${txo.position}`;
+
+/**
+ * Txids in which THIS wallet spent an input — its transact-origin outputs there are its own change,
+ * not incoming transfers. Requires the nullifying key (a view-only wallet has it). Shared by the
+ * receive reconstruction and the incremental `newReceivedNotes` detector so they never diverge.
+ */
+export function ownSpendTxids(
+  ownedTxos: readonly TXO[],
+  spentNullifiers: readonly SpentNullifier[],
+  nullifyingKey: bigint,
+): Set<string> {
+  const spendByKey = new Map(spentNullifiers.map((s) => [nullifierKey(s.tree, s.nullifier), s]));
+  const txids = new Set<string>();
+  for (const txo of ownedTxos) {
+    const spend = spendByKey.get(nullifierKey(txo.tree, TransactNote.getNullifier(nullifyingKey, txo.position)));
+    if (spend !== undefined) txids.add(spend.txid);
+  }
+  return txids;
+}
+
+/**
+ * Incoming-transfer notes (transact-origin owned notes that aren't our own change, i.e. NOT shields
+ * and NOT change from our own spends) whose note id is not yet in `seen`. ADDS the returned notes' ids
+ * to `seen` — so a caller drives incremental `note:received` emission: seed a baseline on the first
+ * call (ignore the return), then emit the delta each subsequent call.
+ */
+export function newReceivedNotes(
+  ownedTxos: readonly TXO[],
+  spentNullifiers: readonly SpentNullifier[],
+  nullifyingKey: bigint,
+  seen: Set<string>,
+): TXO[] {
+  const ownSpends = ownSpendTxids(ownedTxos, spentNullifiers, nullifyingKey);
+  const fresh: TXO[] = [];
+  for (const txo of ownedTxos) {
+    if (txo.origin === 'shield' || ownSpends.has(txo.txid)) continue;
+    const id = noteId(txo);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    fresh.push(txo);
+  }
+  return fresh;
+}
+
 /**
  * Reconstruct RECEIVE history (H1): shields the wallet deposited + transfers it received. Owned
  * transact-origin notes created in a tx where the wallet ALSO spent an input are its own change, not
@@ -70,15 +116,7 @@ export function reconstructReceiveHistory(
   nullifyingKey: bigint,
   resolveToken: TokenAddressResolver,
 ): HistoryEntry[] {
-  const spentSet = new Set(spentNullifiers.map((s) => nullifierKey(s.tree, s.nullifier)));
-  const spendByKey = new Map(spentNullifiers.map((s) => [nullifierKey(s.tree, s.nullifier), s]));
-
-  // Txids in which THIS wallet spent an input — its transact outputs there are change, not receives.
-  const ownSpendTxids = new Set<string>();
-  for (const txo of ownedTxos) {
-    const key = nullifierKey(txo.tree, TransactNote.getNullifier(nullifyingKey, txo.position));
-    if (spentSet.has(key)) ownSpendTxids.add(spendByKey.get(key)!.txid);
-  }
+  const ownSpends = ownSpendTxids(ownedTxos, spentNullifiers, nullifyingKey);
 
   const entries: HistoryEntry[] = [];
   for (const txo of ownedTxos) {
@@ -97,7 +135,7 @@ export function reconstructReceiveHistory(
       continue;
     }
     // transact-origin: change (skip) if created in one of our own spends, else an incoming transfer.
-    if (ownSpendTxids.has(txo.txid)) continue;
+    if (ownSpends.has(txo.txid)) continue;
     entries.push({
       txid: txo.txid,
       blockNumber: txo.blockNumber,

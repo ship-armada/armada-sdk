@@ -12,6 +12,7 @@ import {
   tryDecryptShield,
   ownedNoteFromTransactNote,
   reconstructHistory,
+  newReceivedNotes,
   saveScanState,
   loadScanState,
   POOL_V2_EVENT_ABI,
@@ -102,6 +103,11 @@ class ArmadaWallet implements Wallet {
   // Last-emitted per-token balance (keyed by tokenHash, no 0x) so a sync only pushes `balance:updated`
   // for tokens that actually changed — the diff that lets consumers avoid redundant re-reads.
   private readonly lastBalances = new Map<string, { spendable: bigint; pending: bigint }>();
+  // Received-transfer keys already emitted as `note:received`. The first sync seeds this as a baseline
+  // WITHOUT emitting (so a fresh load doesn't replay all past transfers as "received"); later syncs
+  // emit only genuinely-new incoming notes.
+  private readonly seenReceiveKeys = new Set<string>();
+  private receiveBaselined = false;
 
   constructor(
     private readonly keyset: Keyset,
@@ -172,9 +178,19 @@ class ArmadaWallet implements Wallet {
   }
 
   // Sync [from, head] from the primary source, RPC-covering any tail the (indexer) source lagged.
-  private async applyToHead(from: number, head: number, decryptors: WalletDecryptors): Promise<void> {
+  // `onProgress` is called after each applied batch with the block covered so far.
+  private async applyToHead(
+    from: number,
+    head: number,
+    decryptors: WalletDecryptors,
+    onProgress?: (coveredThrough: number) => void,
+  ): Promise<void> {
     const covered = await this.applyBatch(this.ctx.eventSource, from, head, decryptors);
-    if (covered < head) await this.applyBatch(this.ctx.rpcEventSource, covered + 1, head, decryptors);
+    onProgress?.(covered);
+    if (covered < head) {
+      const tail = await this.applyBatch(this.ctx.rpcEventSource, covered + 1, head, decryptors);
+      onProgress?.(tail);
+    }
   }
 
   /**
@@ -206,15 +222,22 @@ class ArmadaWallet implements Wallet {
     const { fromBlock, scanned } = planSyncWindow(this.syncedThrough, head);
     if (!scanned) return { fromBlock, syncedThrough: this.syncedThrough, scanned: false };
 
+    const from = fromBlock;
+    const span = head - from + 1;
+    const emitProgress = (coveredThrough: number): void => {
+      const done = Math.max(0, Math.min(span, coveredThrough - from + 1));
+      this.emitter.emit('scan:progress', { syncedThrough: coveredThrough, fraction: span <= 0 ? 1 : done / span });
+    };
+
     this.emitter.emit('scan:started', { fromBlock, toBlock: head });
+    this.emitter.emit('scan:progress', { syncedThrough: from - 1, fraction: 0 });
     try {
-      const from = fromBlock;
       const decryptors = this.decryptors();
       // Only the indexer source is untrusted; snapshot so we can roll back a bad batch.
       const usingIndexer = this.ctx.eventSource !== this.ctx.rpcEventSource;
       const rollback = usingIndexer ? this.scanState.snapshot() : undefined;
 
-      await this.applyToHead(from, head, decryptors);
+      await this.applyToHead(from, head, decryptors, emitProgress);
 
       if (usingIndexer) {
         try {
@@ -224,6 +247,7 @@ class ArmadaWallet implements Wallet {
           // Indexer served a tree that doesn't match chain — discard it and re-scan from RPC (truth).
           this.scanState = WalletScanState.restore(rollback!);
           await this.applyBatch(this.ctx.rpcEventSource, from, head, decryptors);
+          emitProgress(head);
         }
       }
 
@@ -231,10 +255,38 @@ class ArmadaWallet implements Wallet {
       await saveScanState(this.ctx.storage, this.keyset.railgunAddress, this.scanState, head);
       this.emitter.emit('scan:complete', { syncedThrough: head });
       this.emitBalanceUpdates(head);
+      this.emitReceivedNotes();
       return { fromBlock, syncedThrough: head, scanned: true };
     } catch (err) {
       this.emitter.emit('scan:error', { error: err instanceof Error ? err : new Error(String(err)) });
       throw err;
+    }
+  }
+
+  // Push `note:received` for incoming transfers discovered since the last sync (`newReceivedNotes`
+  // handles the classification + `tree:position` de-dup, mutating `seenReceiveKeys`). The first sync
+  // seeds the baseline WITHOUT emitting, so a fresh load doesn't replay history as "received".
+  private emitReceivedNotes(): void {
+    const fresh = newReceivedNotes(
+      this.scanState.ownedTxos(),
+      this.scanState.spentNullifiers(),
+      this.keyset.nullifyingKey,
+      this.seenReceiveKeys,
+    );
+    if (!this.receiveBaselined) {
+      this.receiveBaselined = true;
+      return; // baseline: `seenReceiveKeys` is now seeded; don't emit historical receives on first load
+    }
+    for (const txo of fresh) {
+      const hashKey = txo.tokenHash.startsWith('0x') ? txo.tokenHash.slice(2) : txo.tokenHash;
+      const tokenData = this.ctx.tokenByHash.get(hashKey);
+      if (tokenData === undefined) continue; // unregistered token — can't resolve an address
+      this.emitter.emit('note:received', {
+        tokenAddress: tokenData.tokenAddress as `0x${string}`,
+        value: txo.value,
+        ...(txo.memo !== undefined ? { memo: txo.memo } : {}),
+        ...(txo.senderRailgunAddress !== undefined ? { senderRailgunAddress: txo.senderRailgunAddress } : {}),
+      });
     }
   }
 

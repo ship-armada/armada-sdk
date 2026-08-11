@@ -58,7 +58,7 @@ export { RpcEventSource, IndexerEventSource } from './event-source';
 export type { IndexerEventSourceOptions } from './event-source';
 
 // Native tx-history reconstruction from scan state (SPEC §5).
-export { reconstructReceiveHistory, reconstructHistory } from './history';
+export { reconstructReceiveHistory, reconstructHistory, newReceivedNotes, ownSpendTxids } from './history';
 export type { HistoryEntry, HistoryCategory, TokenAddressResolver, ReconstructHistoryInput, SentRecipient } from './history';
 
 // Scan checkpoints + resumable scan.
