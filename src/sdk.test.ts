@@ -2,7 +2,7 @@
 // ABOUTME: spend-capability gating, close(), and documented not-implemented factory methods. No network.
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { createArmadaSdk, planSyncWindow } from './sdk';
+import { createArmadaSdk, planSyncWindow, quickSyncTelemetry } from './sdk';
 import { deriveKeyset, LocalSigner } from './wallet/index';
 import { MemoryStorageAdapter } from './storage/index';
 import { NoSpendCapabilityError } from './errors';
@@ -130,5 +130,40 @@ describe('planSyncWindow — sync resume decision', () => {
     // (transient RPC lag / reorg) as a no-op rather than a negative-range scan.
     expect(planSyncWindow(20, 20)).toEqual({ fromBlock: 21, scanned: false });
     expect(planSyncWindow(20, 15)).toEqual({ fromBlock: 21, scanned: false });
+  });
+});
+
+describe('quickSyncTelemetry — quick-sync observability outcome (SPEC §8)', () => {
+  it('returns null when no indexer is configured (a pure RPC sync has nothing to report)', () => {
+    // WHY: emitting for every RPC-only sync would be noise the caller already knows (it passed no
+    // indexer URL). The absence of an event IS the "no indexer" signal.
+    expect(
+      quickSyncTelemetry({ usingIndexer: false, tailCovered: false, fellBack: false, fromBlock: 5, head: 9 }),
+    ).toBeNull();
+  });
+
+  it('reports `served` (no tail) when the indexer covered to head and the root verified', () => {
+    // WHY: this is the healthy fast-path — the signal an operator greps for to confirm the indexer
+    // is actually serving rather than silently degrading to RPC.
+    expect(
+      quickSyncTelemetry({ usingIndexer: true, tailCovered: false, fellBack: false, fromBlock: 5, head: 9 }),
+    ).toEqual({ event: 'sync.quicksync', data: { outcome: 'served', fromBlock: 5, head: 9, tailCovered: false } });
+  });
+
+  it('flags `tailCovered` when the indexer lagged and RPC covered the remainder', () => {
+    // WHY: a chronically-lagging indexer still counts as "served" but the RPC tail is the tell — an
+    // operator should see the indexer trailing head before it turns into a support ticket.
+    const ev = quickSyncTelemetry({ usingIndexer: true, tailCovered: true, fellBack: false, fromBlock: 5, head: 9 });
+    expect(ev?.data.outcome).toBe('served');
+    expect(ev?.data.tailCovered).toBe(true);
+  });
+
+  it('reports `root-mismatch-fallback` and clears tailCovered when the indexer batch was rejected', () => {
+    // WHY: on root mismatch the indexer batch is discarded and the whole range RPC-rescanned, so
+    // tail-cover is meaningless — the event must say the indexer served bad data (a data-integrity
+    // alert), not that it served, even if the discarded attempt had lagged.
+    const ev = quickSyncTelemetry({ usingIndexer: true, tailCovered: true, fellBack: true, fromBlock: 5, head: 9 });
+    expect(ev?.data.outcome).toBe('root-mismatch-fallback');
+    expect(ev?.data.tailCovered).toBe(false);
   });
 });

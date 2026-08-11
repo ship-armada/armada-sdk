@@ -55,7 +55,7 @@ import {
 } from './core/index';
 import type { ProveOptions, ProverAdapter, ArtifactSource } from './prover/index';
 import { NoSpendCapabilityError, RootMismatchError } from './errors';
-import type { ArmadaSdk, ArmadaSdkConfig } from './index';
+import type { ArmadaSdk, ArmadaSdkConfig, TelemetrySink } from './index';
 
 // Per-instance shared context handed to each wallet.
 interface SdkContext {
@@ -81,6 +81,46 @@ interface SdkContext {
   readonly prover: ProverAdapter;
   readonly artifacts: ArtifactSource;
   readonly storage: StorageAdapter;
+  /** Optional operational telemetry sink (SPEC §8) — emits quick-sync outcomes when an indexer is used. */
+  readonly telemetry?: TelemetrySink;
+}
+
+/** Quick-sync observability payload emitted through the telemetry sink (SPEC §8-safe: block numbers + booleans only). */
+export interface QuickSyncTelemetry {
+  /** `served` = the indexer batch verified against the on-chain root; `root-mismatch-fallback` = it
+   *  didn't, so the batch was discarded and the range re-scanned from RPC (truth). */
+  readonly outcome: 'served' | 'root-mismatch-fallback';
+  readonly fromBlock: number;
+  readonly head: number;
+  /** On the `served` path: the indexer lagged the chain head and RPC covered the tail. Always false on fallback. */
+  readonly tailCovered: boolean;
+}
+
+/**
+ * Decide the quick-sync observability event for a completed sync. Pure so the outcome taxonomy is
+ * unit-testable without a provider. Returns null when no indexer is in play — a pure RPC sync has
+ * nothing quick-sync to report. SPEC §8: the payload carries only block numbers + booleans, never
+ * keys, addresses, or note plaintext.
+ */
+export function quickSyncTelemetry(input: {
+  usingIndexer: boolean;
+  tailCovered: boolean;
+  fellBack: boolean;
+  fromBlock: number;
+  head: number;
+}): { event: 'sync.quicksync'; data: QuickSyncTelemetry } | null {
+  if (!input.usingIndexer) return null;
+  return {
+    event: 'sync.quicksync',
+    data: {
+      outcome: input.fellBack ? 'root-mismatch-fallback' : 'served',
+      fromBlock: input.fromBlock,
+      head: input.head,
+      // On a root-mismatch fallback the indexer batch was discarded and the whole range RPC-rescanned,
+      // so tail-cover is only meaningful on the served path.
+      tailCovered: input.fellBack ? false : input.tailCovered,
+    },
+  };
 }
 
 /**
@@ -186,16 +226,20 @@ class ArmadaWallet implements Wallet {
   }
 
   // Sync [from, head] from the primary source, RPC-covering any tail the (indexer) source lagged.
+  // Returns `tailCovered` — true when the primary (indexer) source stopped short of head and RPC
+  // covered the remainder, for quick-sync observability.
   private async applyToHead(
     from: number,
     head: number,
     decryptors: WalletDecryptors,
     onProgress?: (coveredThroughBlock: number) => void,
-  ): Promise<void> {
+  ): Promise<{ tailCovered: boolean }> {
     const covered = await this.applyBatch(this.ctx.eventSource, from, head, decryptors, onProgress);
     if (covered < head) {
       await this.applyBatch(this.ctx.rpcEventSource, covered + 1, head, decryptors, onProgress);
+      return { tailCovered: true };
     }
+    return { tailCovered: false };
   }
 
   /**
@@ -242,7 +286,8 @@ class ArmadaWallet implements Wallet {
       const usingIndexer = this.ctx.eventSource !== this.ctx.rpcEventSource;
       const rollback = usingIndexer ? this.scanState.snapshot() : undefined;
 
-      await this.applyToHead(from, head, decryptors, emitProgress);
+      const { tailCovered } = await this.applyToHead(from, head, decryptors, emitProgress);
+      let fellBack = false;
 
       if (usingIndexer) {
         try {
@@ -250,10 +295,19 @@ class ArmadaWallet implements Wallet {
         } catch (err) {
           if (!(err instanceof RootMismatchError)) throw err;
           // Indexer served a tree that doesn't match chain — discard it and re-scan from RPC (truth).
+          fellBack = true;
           this.scanState = WalletScanState.restore(rollback!);
           await this.applyBatch(this.ctx.rpcEventSource, from, head, decryptors, emitProgress);
         }
       }
+
+      // Quick-sync observability (SPEC §8): report whether the configured indexer served a
+      // root-verified batch, lagged into an RPC tail, or was rejected for an RPC re-scan. No-op
+      // when no indexer is configured. Never carries key material / addresses.
+      const qs = quickSyncTelemetry({ usingIndexer, tailCovered, fellBack, fromBlock: from, head });
+      // Cast bridges the precise payload type to the sink's untyped `Record<string, unknown>` contract
+      // (the interface has no index signature, so the double-cast is the sanctioned boundary widening).
+      if (qs !== null) this.ctx.telemetry?.emit(qs.event, qs.data as unknown as Readonly<Record<string, unknown>>);
 
       this.syncedThrough = head;
       await saveScanState(this.ctx.storage, this.keyset.railgunAddress, this.scanState, head);
@@ -543,6 +597,7 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
     prover: config.prover,
     artifacts: config.artifacts,
     storage: config.storage,
+    ...(config.telemetry !== undefined ? { telemetry: config.telemetry } : {}),
   };
 
   const wallet: WalletFactory = {

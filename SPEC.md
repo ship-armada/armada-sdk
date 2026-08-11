@@ -747,6 +747,13 @@ implement it against the same spec later.
   transitions. Feeds Sentry in the interface and the relayer's monitoring per `MONITORING.md`.
   Events MUST NOT contain key material, seeds, memo plaintext, amounts-with-identity, or 0zk
   addresses — telemetry payload review is part of code review for this module.
+  - Emitted events (grows as instrumentation lands):
+    - `sync.quicksync` — one per sync **when an indexer is configured**, reporting the quick-sync
+      outcome. Payload: `{ outcome: 'served' | 'root-mismatch-fallback', fromBlock, head, tailCovered }`
+      (block numbers + booleans only). `served` = the indexer batch verified against the on-chain
+      root (`tailCovered` = the indexer lagged head and RPC covered the remainder); `root-mismatch-fallback`
+      = the indexer batch was rejected and the range re-scanned from RPC. Lets an operator confirm the
+      indexer is actually serving rather than silently degrading. A pure RPC sync emits nothing.
 
 ---
 
