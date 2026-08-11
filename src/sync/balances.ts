@@ -24,7 +24,7 @@ export interface TXO {
   /** Memo the sender attached (transfer receives), if any. */
   readonly memo?: string;
   /** Sender's 0zk, present only if disclosed (transfer receives). */
-  readonly senderRailgunAddress?: string;
+  readonly senderShieldedAddress?: string;
   /** The shield fee charged on this deposit (shield origin only) — from the Shield event's `fees`. */
   readonly shieldFee?: bigint;
   /** 16-byte note random (hex, no 0x) — required to rebuild the spend witness (`randomIn`). */

@@ -40,7 +40,7 @@ describe('createArmadaSdk (§4.1)', () => {
   it('loads a wallet whose 0zk matches deriveKeyset (identity parity)', async () => {
     const sdk = await createArmadaSdk(makeConfig());
     const wallet = await sdk.wallet.fromRootSecret(seed(0x11), { creationBlock: 1 });
-    expect(wallet.railgunAddress).toBe((await deriveKeyset(seed(0x11))).railgunAddress);
+    expect(wallet.shieldedAddress).toBe((await deriveKeyset(seed(0x11))).shieldedAddress);
   });
 
   it('gates spend capability on an attached signer', async () => {
@@ -67,14 +67,14 @@ describe('createArmadaSdk (§4.1)', () => {
     const bytesToHex = (b: Uint8Array): string => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
     const mnemonic = Mnemonic.fromEntropy(bytesToHex(seed(0x11)));
     const wallet = await sdk.wallet.fromMnemonic(mnemonic, { creationBlock: 1 });
-    expect(wallet.railgunAddress).toBe((await deriveKeyset(seed(0x11))).railgunAddress);
+    expect(wallet.shieldedAddress).toBe((await deriveKeyset(seed(0x11))).shieldedAddress);
     expect(wallet.canSpend).toBe(false);
   });
 
   it('ephemeralFromSeed derives a spendable wallet (auto-attached signer)', async () => {
     const sdk = await createArmadaSdk(makeConfig());
     const wallet = await sdk.wallet.ephemeralFromSeed(seed(0x55));
-    expect(wallet.railgunAddress).toBe((await deriveKeyset(seed(0x55))).railgunAddress);
+    expect(wallet.shieldedAddress).toBe((await deriveKeyset(seed(0x55))).shieldedAddress);
     expect(wallet.canSpend).toBe(true);
   });
 
@@ -93,11 +93,11 @@ describe('createArmadaSdk (§4.1)', () => {
     expect(full.canSpend).toBe(true);
 
     const viewOnly = await sdk.wallet.viewOnlyFromViewingKey(full.shareViewingKey(), { creationBlock: 1 });
-    expect(viewOnly.railgunAddress).toBe(full.railgunAddress);
+    expect(viewOnly.shieldedAddress).toBe(full.shieldedAddress);
     expect(viewOnly.canSpend).toBe(false);
 
     // Spend-path calls on a view-only wallet throw NoSpendCapabilityError.
-    const fee = { schedule: { transfer: '0' }, broadcasterRailgunAddress: '0zk', feesCacheId: 'x', expiresAt: 0 };
+    const fee = { schedule: { transfer: '0' }, broadcasterShieldedAddress: '0zk', feesCacheId: 'x', expiresAt: 0 };
     await expect(viewOnly.planTransfer({ outputs: [{ to0zk: '0zk', amount: 1n }], fee })).rejects.toThrow(NoSpendCapabilityError);
   });
 
@@ -106,7 +106,7 @@ describe('createArmadaSdk (§4.1)', () => {
     const b = await createArmadaSdk(makeConfig());
     const wa = await a.wallet.fromRootSecret(seed(0x11), { creationBlock: 1 });
     const wb = await b.wallet.fromRootSecret(seed(0x44), { creationBlock: 1 });
-    expect(wa.railgunAddress).not.toBe(wb.railgunAddress);
+    expect(wa.shieldedAddress).not.toBe(wb.shieldedAddress);
   });
 });
 

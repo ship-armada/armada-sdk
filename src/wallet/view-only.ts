@@ -7,7 +7,7 @@ export interface ViewOnlyIdentity {
   readonly viewingPublicKey: Uint8Array;
   readonly nullifyingKey: bigint;
   readonly masterPublicKey: bigint;
-  readonly railgunAddress: string;
+  readonly shieldedAddress: string;
 }
 
 function bytesToHex(bytes: Uint8Array): string {
@@ -30,6 +30,6 @@ export async function deriveViewOnlyIdentity(
   const nullifyingKey = poseidon([BigInt('0x' + bytesToHex(viewingPrivateKey))]);
   const viewingPublicKey = await getPublicViewingKey(viewingPrivateKey);
   const masterPublicKey = WalletNode.getMasterPublicKey(spendingPublicKey, nullifyingKey);
-  const railgunAddress = encodeAddress({ masterPublicKey, viewingPublicKey });
-  return { viewingPublicKey, nullifyingKey, masterPublicKey, railgunAddress };
+  const shieldedAddress = encodeAddress({ masterPublicKey, viewingPublicKey });
+  return { viewingPublicKey, nullifyingKey, masterPublicKey, shieldedAddress };
 }

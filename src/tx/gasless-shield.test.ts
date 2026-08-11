@@ -63,8 +63,8 @@ describe('gasless shield (§4.6, #410)', () => {
         integrator: '0x0000000000000000000000000000000000000000',
         deadline: 2000n,
         nonce: 3n,
-        userShield: { railgunAddress: user.railgunAddress, amount: 10_000_000n, tokenAddress: USDC },
-        feeShield: { railgunAddress: relayer.railgunAddress, amount: feeAmount, tokenAddress: USDC },
+        userShield: { shieldedAddress: user.shieldedAddress, amount: 10_000_000n, tokenAddress: USDC },
+        feeShield: { shieldedAddress: relayer.shieldedAddress, amount: feeAmount, tokenAddress: USDC },
       },
       generateShieldPrivateKey(),
     );

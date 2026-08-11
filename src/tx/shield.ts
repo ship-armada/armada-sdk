@@ -4,7 +4,7 @@
 import { ShieldNoteERC20, decodeAddress, type TokenData } from '../core/index';
 
 export interface ShieldRequestInput {
-  readonly railgunAddress: string;
+  readonly shieldedAddress: string;
   readonly amount: bigint;
   readonly tokenAddress: string;
 }
@@ -32,7 +32,7 @@ export function generateShieldPrivateKey(): Uint8Array {
 
 /**
  * Build a shield request for `privacyPool.shield([request], integrator)` — a shielded deposit of
- * `amount` of `tokenAddress` to `railgunAddress`. `random` (returned) is the note's 16-byte randomness,
+ * `amount` of `tokenAddress` to `shieldedAddress`. `random` (returned) is the note's 16-byte randomness,
  * recoverable by the recipient's viewing key via the shield ECIES bundle.
  *
  * `random` (optional, 16-byte hex, no `0x`) is normally generated fresh per deposit. Supply it to
@@ -46,7 +46,7 @@ export async function buildShieldRequest(
   shieldPrivateKey: Uint8Array,
   random: string = randomHex(16),
 ): Promise<{ shieldRequest: ShieldRequest; random: string }> {
-  const { masterPublicKey, viewingPublicKey } = decodeAddress(input.railgunAddress);
+  const { masterPublicKey, viewingPublicKey } = decodeAddress(input.shieldedAddress);
   const note = new ShieldNoteERC20(masterPublicKey, random, input.amount, input.tokenAddress);
   const shieldRequest = (await note.serialize(shieldPrivateKey, viewingPublicKey)) as unknown as ShieldRequest;
   return { shieldRequest, random };

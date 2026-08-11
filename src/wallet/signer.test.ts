@@ -19,7 +19,7 @@ interface KeysetVector {
     spendingPublicKey: [string, string];
     viewingPublicKey: string;
     viewingPrivateKey: string;
-    railgunAddress: string;
+    shieldedAddress: string;
   };
 }
 const V: KeysetVector = JSON.parse(
@@ -87,6 +87,6 @@ describe('view-only identity (SPEC §4.2.2)', () => {
     expect(bytesToHex(identity.viewingPublicKey)).toBe(V.keyset.viewingPublicKey);
     expect(bigToHex(identity.nullifyingKey)).toBe(V.keyset.nullifyingKey);
     expect(bigToHex(identity.masterPublicKey)).toBe(V.keyset.masterPublicKey);
-    expect(identity.railgunAddress).toBe(V.keyset.railgunAddress);
+    expect(identity.shieldedAddress).toBe(V.keyset.shieldedAddress);
   });
 });

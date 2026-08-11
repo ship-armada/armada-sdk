@@ -11,14 +11,14 @@ const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as const;
 const ZERO_BYTES32 = `0x${'00'.repeat(32)}` as const;
 
 export interface TransferOutputRequest {
-  readonly toRailgunAddress: string;
+  readonly toShieldedAddress: string;
   readonly value: bigint;
   readonly memo?: string;
 }
 
 /** The broadcaster (relayer) fee, paid as a shielded output note to the broadcaster's 0zk address. */
 export interface FeeRequest {
-  readonly broadcasterRailgunAddress: string;
+  readonly broadcasterShieldedAddress: string;
   readonly value: bigint;
 }
 
@@ -120,13 +120,13 @@ export function planTransfer(params: PlanTransferParams): Plan {
 
   const changeValue = best.total - target;
   const outputs: PlanOutput[] = params.outputs.map((o) => ({
-    toRailgunAddress: o.toRailgunAddress,
+    toShieldedAddress: o.toShieldedAddress,
     value: o.value,
     tokenAddress: params.tokenAddress,
     ...(o.memo !== undefined ? { memo: o.memo } : {}),
   }));
   const feeOutput: PlanOutput | undefined = params.fee
-    ? { toRailgunAddress: params.fee.broadcasterRailgunAddress, value: params.fee.value, tokenAddress: params.tokenAddress }
+    ? { toShieldedAddress: params.fee.broadcasterShieldedAddress, value: params.fee.value, tokenAddress: params.tokenAddress }
     : undefined;
 
   // The unshield is the LAST output commitment (public), so it counts in the circuit shape.

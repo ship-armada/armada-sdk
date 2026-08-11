@@ -10,7 +10,7 @@ import type { TransactionData } from './serialize';
 export interface FeeQuote {
   /** Per-operation fees, USDC raw (6dp) as strings, keyed by op (transfer, unshield, shield, ...). */
   readonly schedule: Readonly<Record<string, string>>;
-  readonly broadcasterRailgunAddress: string;
+  readonly broadcasterShieldedAddress: string;
   readonly feesCacheId: string;
   readonly expiresAt: number;
 }
@@ -38,7 +38,7 @@ export interface DecodedBoundParams {
 }
 
 export interface PlanOutput {
-  readonly toRailgunAddress: string;
+  readonly toShieldedAddress: string;
   readonly value: bigint;
   readonly tokenAddress: `0x${string}`;
   readonly memo?: string;

@@ -29,7 +29,7 @@ describe('reconstructReceiveHistory (H1)', () => {
     // WHY: a transact-origin note created in a tx where WE spent an input is change, not an incoming
     // transfer — misclassifying it would double-count the sender's outflow as a receive.
     const shieldNote = txo({ tree: 0, position: 0, value: 1_000_000n, txid: tx('11'), origin: 'shield', shieldFee: 5_000n });
-    const received = txo({ tree: 0, position: 1, value: 250_000n, txid: tx('22'), origin: 'transact', blockNumber: 20, memo: 'gm', senderRailgunAddress: '0zk_alice' });
+    const received = txo({ tree: 0, position: 1, value: 250_000n, txid: tx('22'), origin: 'transact', blockNumber: 20, memo: 'gm', senderShieldedAddress: '0zk_alice' });
     // A spend we authored at position 1... use a distinct input note we own that got nullified.
     const spentInput = txo({ tree: 0, position: 5, value: 900_000n, txid: tx('11'), origin: 'transact', blockNumber: 5 });
     const changeNote = txo({ tree: 0, position: 6, value: 400_000n, txid: tx('33'), origin: 'transact', blockNumber: 30 });
@@ -46,7 +46,7 @@ describe('reconstructReceiveHistory (H1)', () => {
     const byTxid = new Map(entries.map((e) => [e.txid, e]));
     expect(byTxid.get(tx('33'))).toBeUndefined(); // change excluded
     expect(byTxid.get(tx('11'))).toMatchObject({ category: 'shield', value: 1_000_000n, shieldFee: 5_000n, tokenAddress: USDC });
-    expect(byTxid.get(tx('22'))).toMatchObject({ category: 'transfer-received', value: 250_000n, memo: 'gm', senderRailgunAddress: '0zk_alice' });
+    expect(byTxid.get(tx('22'))).toMatchObject({ category: 'transfer-received', value: 250_000n, memo: 'gm', senderShieldedAddress: '0zk_alice' });
     expect(entries).toHaveLength(3); // shield + received + the pre-spend input receive
   });
 
@@ -156,15 +156,15 @@ describe('reconstructHistory (H2 — sends / unshields / yield)', () => {
     // WHY: parity — a send should show WHO got WHAT (recipient + amount + memo) and the relayer fee
     // separately, recovered sender-side and classified by OutputType (Transfer vs BroadcasterFee).
     const sentOutputs: SentOutput[] = [
-      { txid: SPEND, blockNumber: 30, tokenHash: USDC_HASH, value: 480_000n, recipientRailgunAddress: '0zk_bob', outputType: 0, memo: 'hi' },
-      { txid: SPEND, blockNumber: 30, tokenHash: USDC_HASH, value: 20_000n, recipientRailgunAddress: '0zk_relayer', outputType: 1 },
+      { txid: SPEND, blockNumber: 30, tokenHash: USDC_HASH, value: 480_000n, recipientShieldedAddress: '0zk_bob', outputType: 0, memo: 'hi' },
+      { txid: SPEND, blockNumber: 30, tokenHash: USDC_HASH, value: 20_000n, recipientShieldedAddress: '0zk_relayer', outputType: 1 },
     ];
     const entries = reconstructHistory({ ...base, ownedTxos: [inputNote, changeNote], unshields: [], sentOutputs });
     const sent = entries.find((e) => e.txid === SPEND)!;
     expect(sent.category).toBe('transfer-sent');
     expect(sent.value).toBe(-500_000n);
     expect(sent.broadcasterFee).toBe(20_000n);
-    expect(sent.sentOutputs).toEqual([{ recipientRailgunAddress: '0zk_bob', value: 480_000n, memo: 'hi' }]);
+    expect(sent.sentOutputs).toEqual([{ recipientShieldedAddress: '0zk_bob', value: 480_000n, memo: 'hi' }]);
   });
 
   it('yield-withdraw: USDC receive in a tx that also carries the adapter Unshield leg', () => {

@@ -30,7 +30,7 @@ export interface OwnedNote {
   /** Memo the sender attached, if any (transfer receives). */
   readonly memo?: string;
   /** Sender's 0zk, present only if they disclosed it (`showSenderAddressToRecipient`). */
-  readonly senderRailgunAddress?: string;
+  readonly senderShieldedAddress?: string;
 }
 
 /** An output the wallet AUTHORED (recovered sender-side) — a transfer, broadcaster fee, or change. */
@@ -39,7 +39,7 @@ export interface SentOutput {
   readonly blockNumber: number;
   readonly tokenHash: string;
   readonly value: bigint;
-  readonly recipientRailgunAddress: string;
+  readonly recipientShieldedAddress: string;
   /** OutputType: 0 Transfer, 1 BroadcasterFee, 2 Change. */
   readonly outputType: number;
   readonly memo?: string;
@@ -57,7 +57,7 @@ export function ownedNoteFromTransactNote(note: TransactNote): OwnedNote {
     notePublicKey: note.notePublicKey,
     ...(note.memoText !== undefined && note.memoText !== '' ? { memo: note.memoText } : {}),
     ...(note.senderAddressData !== undefined
-      ? { senderRailgunAddress: encodeAddress(note.senderAddressData) }
+      ? { senderShieldedAddress: encodeAddress(note.senderAddressData) }
       : {}),
   };
 }
@@ -113,7 +113,7 @@ export interface ScanStateSnapshot {
     readonly blockNumber: number;
     readonly tokenHash: string;
     readonly value: string;
-    readonly recipientRailgunAddress: string;
+    readonly recipientShieldedAddress: string;
     readonly outputType: number;
     readonly memo?: string;
   }>;
@@ -174,8 +174,8 @@ export class WalletScanState {
           txid,
           origin: leaf.kind,
           ...(owned.memo !== undefined ? { memo: owned.memo } : {}),
-          ...(owned.senderRailgunAddress !== undefined
-            ? { senderRailgunAddress: owned.senderRailgunAddress }
+          ...(owned.senderShieldedAddress !== undefined
+            ? { senderShieldedAddress: owned.senderShieldedAddress }
             : {}),
           ...(shieldFee !== undefined ? { shieldFee } : {}),
           random: owned.random,
@@ -335,7 +335,7 @@ export class WalletScanState {
         blockNumber: s.blockNumber,
         tokenHash: s.tokenHash,
         value: s.value.toString(),
-        recipientRailgunAddress: s.recipientRailgunAddress,
+        recipientShieldedAddress: s.recipientShieldedAddress,
         outputType: s.outputType,
         ...(s.memo !== undefined ? { memo: s.memo } : {}),
       })),
@@ -383,7 +383,7 @@ export class WalletScanState {
         blockNumber: s.blockNumber,
         tokenHash: s.tokenHash,
         value: BigInt(s.value),
-        recipientRailgunAddress: s.recipientRailgunAddress,
+        recipientShieldedAddress: s.recipientShieldedAddress,
         outputType: s.outputType,
         ...(s.memo !== undefined ? { memo: s.memo } : {}),
       });

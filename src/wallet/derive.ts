@@ -10,7 +10,7 @@ export interface Keyset {
   readonly viewingPrivateKey: Uint8Array;
   readonly nullifyingKey: bigint;
   readonly masterPublicKey: bigint;
-  readonly railgunAddress: string;
+  readonly shieldedAddress: string;
 }
 
 // Browser-safe (no node Buffer) — core stays bundlable without polyfills.
@@ -31,7 +31,7 @@ export async function deriveKeysetFromMnemonic(mnemonic: string, index = 0): Pro
   const viewing = await nodes.viewing.getViewingKeyPair();
   const nullifyingKey = await nodes.viewing.getNullifyingKey();
   const masterPublicKey = WalletNode.getMasterPublicKey(spending.pubkey, nullifyingKey);
-  const railgunAddress = encodeAddress({ masterPublicKey, viewingPublicKey: viewing.pubkey });
+  const shieldedAddress = encodeAddress({ masterPublicKey, viewingPublicKey: viewing.pubkey });
   return {
     spendingPublicKey: spending.pubkey,
     spendingPrivateKey: spending.privateKey,
@@ -39,7 +39,7 @@ export async function deriveKeysetFromMnemonic(mnemonic: string, index = 0): Pro
     viewingPrivateKey: viewing.privateKey,
     nullifyingKey,
     masterPublicKey,
-    railgunAddress,
+    shieldedAddress,
   };
 }
 

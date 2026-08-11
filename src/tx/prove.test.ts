@@ -46,13 +46,13 @@ describe('prove() + ProofHandle (§4.6)', () => {
     return {
       inputs: [{ random: note.random, value: 10n, position: 0, merkleProofElements: proof.elements.map((e) => BigInt(`0x${e}`)) }],
       outputs: [
-        { receiverAddress: recipient.railgunAddress, value: 6n },
-        { receiverAddress: sender.railgunAddress, value: 4n },
+        { receiverAddress: recipient.shieldedAddress, value: 6n },
+        { receiverAddress: sender.shieldedAddress, value: 4n },
       ],
       tokenAddress: USDC,
       sender: {
         masterPublicKey: sender.masterPublicKey, viewingPublicKey: sender.viewingPublicKey, viewingPrivateKey: sender.viewingPrivateKey,
-        nullifyingKey: sender.nullifyingKey, spendingPublicKey: sender.spendingPublicKey, senderAddress: sender.railgunAddress,
+        nullifyingKey: sender.nullifyingKey, spendingPublicKey: sender.spendingPublicKey, senderAddress: sender.shieldedAddress,
       },
       signer, summary, merkleRoot: BigInt(`0x${tree.root()}`), treeNumber: 0, chainType: 0, chainId: 31337,
     };

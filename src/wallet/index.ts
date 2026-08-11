@@ -35,7 +35,7 @@ export interface SpendSigner {
 
 /** A loaded wallet: viewing capability ± spend capability (view-only = no SpendSigner attached). */
 export interface Wallet {
-  readonly railgunAddress: string;
+  readonly shieldedAddress: string;
   readonly canSpend: boolean;
   /**
    * Scan the pool from the wallet's last synced block to chain head, updating its TXO/balance state.

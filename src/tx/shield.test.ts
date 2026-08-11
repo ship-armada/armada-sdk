@@ -42,7 +42,7 @@ describe('shield-request builder (§4.6, #410)', () => {
   it('builds a decryptable ERC20 shield addressed to the recipient', async () => {
     const amount = 5_000_000n;
     const { shieldRequest, random } = await buildShieldRequest(
-      { railgunAddress: receiver.railgunAddress, amount, tokenAddress: USDC },
+      { shieldedAddress: receiver.shieldedAddress, amount, tokenAddress: USDC },
       generateShieldPrivateKey(),
     );
 
@@ -61,7 +61,7 @@ describe('shield-request builder (§4.6, #410)', () => {
 
   it('is not claimable by a stranger', async () => {
     const { shieldRequest } = await buildShieldRequest(
-      { railgunAddress: receiver.railgunAddress, amount: 1n, tokenAddress: USDC },
+      { shieldedAddress: receiver.shieldedAddress, amount: 1n, tokenAddress: USDC },
       generateShieldPrivateKey(),
     );
     expect(await tryDecryptShield(asCommitment(shieldRequest), receiverKeys(stranger))).toBeUndefined();
@@ -76,7 +76,7 @@ describe('shield-request builder (§4.6, #410)', () => {
     // test above), not byte-equality. A differential must compare the preimage + shieldKey only.
     const key = generateShieldPrivateKey();
     const random = 'ab'.repeat(16); // 16 bytes hex, no 0x
-    const input = { railgunAddress: receiver.railgunAddress, amount: 7_000_000n, tokenAddress: USDC };
+    const input = { shieldedAddress: receiver.shieldedAddress, amount: 7_000_000n, tokenAddress: USDC };
     const r1 = await buildShieldRequest(input, key, random);
     const r2 = await buildShieldRequest(input, key, random);
     expect(r1.random).toBe(random);
@@ -90,7 +90,7 @@ describe('shield-request builder (§4.6, #410)', () => {
     // WHY: the default path must stay non-deterministic — reused randomness across deposits would
     // link notes. Two default-random builds of the same note differ at the commitment (npk).
     const key = generateShieldPrivateKey();
-    const input = { railgunAddress: receiver.railgunAddress, amount: 7_000_000n, tokenAddress: USDC };
+    const input = { shieldedAddress: receiver.shieldedAddress, amount: 7_000_000n, tokenAddress: USDC };
     const a = await buildShieldRequest(input, key);
     const b = await buildShieldRequest(input, key);
     expect(a.random).not.toBe(b.random);
