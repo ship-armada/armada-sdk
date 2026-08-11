@@ -56,6 +56,13 @@ export interface Wallet {
   /** Export this wallet's shareable viewing key (Railgun wire format) — grants view-only capability. */
   shareViewingKey(): string;
   /**
+   * The `(tree, nullifier)` of every currently-spendable owned note — a pure read of the scan state.
+   * For an on-chain nullifier cross-check (WI-5): querying the pool's nullifier set for these catches
+   * a quick-sync indexer that omitted a `Nullified` event, which the commitment-root verify can't
+   * detect (a missing nullifier doesn't change the tree root). Works view-only.
+   */
+  spendableNullifiers(): readonly { readonly tree: number; readonly nullifier: bigint }[];
+  /**
    * Subscribe to scan/balance events (SPEC §5.2); returns an unsubscribe fn. The typed, multi-listener
    * replacement for the stock engine's single global balance callback. Per `sync()` that does work:
    * `scan:started` → `scan:complete`, then `balance:updated` for each token whose balance changed

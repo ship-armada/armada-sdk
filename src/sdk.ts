@@ -46,6 +46,7 @@ import {
   getTokenDataHash,
   ChainType,
   OutputType,
+  TransactNote,
   encodeAddress,
   initPoseidonPromise,
   type TokenData,
@@ -323,6 +324,12 @@ class ArmadaWallet implements Wallet {
   async balances(): Promise<TokenBalance[]> {
     const head = await this.ctx.provider.getBlockNumber();
     return this.scanState.balances(this.keyset.nullifyingKey, { currentBlock: head, finalityThreshold: 0 });
+  }
+
+  spendableNullifiers(): readonly { readonly tree: number; readonly nullifier: bigint }[] {
+    return this.scanState
+      .spendableTxos(this.keyset.nullifyingKey)
+      .map((txo) => ({ tree: txo.tree, nullifier: TransactNote.getNullifier(this.keyset.nullifyingKey, txo.position) }));
   }
 
   async history(options?: { sinceBlock?: number }): Promise<HistoryEntry[]> {

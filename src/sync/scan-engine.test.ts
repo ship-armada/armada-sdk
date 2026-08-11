@@ -234,5 +234,11 @@ describe('wallet scan orchestrator (§4.4)', () => {
     const spendable = state.spendableTxos(NK);
     expect(spendable).toHaveLength(1);
     expect(spendable[0]!.position).toBe(1);
+
+    // The wallet's `spendableNullifiers()` accessor (WI-5 cross-check) maps each spendable note to
+    // `(tree, getNullifier(nk, position))` — so a spent note never appears in the cross-check set.
+    expect(spendable.map((t) => ({ tree: t.tree, nullifier: TransactNote.getNullifier(NK, t.position) }))).toEqual([
+      { tree: 0, nullifier: TransactNote.getNullifier(NK, 1) },
+    ]);
   });
 });
