@@ -343,6 +343,15 @@ Requirements:
 - `walletId` derivation stays deterministic per (rootSecret, derivationIndex) so relayer restart
   recovery keeps working.
 
+> **Deferred cleanup — rename `railgunAddress` → `shieldedAddress`.** The public `Wallet` / `Keyset`
+> identity field is currently named `railgunAddress` (carried from the vendored engine). The value is
+> the 0zk bech32m shielded address; there is no technical reason for the `railgun` name on the *public*
+> `@armada/sdk` surface. This does **not** violate the emissions-only naming rule (it's an internal API
+> identifier, not a runtime emission), but for a clean SDK it should be renamed — SDK public field +
+> the interface's `getRailgunAddress()` / `railgunWalletId` / `activeRailgunWalletIdAtom`. Deferred to a
+> scoped rename pass so it doesn't tangle with the engine-teardown diffs. Vendored engine internals keep
+> their names (licensed forked code).
+
 #### 4.2.1 Custody boundary — `SpendSigner`
 
 Key custody is an **interface, not an assumption**. The wallet layer separates *constructing*
