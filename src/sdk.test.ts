@@ -12,7 +12,7 @@ import {
 } from './sdk';
 import { deriveKeyset, LocalSigner } from './wallet/index';
 import { MemoryStorageAdapter } from './storage/index';
-import { NoSpendCapabilityError } from './errors';
+import { NoSpendCapabilityError, InvalidKeyMaterialError } from './errors';
 import { initPoseidonPromise, Mnemonic } from './core/index';
 import type { ProverAdapter, ArtifactSource, ArtifactSet, Groth16Proof } from './prover/index';
 import type { ArmadaSdkConfig } from './index';
@@ -76,13 +76,30 @@ describe('createArmadaSdk (§4.1)', () => {
     expect(proverClosed).toBe(true);
   });
 
-  it('fromMnemonic derives the same 0zk as the equivalent rootSecret', async () => {
+  it('fromMnemonic derives the same 0zk as the equivalent rootSecret, spend-capable by default (P4.4)', async () => {
     const sdk = await createArmadaSdk(makeConfig());
     const bytesToHex = (b: Uint8Array): string => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
     const mnemonic = Mnemonic.fromEntropy(bytesToHex(seed(0x11)));
     const wallet = await sdk.wallet.fromMnemonic(mnemonic, { creationBlock: 1 });
     expect(wallet.shieldedAddress).toBe((await deriveKeyset(seed(0x11))).shieldedAddress);
-    expect(wallet.canSpend).toBe(false);
+    expect(wallet.canSpend).toBe(true); // the relayer's mnemonic wallet can now actually spend
+  });
+
+  it('fromMnemonic rejects an invalid mnemonic (BIP-39 checksum) and honors derivationIndex (P4.4)', async () => {
+    const sdk = await createArmadaSdk(makeConfig());
+    const bytesToHex = (b: Uint8Array): string => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+    const mnemonic = Mnemonic.fromEntropy(bytesToHex(seed(0x11)));
+
+    // A typo'd mnemonic must fail loudly, not silently derive an empty wallet.
+    await expect(sdk.wallet.fromMnemonic('not a valid mnemonic phrase at all', { creationBlock: 1 })).rejects.toThrow(
+      InvalidKeyMaterialError,
+    );
+
+    // A non-zero derivation index yields a distinct wallet (and view-only opt-out drops spend).
+    const w0 = await sdk.wallet.fromMnemonic(mnemonic, { creationBlock: 1 });
+    const w1 = await sdk.wallet.fromMnemonic(mnemonic, { creationBlock: 1, derivationIndex: 1, viewOnly: true });
+    expect(w1.shieldedAddress).not.toBe(w0.shieldedAddress);
+    expect(w1.canSpend).toBe(false);
   });
 
   it('ephemeralFromSeed derives a spendable wallet (auto-attached signer)', async () => {
