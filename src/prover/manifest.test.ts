@@ -36,6 +36,22 @@ describe('verifyArtifactIntegrity', () => {
     );
   });
 
+  it('verifies the vkey digest when the manifest pins it and the source provides raw bytes', () => {
+    const VKEY_RAW = new Uint8Array([7, 8, 9]);
+    const manifest: ArtifactManifest = { '1x2': { wasm: hex(WASM), zkey: hex(ZKEY), vkey: hex(VKEY_RAW) } };
+    // Matching raw vkey → passes.
+    expect(() => verifyArtifactIntegrity(SHAPE, { ...ARTIFACTS, vkeyRaw: VKEY_RAW }, manifest)).not.toThrow();
+    // Tampered raw vkey → rejected.
+    expect(() => verifyArtifactIntegrity(SHAPE, { ...ARTIFACTS, vkeyRaw: new Uint8Array([9, 9, 9]) }, manifest)).toThrow(/vkey digest mismatch/);
+    // Manifest pins a vkey but the source can't supply raw bytes → misconfiguration, rejected.
+    expect(() => verifyArtifactIntegrity(SHAPE, ARTIFACTS, manifest)).toThrow(/no raw vkey bytes/);
+  });
+
+  it('skips the vkey check when the manifest omits a vkey digest (backward compatible)', () => {
+    // MANIFEST has no vkey digest → a set with or without vkeyRaw both pass on wasm/zkey alone.
+    expect(() => verifyArtifactIntegrity(SHAPE, { ...ARTIFACTS, vkeyRaw: new Uint8Array([1]) }, MANIFEST)).not.toThrow();
+  });
+
   it('the error carries a stable code', () => {
     try {
       verifyArtifactIntegrity(SHAPE, { ...ARTIFACTS, wasm: new Uint8Array([0]) }, MANIFEST);

@@ -11,6 +11,12 @@ export interface ArtifactSet {
   readonly wasm: Uint8Array;
   readonly zkey: Uint8Array;
   readonly vkey: object;
+  /**
+   * The RAW vkey.json bytes, when the source can provide them. Integrity hashes the raw bytes (the
+   * parsed `vkey` object can't be re-serialized canonically), so the manifest can cover the vkey too.
+   * Optional for backward compatibility — a source that omits it simply skips the vkey integrity check.
+   */
+  readonly vkeyRaw?: Uint8Array;
 }
 
 /**

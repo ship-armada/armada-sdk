@@ -5,10 +5,11 @@ import { sha256 } from '@noble/hashes/sha256';
 import { ArtifactIntegrityError } from '../errors';
 import type { ArtifactSet, ArtifactSource, CircuitShape } from './index';
 
-/** SHA-256 (hex) of each artifact file for one circuit shape. */
+/** SHA-256 (hex) of each artifact file for one circuit shape. `vkey` is optional — older manifests omit it. */
 export interface ArtifactDigest {
   readonly wasm: string;
   readonly zkey: string;
+  readonly vkey?: string;
 }
 
 /** Keyed by shape (`${nullifiers}x${commitments}`) — emitted by the armada-circuits build. */
@@ -25,9 +26,14 @@ function sha256Hex(bytes: Uint8Array): string {
   return hex;
 }
 
-/** SHA-256 digest of a resolved artifact set — the manifest entry the build emits for one shape. */
+/** SHA-256 digest of a resolved artifact set — the manifest entry the build emits for one shape. Includes
+ *  the vkey digest when the set carries the raw vkey bytes. */
 export function artifactDigest(artifacts: ArtifactSet): ArtifactDigest {
-  return { wasm: sha256Hex(artifacts.wasm), zkey: sha256Hex(artifacts.zkey) };
+  return {
+    wasm: sha256Hex(artifacts.wasm),
+    zkey: sha256Hex(artifacts.zkey),
+    ...(artifacts.vkeyRaw !== undefined ? { vkey: sha256Hex(artifacts.vkeyRaw) } : {}),
+  };
 }
 
 /**
@@ -51,6 +57,18 @@ export function verifyArtifactIntegrity(
   const zkey = sha256Hex(artifacts.zkey);
   if (zkey !== expected.zkey) {
     throw new ArtifactIntegrityError(`zkey digest mismatch for ${key}: expected ${expected.zkey}, got ${zkey}`);
+  }
+  // Verify the vkey too when BOTH the manifest pins it and the source provided the raw bytes. A manifest
+  // that pins a vkey digest but a source that can't supply `vkeyRaw` is a misconfiguration — reject it
+  // rather than silently skipping (the whole point of pinning the vkey is that it's checked).
+  if (expected.vkey !== undefined) {
+    if (artifacts.vkeyRaw === undefined) {
+      throw new ArtifactIntegrityError(`manifest pins a vkey digest for ${key} but the source provided no raw vkey bytes`);
+    }
+    const vkey = sha256Hex(artifacts.vkeyRaw);
+    if (vkey !== expected.vkey) {
+      throw new ArtifactIntegrityError(`vkey digest mismatch for ${key}: expected ${expected.vkey}, got ${vkey}`);
+    }
   }
 }
 
