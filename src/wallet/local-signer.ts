@@ -2,7 +2,7 @@
 // ABOUTME: derived from a rootSecret. Signs each intent digest with BabyJubjub EdDSA via core.
 
 import { signEDDSA } from '../core/index';
-import { deriveKeyset } from './derive';
+import { deriveKeyset, deriveKeysetFromMnemonic } from './derive';
 import { InvalidRequestError } from '../errors';
 import type { SpendSigner, SpendSignRequest, EddsaSignature } from './index';
 
@@ -21,6 +21,12 @@ export class LocalSigner implements SpendSigner {
 
   static async fromRootSecret(rootSecret: Uint8Array): Promise<LocalSigner> {
     const keyset = await deriveKeyset(rootSecret);
+    return new LocalSigner(keyset.spendingPrivateKey, keyset.spendingPublicKey);
+  }
+
+  /** Signer for a BIP-39 mnemonic-provisioned wallet (the relayer's) at `derivationIndex`. */
+  static async fromMnemonic(mnemonic: string, derivationIndex = 0): Promise<LocalSigner> {
+    const keyset = await deriveKeysetFromMnemonic(mnemonic, derivationIndex);
     return new LocalSigner(keyset.spendingPrivateKey, keyset.spendingPublicKey);
   }
 

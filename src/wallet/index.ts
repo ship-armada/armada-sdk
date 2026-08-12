@@ -114,8 +114,15 @@ export interface WalletFactory {
   ): Promise<Wallet>;
   /** Ephemeral, in-memory only, never persisted — for claimable payments (SPEC §6). */
   ephemeralFromSeed(seed: Uint8Array): Promise<Wallet>;
-  /** BIP-39 compat for the relayer's existing mnemonic-provisioned wallet only. */
-  fromMnemonic(mnemonic: string, opts: { creationBlock: number; signer?: SpendSigner }): Promise<Wallet>;
+  /**
+   * BIP-39 compat for the relayer's mnemonic-provisioned wallet. Validates the mnemonic checksum;
+   * spend-capable by default (auto-derives a `LocalSigner`), with `signer`/`viewOnly` overrides and an
+   * optional `derivationIndex` (default 0).
+   */
+  fromMnemonic(
+    mnemonic: string,
+    opts: { creationBlock: number; signer?: SpendSigner; viewOnly?: boolean; derivationIndex?: number },
+  ): Promise<Wallet>;
   /** View-only: full scan/balance/disclosure, no spend (spend-path calls throw NoSpendCapabilityError). */
   viewOnlyFromViewingKey(shareableViewingKey: string, opts: { creationBlock: number }): Promise<Wallet>;
 }

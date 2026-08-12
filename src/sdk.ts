@@ -798,8 +798,12 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
       return new ArmadaWallet(keyset, opts.creationBlock, signer, ctx);
     },
     async fromMnemonic(mnemonic, opts) {
-      const keyset = await deriveKeysetFromMnemonic(mnemonic);
-      return new ArmadaWallet(keyset, opts.creationBlock, opts.signer, ctx);
+      const index = opts.derivationIndex ?? 0;
+      // deriveKeysetFromMnemonic validates the BIP-39 checksum. Spend-capable by default (like
+      // fromRootSecret): explicit signer wins, `viewOnly` opts out, else auto-derive a LocalSigner.
+      const keyset = await deriveKeysetFromMnemonic(mnemonic, index);
+      const signer = opts.signer ?? (opts.viewOnly === true ? undefined : await LocalSigner.fromMnemonic(mnemonic, index));
+      return new ArmadaWallet(keyset, opts.creationBlock, signer, ctx);
     },
     // Ephemeral (claimable payments, SPEC §6): in-memory, never persisted, auto-attaches a signer so
     // the claiming flow can spend. `seed` is the claim's 32-byte root; scans from the pool's deploy

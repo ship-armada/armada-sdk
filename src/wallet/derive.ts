@@ -27,6 +27,11 @@ function bytesToHex(bytes: Uint8Array): string {
  * stock engine's `createWalletFromMnemonic`. The relayer's mnemonic-provisioned wallet uses this.
  */
 export async function deriveKeysetFromMnemonic(mnemonic: string, index = 0): Promise<Keyset> {
+  // Reject a mnemonic that fails the BIP-39 checksum — a typo would otherwise silently derive a
+  // different (empty) wallet. `deriveKeyset` generates its mnemonic via fromEntropy, so it always passes.
+  if (!Mnemonic.validate(mnemonic)) {
+    throw new InvalidKeyMaterialError('deriveKeysetFromMnemonic: invalid BIP-39 mnemonic (checksum failed)');
+  }
   const nodes = deriveNodes(mnemonic, index);
   const spending = nodes.spending.getSpendingKeyPair();
   const viewing = await nodes.viewing.getViewingKeyPair();
