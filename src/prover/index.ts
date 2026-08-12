@@ -59,3 +59,5 @@ export type { WorkerChannel, ProverWorkerRequest, ProverWorkerReply } from './wo
 
 // Concrete artifact sources — resolve compiled circuit artifacts by shape (filesystem / HTTP).
 export { FilesystemArtifactSource, HttpArtifactSource } from './artifact-source';
+// IndexedDB artifact cache (browser) — wrap a source so the zkey is downloaded once, not per proof.
+export { IndexedDbArtifactCache } from './artifact-cache';
