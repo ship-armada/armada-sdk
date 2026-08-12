@@ -2,6 +2,7 @@
 // ABOUTME: shape from a local directory (node) or over HTTP (browser), matching armada-circuits/build layout.
 
 import type { ArtifactSet, ArtifactSource, CircuitShape } from './index';
+import { verifyArtifactIntegrity, type ArtifactManifest } from './manifest';
 
 function shapeDir(shape: CircuitShape): string {
   return `${shape.nullifiers}x${shape.commitments}`;
@@ -34,15 +35,33 @@ export class FilesystemArtifactSource implements ArtifactSource {
 }
 
 /**
+ * Construction options for `HttpArtifactSource`. The union is deliberate: a caller must EITHER supply
+ * a `manifest` (the SHA-256 integrity check runs on every resolve) OR explicitly acknowledge the risk
+ * with `dangerouslySkipIntegrity: true`. There is no unverified default — an HTTP origin feeds the
+ * circuit wasm/zkey that receive the full private witness, so skipping integrity must be a conscious,
+ * greppable decision, not the path of least resistance (SPEC §4.5).
+ */
+export type HttpArtifactSourceOptions =
+  | { readonly manifest: ArtifactManifest; readonly fetchFn?: typeof fetch }
+  | { readonly dangerouslySkipIntegrity: true; readonly fetchFn?: typeof fetch };
+
+/**
  * Resolve artifacts over HTTP (browser/node) from a base URL serving the same `<N>x<M>/...` layout.
- * `fetchFn` defaults to the global `fetch`; inject one for tests or a custom transport. Pair with
- * `VerifiedArtifactSource` to check the SHA-256 manifest, and add an IndexedDB cache in the app layer.
+ * Verifies each resolved wasm/zkey against the supplied manifest by default (fail-closed); pass a
+ * pinned manifest (a build-time trust anchor), NOT one fetched from the same origin as the artifacts,
+ * or the check is self-referential. `fetchFn` defaults to the global `fetch`. Add an IndexedDB cache
+ * in the app layer.
  */
 export class HttpArtifactSource implements ArtifactSource {
-  constructor(
-    private readonly baseUrl: string,
-    private readonly fetchFn: typeof fetch = fetch,
-  ) {}
+  private readonly baseUrl: string;
+  private readonly fetchFn: typeof fetch;
+  private readonly manifest: ArtifactManifest | undefined;
+
+  constructor(baseUrl: string, options: HttpArtifactSourceOptions) {
+    this.baseUrl = baseUrl;
+    this.fetchFn = options.fetchFn ?? fetch;
+    this.manifest = 'manifest' in options ? options.manifest : undefined;
+  }
 
   async resolve(shape: CircuitShape): Promise<ArtifactSet> {
     const p = artifactPaths(shape);
@@ -57,10 +76,14 @@ export class HttpArtifactSource implements ArtifactSource {
         throw new Error(`HttpArtifactSource: ${name} fetch failed (${res.status}) for shape ${shapeDir(shape)}`);
       }
     }
-    return {
+    const set: ArtifactSet = {
       wasm: new Uint8Array(await wasmRes.arrayBuffer()),
       zkey: new Uint8Array(await zkeyRes.arrayBuffer()),
       vkey: (await vkeyRes.json()) as object,
     };
+    // Fail-closed integrity: unless the caller explicitly opted out at construction, a wasm/zkey whose
+    // SHA-256 doesn't match the pinned manifest throws ArtifactIntegrityError before it reaches the prover.
+    if (this.manifest !== undefined) verifyArtifactIntegrity(shape, set, this.manifest);
+    return set;
   }
 }

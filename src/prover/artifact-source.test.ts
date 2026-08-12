@@ -7,6 +7,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FilesystemArtifactSource, HttpArtifactSource } from './artifact-source';
+import { artifactDigest, shapeKey } from './manifest';
+import type { ArtifactManifest } from './manifest';
 import type { CircuitShape } from './index';
 
 const fixture = (name: string): string => fileURLToPath(new URL(`../../test/fixtures/prover/${name}`, import.meta.url));
@@ -42,29 +44,52 @@ describe('ArtifactSource impls (§4.5)', () => {
     await expect(source.resolve(SHAPE)).rejects.toThrow();
   });
 
-  it('HttpArtifactSource fetches the same layout from a base URL', async () => {
-    const bytesResponse = (bytes: Uint8Array): Response =>
-      ({ ok: true, status: 200, arrayBuffer: async () => new Uint8Array(bytes).buffer } as unknown as Response);
-    const jsonResponse = (obj: unknown): Response =>
-      ({ ok: true, status: 200, json: async () => obj } as unknown as Response);
-
-    const fetchFn = (async (url: string): Promise<Response> => {
+  const bytesResponse = (bytes: Uint8Array): Response =>
+    ({ ok: true, status: 200, arrayBuffer: async () => new Uint8Array(bytes).buffer } as unknown as Response);
+  const jsonResponse = (obj: unknown): Response =>
+    ({ ok: true, status: 200, json: async () => obj } as unknown as Response);
+  // A fetch serving the mul fixture, optionally with a tampered zkey to exercise the integrity gate.
+  const fixtureFetch = (opts?: { tamperZkey?: boolean }): typeof fetch =>
+    (async (url: string): Promise<Response> => {
       if (url.endsWith('main_1x1.wasm')) return bytesResponse(WASM);
-      if (url.endsWith('final.zkey')) return bytesResponse(ZKEY);
+      if (url.endsWith('final.zkey')) return bytesResponse(opts?.tamperZkey ? new Uint8Array([0, 1, 2, 3]) : ZKEY);
       if (url.endsWith('vkey.json')) return jsonResponse(JSON.parse(VKEY_RAW));
       return { ok: false, status: 404 } as unknown as Response;
     }) as unknown as typeof fetch;
+  const manifest: ArtifactManifest = { [shapeKey(SHAPE)]: artifactDigest({ wasm: WASM, zkey: ZKEY, vkey: {} }) };
 
-    const source = new HttpArtifactSource('https://cdn.example/artifacts/', fetchFn);
+  it('HttpArtifactSource verifies against a manifest by default and returns the layout', async () => {
+    const source = new HttpArtifactSource('https://cdn.example/artifacts/', { manifest, fetchFn: fixtureFetch() });
     const set = await source.resolve(SHAPE);
     expect(Array.from(set.wasm)).toEqual(Array.from(WASM));
     expect(Array.from(set.zkey)).toEqual(Array.from(ZKEY));
     expect(set.vkey).toEqual(JSON.parse(VKEY_RAW));
   });
 
+  it('HttpArtifactSource rejects a tampered zkey (fail-closed integrity, SPEC §4.5)', async () => {
+    // WHY: a compromised origin serving a tampered zkey (which receives the full private witness) must
+    // not reach the prover. Previously the HTTP source verified nothing unless the app opted in.
+    const source = new HttpArtifactSource('https://cdn.example/artifacts/', {
+      manifest,
+      fetchFn: fixtureFetch({ tamperZkey: true }),
+    });
+    await expect(source.resolve(SHAPE)).rejects.toThrow(/zkey digest mismatch/);
+  });
+
+  it('HttpArtifactSource skips integrity ONLY with the explicit danger flag', async () => {
+    const source = new HttpArtifactSource('https://cdn.example/artifacts/', {
+      dangerouslySkipIntegrity: true,
+      fetchFn: fixtureFetch({ tamperZkey: true }),
+    });
+    const set = await source.resolve(SHAPE); // tampered bytes pass through — the opt-out was deliberate
+    expect(Array.from(set.zkey)).toEqual([0, 1, 2, 3]);
+  });
+
   it('HttpArtifactSource throws on a non-OK response', async () => {
-    const fetchFn = (async (): Promise<Response> => ({ ok: false, status: 404 } as unknown as Response)) as unknown as typeof fetch;
-    const source = new HttpArtifactSource('https://cdn.example/artifacts', fetchFn);
+    const source = new HttpArtifactSource('https://cdn.example/artifacts', {
+      dangerouslySkipIntegrity: true,
+      fetchFn: (async (): Promise<Response> => ({ ok: false, status: 404 } as unknown as Response)) as unknown as typeof fetch,
+    });
     await expect(source.resolve(SHAPE)).rejects.toThrow(/fetch failed \(404\)/);
   });
 });

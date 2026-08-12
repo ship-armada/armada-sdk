@@ -38,6 +38,12 @@ export interface Wallet {
   readonly shieldedAddress: string;
   readonly canSpend: boolean;
   /**
+   * Whether this wallet's scan state is written to the StorageAdapter. `false` for ephemeral
+   * (claimable-payment) wallets, which are in-memory only and never touch storage (SPEC §4.2/§4.3/§6.5)
+   * — no decrypted note data, and no seed-derived identity, ever hits disk on either side of a claim.
+   */
+  readonly persists: boolean;
+  /**
    * Scan the pool from the wallet's last synced block to chain head, updating its TXO/balance state.
    * Resumes from the persisted checkpoint (no rescan from genesis). Returns the window that was
    * covered: `fromBlock` (the resume point = checkpoint + 1), the new `syncedThrough` (chain head),

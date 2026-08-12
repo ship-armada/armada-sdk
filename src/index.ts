@@ -43,6 +43,14 @@ export interface ArmadaSdkConfig {
    * verifying results against the on-chain root. Omit to sync purely from RPC.
    */
   readonly indexer?: { readonly url: string };
+  /**
+   * Escape hatch that disables the SDK's at-rest encryption (SPEC §4.3). Decrypted note data, TXO
+   * records, balances, and history are AEAD-encrypted at rest by default under a per-wallet key the
+   * SDK derives itself — the caller's `storage` adapter is auto-wrapped, so plaintext never reaches
+   * disk without setting this flag. Set it ONLY for ephemeral/test stores where at-rest secrecy is a
+   * non-goal; in production it defeats WS7.2 Option B.
+   */
+  readonly dangerouslyAllowPlaintextStorage?: boolean;
 }
 
 /**

@@ -2,7 +2,14 @@
 // ABOUTME: spend-capability gating, close(), and documented not-implemented factory methods. No network.
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { createArmadaSdk, planSyncWindow, quickSyncTelemetry } from './sdk';
+import {
+  createArmadaSdk,
+  planSyncWindow,
+  quickSyncTelemetry,
+  feeScheduleKey,
+  finalRootCheckRequired,
+  resolveWalletStorage,
+} from './sdk';
 import { deriveKeyset, LocalSigner } from './wallet/index';
 import { MemoryStorageAdapter } from './storage/index';
 import { NoSpendCapabilityError } from './errors';
@@ -165,5 +172,110 @@ describe('quickSyncTelemetry — quick-sync observability outcome (SPEC §8)', (
     const ev = quickSyncTelemetry({ usingIndexer: true, tailCovered: true, fellBack: true, fromBlock: 5, head: 9 });
     expect(ev?.data.outcome).toBe('root-mismatch-fallback');
     expect(ev?.data.tailCovered).toBe(false);
+  });
+});
+
+describe('feeScheduleKey — bind the fee tier matching the plan op (SPEC §4.6.1)', () => {
+  const YIELD = `0x${'ab'.repeat(20)}` as const;
+  const CCTP = `0x${'cd'.repeat(20)}` as const;
+
+  it('a plain transfer (no unshield) binds the transfer tier', () => {
+    expect(feeScheduleKey({}, undefined)).toBe('transfer');
+  });
+
+  it('a bare unshield (no adapt) binds the unshield tier', () => {
+    expect(feeScheduleKey({ unshield: { recipient: CCTP, amount: 1n } }, undefined)).toBe('unshield');
+  });
+
+  it('a cross-chain unshield (CCTP adaptParams) binds the crossChainUnshield tier', () => {
+    // WHY: the relayer submits this through atomicCrossChainUnshield → crossChainUnshield fee. Binding
+    // the (lower) transfer tier makes the relayer reject the tx AFTER the user proved for ~30s.
+    expect(
+      feeScheduleKey(
+        { unshield: { recipient: CCTP, amount: 1n, adaptParams: '0xdead', adaptContract: CCTP } },
+        YIELD.toLowerCase(),
+      ),
+    ).toBe('crossChainUnshield');
+  });
+
+  it('a yield redeem (unshield to the yield adapter) binds the crossContract tier', () => {
+    // WHY: redeemAndShield → crossContract fee; the yield adapter is the tell, not the presence of adaptParams.
+    expect(
+      feeScheduleKey(
+        { unshield: { recipient: YIELD, amount: 1n, adaptParams: '0xbeef', adaptContract: YIELD } },
+        YIELD.toLowerCase(),
+      ),
+    ).toBe('crossContract');
+  });
+});
+
+describe('ephemeral wallets are in-memory only (SPEC §4.2/§4.3/§6.5)', () => {
+  it('ephemeralFromSeed produces a non-persisting wallet; enrolled wallets persist', async () => {
+    // WHY: a claim wallet writing its decrypted note set to disk is the exact forensic residue §6
+    // is designed to leave none of. `persists` is the observable guarantee, guarded in hydrate/save
+    // (the sync() write path itself needs a live chain, so it is exercised in the POC integration suite).
+    const sdk = await createArmadaSdk(makeConfig());
+    const eph = await sdk.wallet.ephemeralFromSeed(seed(7));
+    expect(eph.persists).toBe(false);
+
+    const enrolled = await sdk.wallet.fromRootSecret(seed(8), { creationBlock: 1 });
+    expect(enrolled.persists).toBe(true);
+    await sdk.close();
+  });
+});
+
+describe('finalRootCheckRequired — every sync verifies the accepted tree against chain (SPEC §4.4)', () => {
+  it('an RPC-only sync (no indexer) MUST run a final on-chain root check', () => {
+    // WHY: the baseline path is the source of truth but was previously never root-verified — a provider
+    // that silently truncated a getLogs range built a tree missing commitments with no detection (H3).
+    expect(finalRootCheckRequired(false, false)).toBe(true);
+  });
+
+  it('an indexer batch that fell back to RPC MUST re-verify the RPC result', () => {
+    // WHY: the fallback rescans from RPC after discarding the indexer's batch; that RPC result is
+    // itself untrusted until checked against the on-chain root.
+    expect(finalRootCheckRequired(true, true)).toBe(true);
+  });
+
+  it('an indexer batch already served+verified need not double-check', () => {
+    // WHY: the served path verified the current root before acceptance; re-reading it is a wasted eth_call.
+    expect(finalRootCheckRequired(true, false)).toBe(false);
+  });
+});
+
+describe('resolveWalletStorage — at-rest encryption is on by default (SPEC §4.3, auto-wrap)', () => {
+  const ns = { schemaVersion: 1, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1 } as const;
+  const vk = new Uint8Array(32).fill(9);
+  const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+  const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
+
+  it('wraps the raw adapter in encryption by default — plaintext never reaches the underlying store', async () => {
+    // WHY (H1): the SDK persists decrypted note data (values, note `random`, memos). Without the
+    // auto-wrap a caller passing a bare adapter leaks all of it at rest with no warning.
+    const raw = new MemoryStorageAdapter();
+    await raw.open(ns);
+    const secure = resolveWalletStorage(raw, vk, false);
+    expect(secure).not.toBe(raw);
+
+    await secure.put('chain/scan-state/x', enc('secret-note-random-and-value'));
+    const atRest = await raw.get('chain/scan-state/x');
+    expect(dec(atRest!)).not.toContain('secret-note-random-and-value'); // ciphertext at rest
+    expect(dec((await secure.get('chain/scan-state/x'))!)).toBe('secret-note-random-and-value'); // readable to the wallet
+  });
+
+  it('returns the raw adapter unwrapped ONLY with the explicit danger flag', async () => {
+    const raw = new MemoryStorageAdapter();
+    expect(resolveWalletStorage(raw, vk, true)).toBe(raw);
+  });
+
+  it('derives distinct per-wallet keys so one wallet cannot read another\'s records', async () => {
+    // WHY: storage is shared across wallets in an instance; an instance-wide key would let wallet B
+    // decrypt wallet A's blobs. Per-wallet keys (from the viewing key) make that a GCM auth failure.
+    const raw = new MemoryStorageAdapter();
+    await raw.open(ns);
+    const a = resolveWalletStorage(raw, new Uint8Array(32).fill(1), false);
+    const b = resolveWalletStorage(raw, new Uint8Array(32).fill(2), false);
+    await a.put('chain/scan-state/shared-key', enc('A private notes'));
+    await expect(b.get('chain/scan-state/shared-key')).rejects.toThrow();
   });
 });

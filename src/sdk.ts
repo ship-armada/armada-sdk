@@ -25,7 +25,7 @@ import {
   type ReceiverNoteKeys,
   type TokenBalance,
 } from './sync/index';
-import type { StorageAdapter } from './storage/index';
+import { EncryptedStore, deriveWalletStorageKey, type StorageAdapter } from './storage/index';
 import { planTransfer, prove, type Plan, type ProofHandle } from './tx/index';
 import type { WitnessOutputRequest } from './tx/witness';
 import {
@@ -70,6 +70,8 @@ interface SdkContext {
   readonly chain: Chain;
   readonly chainId: number;
   readonly usdcAddress: `0x${string}`;
+  /** Pool deploy block — the genesis scan floor for wallets with no earlier creationBlock (e.g. ephemeral). */
+  readonly deployBlock: number;
   /** Canonical 32-byte hash (no 0x) of USDC — maps owned-note token hashes back to the address. */
   readonly usdcHash: string;
   /** hash (no 0x) → TokenData for every registered token (USDC + additionalTokens) — resolves a
@@ -80,7 +82,10 @@ interface SdkContext {
   readonly poolAddress: `0x${string}`;
   readonly prover: ProverAdapter;
   readonly artifacts: ArtifactSource;
+  /** Raw environment adapter (already opened). Per-wallet stores wrap this with at-rest encryption. */
   readonly storage: StorageAdapter;
+  /** When true, wallets persist through the raw adapter unencrypted — the §4.3 escape hatch. */
+  readonly allowPlaintextStorage: boolean;
   /** Optional operational telemetry sink (SPEC §8) — emits quick-sync outcomes when an indexer is used. */
   readonly telemetry?: TelemetrySink;
 }
@@ -124,6 +129,58 @@ export function quickSyncTelemetry(input: {
 }
 
 /**
+ * Resolve the per-wallet storage handle. By default the raw environment adapter is auto-wrapped in an
+ * `EncryptedStore` keyed per wallet (from the viewing private key), so decrypted note data is
+ * AEAD-encrypted at rest without the caller doing anything (SPEC §4.3, WS7.2 Option B). A per-wallet
+ * key (not one instance-wide key) means one wallet cannot read another's records even in a shared
+ * adapter. `allowPlaintext` (the `dangerouslyAllowPlaintextStorage` config flag) returns the raw
+ * adapter unwrapped — the only path to plaintext at rest. Exported so the auto-wrap default is
+ * unit-testable without a live chain.
+ */
+export function resolveWalletStorage(
+  raw: StorageAdapter,
+  viewingPrivateKey: Uint8Array,
+  allowPlaintext: boolean,
+): StorageAdapter {
+  if (allowPlaintext) return raw;
+  return new EncryptedStore(raw, deriveWalletStorageKey(viewingPrivateKey));
+}
+
+/**
+ * Whether a completed sync still owes a final on-chain root verification (SPEC §4.4: "root
+ * verification after each batch"). The indexer-served path already verified before acceptance, so
+ * only the RPC baseline path and the post-fallback RPC rescan need the closing check — but every
+ * sync ends having confirmed its accepted tree against the pool's root. Pure so the invariant
+ * "the RPC baseline path is never left unverified" (the H3 regression) is unit-testable.
+ */
+export function finalRootCheckRequired(usingIndexer: boolean, fellBack: boolean): boolean {
+  return !usingIndexer || fellBack;
+}
+
+/**
+ * Pick the `/fees` schedule key whose tier matches the plan's operation, so the in-band fee note
+ * commits the amount the relayer will actually require (SPEC §4.6.1). The relayer prices per
+ * submission selector (`relayer/modules/privacy-relay.ts::advertisedFeeForSelector`):
+ *   - bare `transact()` transfer/unshield → priced as MIN(transfer, unshield); either tier satisfies it,
+ *   - yield redeem (unshield whose adaptContract is the yield adapter) → `redeemAndShield` → `crossContract`,
+ *   - cross-chain unshield (CCTP adaptParams, non-yield adaptContract) → `atomicCrossChainUnshield` → `crossChainUnshield`.
+ * Pure so the mapping is unit-testable without a wallet. Binding the wrong (lower) tier makes the
+ * relayer reject the transaction after the user already proved for ~30s.
+ */
+export function feeScheduleKey(
+  request: Pick<PlanTransferRequest, 'unshield'>,
+  yieldAdapterAddress: string | undefined,
+): 'transfer' | 'unshield' | 'crossChainUnshield' | 'crossContract' {
+  if (!request.unshield) return 'transfer';
+  const adaptContract = request.unshield.adaptContract?.toLowerCase();
+  if (adaptContract !== undefined && yieldAdapterAddress !== undefined && adaptContract === yieldAdapterAddress) {
+    return 'crossContract';
+  }
+  if (request.unshield.adaptParams !== undefined) return 'crossChainUnshield';
+  return 'unshield';
+}
+
+/**
  * Decide a sync's resume window from the last synced block + current chain head. Pure so the
  * resume decision (the thing that must never regress to a genesis rescan) is unit-testable without
  * a provider. `fromBlock` is the resume point (checkpoint + 1); `scanned` is false when the head
@@ -155,15 +212,26 @@ class ArmadaWallet implements Wallet {
     creationBlock: number,
     private readonly signer: SpendSigner | undefined,
     private readonly ctx: SdkContext,
+    // Ephemeral (claimable-payment) wallets are in-memory only: they never hydrate from or write to
+    // the StorageAdapter, so no decrypted note data or seed-derived identity hits disk (SPEC §4.3/§6.5).
+    private readonly ephemeral: boolean = false,
   ) {
     this.syncedThrough = creationBlock - 1;
+    // Per-wallet at-rest encryption is on by default; the raw adapter is auto-wrapped (§4.3).
+    this.storage = resolveWalletStorage(ctx.storage, keyset.viewingPrivateKey, ctx.allowPlaintextStorage);
   }
+
+  // This wallet's storage handle — an EncryptedStore wrapping the shared adapter unless plaintext is allowed.
+  private readonly storage: StorageAdapter;
 
   get shieldedAddress(): string {
     return this.keyset.shieldedAddress;
   }
   get canSpend(): boolean {
     return this.signer !== undefined;
+  }
+  get persists(): boolean {
+    return !this.ephemeral;
   }
 
   private receiver(): ReceiverNoteKeys {
@@ -176,7 +244,12 @@ class ArmadaWallet implements Wallet {
   // Restore persisted scan state on first use so we resume instead of rescanning from genesis.
   private async hydrate(): Promise<void> {
     if (this.hydrated) return;
-    const persisted = await loadScanState(this.ctx.storage, this.keyset.shieldedAddress);
+    // Ephemeral wallets never touch storage — there is nothing persisted to restore (SPEC §6.5).
+    if (this.ephemeral) {
+      this.hydrated = true;
+      return;
+    }
+    const persisted = await loadScanState(this.storage, this.keyset.shieldedAddress);
     if (persisted !== undefined && persisted.syncedThrough > this.syncedThrough) {
       this.scanState = persisted.state;
       this.syncedThrough = persisted.syncedThrough;
@@ -282,9 +355,11 @@ class ArmadaWallet implements Wallet {
     this.emitter.emit('scan:progress', { syncedThrough: from - 1, fraction: 0 });
     try {
       const decryptors = this.decryptors();
-      // Only the indexer source is untrusted; snapshot so we can roll back a bad batch.
+      // Snapshot before applying so we can roll back a batch that fails root verification — on the
+      // indexer path (untrusted source) AND the RPC path (a provider that silently truncates a
+      // getLogs range yields a tree missing commitments that must not be persisted).
       const usingIndexer = this.ctx.eventSource !== this.ctx.rpcEventSource;
-      const rollback = usingIndexer ? this.scanState.snapshot() : undefined;
+      const rollback = this.scanState.snapshot();
 
       const { tailCovered } = await this.applyToHead(from, head, decryptors, emitProgress);
       let fellBack = false;
@@ -296,8 +371,22 @@ class ArmadaWallet implements Wallet {
           if (!(err instanceof RootMismatchError)) throw err;
           // Indexer served a tree that doesn't match chain — discard it and re-scan from RPC (truth).
           fellBack = true;
-          this.scanState = WalletScanState.restore(rollback!);
+          this.scanState = WalletScanState.restore(rollback);
           await this.applyBatch(this.ctx.rpcEventSource, from, head, decryptors, emitProgress);
+        }
+      }
+
+      // Final guard (SPEC §4.4): the accepted tree — RPC baseline or post-fallback RPC rescan — must
+      // reproduce the on-chain root. This is the ONLY verification on the pure-RPC path; a mismatch
+      // means the provider returned bad/truncated logs, so roll back and refuse to advance the
+      // checkpoint rather than persist a corrupt tree (a retry re-scans the range cleanly).
+      if (finalRootCheckRequired(usingIndexer, fellBack)) {
+        try {
+          await this.verifyCurrentRoot(head);
+        } catch (err) {
+          if (!(err instanceof RootMismatchError)) throw err;
+          this.scanState = WalletScanState.restore(rollback);
+          throw err;
         }
       }
 
@@ -310,7 +399,10 @@ class ArmadaWallet implements Wallet {
       if (qs !== null) this.ctx.telemetry?.emit(qs.event, qs.data as unknown as Readonly<Record<string, unknown>>);
 
       this.syncedThrough = head;
-      await saveScanState(this.ctx.storage, this.keyset.shieldedAddress, this.scanState, head);
+      // Ephemeral wallets keep their scan state in memory only — never write note data to disk (SPEC §6.5).
+      if (!this.ephemeral) {
+        await saveScanState(this.storage, this.keyset.shieldedAddress, this.scanState, head);
+      }
       this.emitter.emit('scan:complete', { syncedThrough: head });
       this.emitBalanceUpdates(head);
       this.emitReceivedNotes();
@@ -422,7 +514,10 @@ class ArmadaWallet implements Wallet {
     for (const txo of txos) {
       if (!roots.has(txo.tree)) roots.set(txo.tree, BigInt(`0x${this.scanState.treeRoot(txo.tree)}`));
     }
-    const feeValue = BigInt(request.fee.schedule['transfer'] ?? '0');
+    // Bind the fee tier that matches this plan's op, falling back to `transfer` for an older relayer
+    // schedule that predates the per-op keys, then to 0 (no fee note) if even that is absent.
+    const scheduleKey = feeScheduleKey(request, this.ctx.yieldAdapterAddress);
+    const feeValue = BigInt(request.fee.schedule[scheduleKey] ?? request.fee.schedule['transfer'] ?? '0');
     return planTransfer({
       txos,
       // Defaults to USDC; a caller can spend any pool token (e.g. yield vault shares on redeem).
@@ -588,6 +683,7 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
     chain: { type: ChainType.EVM, id: config.pool.chainId },
     chainId: config.pool.chainId,
     usdcAddress: config.pool.usdcAddress,
+    deployBlock: config.pool.deployBlock,
     usdcHash,
     tokenByHash,
     ...(config.pool.wrappers?.yieldAdapter !== undefined
@@ -597,6 +693,7 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
     prover: config.prover,
     artifacts: config.artifacts,
     storage: config.storage,
+    allowPlaintextStorage: config.dangerouslyAllowPlaintextStorage === true,
     ...(config.telemetry !== undefined ? { telemetry: config.telemetry } : {}),
   };
 
@@ -610,11 +707,12 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
       return new ArmadaWallet(keyset, opts.creationBlock, opts.signer, ctx);
     },
     // Ephemeral (claimable payments, SPEC §6): in-memory, never persisted, auto-attaches a signer so
-    // the claiming flow can spend. `seed` is the claim's 32-byte root; scans from the pool's genesis.
+    // the claiming flow can spend. `seed` is the claim's 32-byte root; scans from the pool's deploy
+    // block (block 0 would force a multi-million-block getLogs that public RPCs reject).
     async ephemeralFromSeed(seed) {
       const keyset = await deriveKeyset(seed);
       const signer = await LocalSigner.fromRootSecret(seed);
-      return new ArmadaWallet(keyset, 0, signer, ctx);
+      return new ArmadaWallet(keyset, config.pool.deployBlock, signer, ctx, true);
     },
     async viewOnlyFromViewingKey(shareableViewingKey, opts) {
       const { viewingPrivateKey, spendingPublicKey } = decodeShareableViewingKey(shareableViewingKey);

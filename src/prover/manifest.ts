@@ -25,6 +25,11 @@ function sha256Hex(bytes: Uint8Array): string {
   return hex;
 }
 
+/** SHA-256 digest of a resolved artifact set — the manifest entry the build emits for one shape. */
+export function artifactDigest(artifacts: ArtifactSet): ArtifactDigest {
+  return { wasm: sha256Hex(artifacts.wasm), zkey: sha256Hex(artifacts.zkey) };
+}
+
 /**
  * Verify an artifact set against the manifest for its shape. Throws `ArtifactIntegrityError` if the
  * shape is missing from the manifest or a wasm/zkey digest does not match.
