@@ -10,6 +10,7 @@ import {
   createTransferNote,
   encryptNoteToReceiver,
   tryDecryptCommitment,
+  decryptedCommitmentMatches,
   tryDecryptSentCommitment,
   type SenderNoteKeys,
   type ReceiverNoteKeys,
@@ -71,6 +72,29 @@ describe('note ECIES V2 codec (§4.4)', () => {
     expect(decrypted!.tokenHash).toEqual(note.tokenHash);
     // notePublicKey binds to the RECEIVER's master public key.
     expect(decrypted!.receiverAddressData.masterPublicKey).toEqual(receiver.masterPublicKey);
+  });
+
+  it('accepts a decrypted note that matches its on-chain commitment, rejects a mismatch (engine 9.6.0)', async () => {
+    // WHY (H7): a crafted ciphertext can decrypt for us with a preimage that does not match the
+    // committed leaf. The scan path must verify Poseidon(npk,token,value) === on-chain hash and drop
+    // the note, or it records a wrong-value TXO (inflated balance; unspendable at prove time).
+    const note = createTransferNote({
+      receiverAddressData: { masterPublicKey: receiver.masterPublicKey, viewingPublicKey: receiver.viewingPublicKey },
+      senderAddressData: { masterPublicKey: sender.masterPublicKey, viewingPublicKey: sender.viewingPublicKey },
+      value: 500000n,
+      tokenData,
+    });
+    const commitment = await encryptNoteToReceiver(note, senderKeys(sender), receiver.viewingPublicKey);
+    const decrypted = (await tryDecryptCommitment(commitment, receiverKeys(receiver), tokenDataGetter))!;
+
+    // The genuine on-chain leaf is the note's own commitment hash — accept (both 0x and bare forms).
+    const onChain = note.hash.toString(16).padStart(64, '0');
+    expect(decryptedCommitmentMatches(decrypted, onChain)).toBe(true);
+    expect(decryptedCommitmentMatches(decrypted, `0x${onChain}`)).toBe(true);
+
+    // A leaf committing to a different value (attacker put value X on-chain, ciphertext claims 500000) → reject.
+    const tamperedHash = (note.hash + 1n).toString(16).padStart(64, '0');
+    expect(decryptedCommitmentMatches(decrypted, tamperedHash)).toBe(false);
   });
 
   it('produces the on-chain commitment shape (packed ivTag + 3 data blocks, 32-byte blinded keys)', async () => {

@@ -2,6 +2,7 @@
 // ABOUTME: backend, standing in for an out-of-process signer (HSM/enclave/Salt-gated) in tests.
 
 import type { SpendSigner, SpendSignRequest, EddsaSignature } from './index';
+import { assertValidBabyJubjubPublicKey } from './keys-validate';
 
 /** Signature backend: receives the ENTIRE batch of intents at once, returns one signature per request. */
 export type SignBackend = (requests: readonly SpendSignRequest[]) => Promise<EddsaSignature[]>;
@@ -19,8 +20,12 @@ export class ExternalSigner implements SpendSigner {
     private readonly publicKeyBackend: PublicKeyBackend,
   ) {}
 
-  getSpendingPublicKey(): Promise<[bigint, bigint]> {
-    return this.publicKeyBackend();
+  async getSpendingPublicKey(): Promise<[bigint, bigint]> {
+    // The backend is out-of-process/untrusted at this boundary: validate its point before it flows
+    // into a circuit witness, so a garbage/off-curve key is a typed error, not a silent bad proof (§4.2).
+    const point = await this.publicKeyBackend();
+    assertValidBabyJubjubPublicKey(point, 'ExternalSigner.spendingPublicKey');
+    return point;
   }
 
   async signBatch(requests: readonly SpendSignRequest[]): Promise<EddsaSignature[]> {

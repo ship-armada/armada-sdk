@@ -54,17 +54,31 @@ export interface PlanSummary {
   readonly unshield?: { readonly recipient: `0x${string}`; readonly value: bigint };
 }
 
-/** Selected TXOs, change, shape, fee output — inspectable BEFORE proving. */
-export interface Plan {
+/**
+ * The shape/selection decision produced by `planTransfer` — everything except the tree-dependent
+ * merkle proofs (the pure planner has no tree). The wallet augments this into a full `Plan`.
+ */
+export interface PlanSelection {
   readonly shape: CircuitShape;
   readonly merkleRoot: bigint;
   readonly summary: PlanSummary;
   readonly boundParams: DecodedBoundParams;
   /**
    * The input notes the plan selected (all from `boundParams.treeNumber`). The witness builder reads
-   * each note's `random`/`value`/`position` from these and pairs it with the tree's merkle proof.
+   * each note's `random`/`value`/`position` from these and pairs it with the captured merkle proof.
    */
   readonly selectedInputs: readonly TXO[];
+}
+
+/**
+ * The full inspectable plan handed to `prove`. Extends the selection with each selected input's merkle
+ * proof, **captured at plan time from the same tree state as `merkleRoot`** (one per `selectedInputs`
+ * entry, same order). The prover reads these instead of re-deriving proofs from live scan state, so the
+ * path elements and the public-input root always correspond even if a sync appended commitments to the
+ * tree between planning and proving — a stale proof against a fresh root would fail deep in the circuit.
+ */
+export interface Plan extends PlanSelection {
+  readonly merkleProofs: readonly (readonly bigint[])[];
 }
 
 /** Calldata ready for submission. */
@@ -175,7 +189,7 @@ export interface TransactDecoder {
 export { decodeTransact, extractFeeOutput, TRANSACT_ABI } from './decode';
 
 // Transfer planning — inspectable Plan (TXO selection + change + fee output + circuit shape).
-export { planTransfer } from './plan';
+export { planTransfer, planWitnessInputs } from './plan';
 export type { PlanTransferParams, TransferOutputRequest, FeeRequest } from './plan';
 
 // transact() calldata serializer (inverse of decodeTransact) — proof G2 swap + Transaction structs.

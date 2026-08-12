@@ -3,6 +3,7 @@
 
 import type { ProverAdapter, ArtifactSet, Groth16Proof, ProveOptions } from './index';
 import { toGroth16Proof, toSnarkjsProof, type SnarkjsProof } from './groth16-format';
+import { ProofVerificationError } from '../errors';
 
 // snarkjs ships no types — model just the Groth16 surface we use.
 interface Groth16Backend {
@@ -38,8 +39,22 @@ export function createSnarkjsProver(): ProverAdapter {
       const groth16 = await loadGroth16();
       // snarkjs has no fine-grained progress hook; emit coarse start/end phases (replaces yieldToPaint).
       options?.onProgress?.({ phase: 'proving', fraction: 0 });
-      const { proof } = await groth16.fullProve(formattedInputs, artifacts.wasm, artifacts.zkey);
+      const { proof, publicSignals } = await groth16.fullProve(formattedInputs, artifacts.wasm, artifacts.zkey);
       options?.onProgress?.({ phase: 'proving', fraction: 1 });
+      // Local self-check (SPEC §4.5): verify the fresh proof against its own vkey before returning, so a
+      // proof that would revert on-chain (a witness-assembly or corrupted-artifact bug) is a typed error
+      // now, not a failed tx after ~30s. Guarded on vkey presence — the worker path forwards only
+      // wasm/zkey (it self-checks in-worker where the full artifact set is available).
+      const vkey = (artifacts as { vkey?: object }).vkey;
+      if (vkey !== undefined) {
+        let ok = false;
+        try {
+          ok = await groth16.verify(vkey, publicSignals, proof);
+        } catch (err) {
+          throw new ProofVerificationError('local proof self-check errored', { cause: err });
+        }
+        if (!ok) throw new ProofVerificationError('generated proof failed local vkey verification');
+      }
       return toGroth16Proof(proof);
     },
 

@@ -5,7 +5,8 @@ import { describe, it, expect } from 'vitest';
 import { getTokenDataERC20, getTokenDataHash } from '../core/index';
 import type { TXO } from '../sync/index';
 import { InsufficientBalanceError } from '../errors';
-import { planTransfer } from './plan';
+import { planTransfer, planWitnessInputs } from './plan';
+import type { Plan } from './index';
 
 const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' as const;
 const DAI = '0x6b175474e89094c44da98b954eedeac495271d0f' as const;
@@ -201,5 +202,35 @@ describe('planTransfer (§4.6)', () => {
     // 3 + 1 fee covered by the single 6-note.
     expect(plan.selectedInputs).toEqual([big]);
     expect(plan.selectedInputs[0]!.position).toBe(0);
+  });
+});
+
+describe('planWitnessInputs — the plan owns its merkle proofs (SPEC §4.6, plan/prove race)', () => {
+  const mkPlan = (merkleProofs: bigint[][]): Plan => ({
+    shape: { nullifiers: merkleProofs.length, commitments: 1 },
+    merkleRoot: 111n,
+    summary: { tokenAddress: USDC, inputTotal: 6n, outputs: [], changeValue: 0n },
+    boundParams: {
+      treeNumber: 0, minGasPrice: 0n, unshield: 0, chainID: 31337n,
+      adaptContract: '0x0000000000000000000000000000000000000000',
+      adaptParams: `0x${'00'.repeat(32)}`,
+    },
+    selectedInputs: merkleProofs.map((_, i) => txo(0, 6n, USDC_HASH, i)),
+    merkleProofs,
+  });
+
+  it('builds witness inputs from the plan-captured proofs, not from any live tree state', () => {
+    // WHY: prove() must consume the proofs snapshotted at plan time; a fresh derivation against a
+    // tree that a sync grew in the meantime yields path elements inconsistent with plan.merkleRoot,
+    // and the circuit's root constraint fails ~30s into proving, after the spend signature was released.
+    const proofs = [[1n, 2n, 3n], [4n, 5n, 6n]];
+    const inputs = planWitnessInputs(mkPlan(proofs));
+    expect(inputs.map((i) => i.merkleProofElements)).toEqual(proofs);
+    expect(inputs.map((i) => i.position)).toEqual([0, 1]);
+  });
+
+  it('throws if a captured proof is missing (a plan not built by the wallet)', () => {
+    const plan = { ...mkPlan([[1n]]), merkleProofs: [] as bigint[][] };
+    expect(() => planWitnessInputs(plan)).toThrow(/missing a captured merkle proof/);
   });
 });

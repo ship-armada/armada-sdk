@@ -83,6 +83,7 @@ export type { MerkleProof } from './merkletree';
 export {
   encryptNoteToReceiver,
   tryDecryptCommitment,
+  decryptedCommitmentMatches,
   tryDecryptSentCommitment,
   createTransferNote,
   DEFAULT_EVM_CHAIN,

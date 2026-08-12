@@ -8,6 +8,7 @@ import {
   IndexerEventSource,
   SyncEmitter,
   tryDecryptCommitment,
+  decryptedCommitmentMatches,
   tryDecryptSentCommitment,
   tryDecryptShield,
   ownedNoteFromTransactNote,
@@ -26,7 +27,7 @@ import {
   type TokenBalance,
 } from './sync/index';
 import { EncryptedStore, deriveWalletStorageKey, type StorageAdapter } from './storage/index';
-import { planTransfer, prove, type Plan, type ProofHandle } from './tx/index';
+import { planTransfer, planWitnessInputs, prove, type Plan, type ProofHandle } from './tx/index';
 import type { WitnessOutputRequest } from './tx/witness';
 import {
   deriveKeyset,
@@ -263,7 +264,12 @@ class ArmadaWallet implements Wallet {
     return {
       transact: async (c) => {
         const note = await tryDecryptCommitment(c.ciphertext, receiver, this.ctx.tokenDataGetter, this.ctx.chain);
-        return note ? ownedNoteFromTransactNote(note) : undefined;
+        if (note === undefined) return undefined;
+        // Verify the decrypted preimage hashes to the on-chain commitment (engine 9.6.0 fix): drop a
+        // crafted ciphertext whose (npk, token, value) don't match the committed leaf, rather than
+        // record a wrong-value TXO that inflates the balance and can't be spent.
+        if (!decryptedCommitmentMatches(note, c.hash)) return undefined;
+        return ownedNoteFromTransactNote(note);
       },
       shield: (c) => tryDecryptShield(c, receiver),
       sentTransact: async (c) => {
@@ -518,7 +524,7 @@ class ArmadaWallet implements Wallet {
     // schedule that predates the per-op keys, then to 0 (no fee note) if even that is absent.
     const scheduleKey = feeScheduleKey(request, this.ctx.yieldAdapterAddress);
     const feeValue = BigInt(request.fee.schedule[scheduleKey] ?? request.fee.schedule['transfer'] ?? '0');
-    return planTransfer({
+    const selection = planTransfer({
       txos,
       // Defaults to USDC; a caller can spend any pool token (e.g. yield vault shares on redeem).
       tokenAddress: request.tokenAddress ?? this.ctx.usdcAddress,
@@ -537,14 +543,20 @@ class ArmadaWallet implements Wallet {
       roots,
       chainID: BigInt(this.ctx.chainId),
     });
+    // Capture each selected input's merkle proof from the SAME scan state the roots came from (no await
+    // since roots were read above), so the plan owns proofs consistent with its `merkleRoot`. `prove()`
+    // uses these rather than re-reading live state, closing the plan→prove tree-append race (SPEC §4.6).
+    const merkleProofs = selection.selectedInputs.map((txo) =>
+      this.scanState.merkleProof(txo.tree, txo.position).elements.map((e) => BigInt(`0x${e}`)),
+    );
+    return { ...selection, merkleProofs };
   }
 
   async prove(plan: Plan, options?: ProveOptions): Promise<ProofHandle> {
     if (!this.signer) throw new NoSpendCapabilityError('prove: wallet has no SpendSigner');
-    const inputs = plan.selectedInputs.map((txo) => {
-      const proof = this.scanState.merkleProof(txo.tree, txo.position);
-      return { random: txo.random, value: txo.value, position: txo.position, merkleProofElements: proof.elements.map((e) => BigInt(`0x${e}`)) };
-    });
+    // Use the proofs the plan captured at plan time (NOT a fresh scan-state read) so the path elements
+    // match `plan.merkleRoot` even if a sync advanced the tree since planning (SPEC §4.6).
+    const inputs = planWitnessInputs(plan);
     // Emit order (Spike 2): broadcaster fee note FIRST, then recipients, then change back to self.
     const outputs: WitnessOutputRequest[] = [];
     if (plan.summary.feeOutput) outputs.push({ receiverAddress: plan.summary.feeOutput.toShieldedAddress, value: plan.summary.feeOutput.value });
