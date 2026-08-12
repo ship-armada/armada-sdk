@@ -62,12 +62,6 @@ export type { IndexerEventSourceOptions } from './event-source';
 export { reconstructReceiveHistory, reconstructHistory, newReceivedNotes, ownSpendTxids } from './history';
 export type { HistoryEntry, HistoryCategory, TokenAddressResolver, ReconstructHistoryInput, SentRecipient } from './history';
 
-// Scan checkpoints + resumable scan.
-export { CheckpointStore } from './checkpoints';
-export type { ScanCheckpoint } from './checkpoints';
-export { runScan } from './scan';
-export type { ScanOptions, ScanResult } from './scan';
-
 // Wallet scan orchestrator — folds decoded events into trees/TXOs/balances with root verification.
 export { WalletScanState, ownedNoteFromTransactNote } from './scan-engine';
 export type { WalletDecryptors, Decryptor, OwnedNote, SentOutput, ApplyResult, ScanStateSnapshot } from './scan-engine';

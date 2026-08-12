@@ -11,6 +11,7 @@ import {
   resolveWalletStorage,
 } from './sdk';
 import { deriveKeyset, LocalSigner } from './wallet/index';
+import { saveScanState, WalletScanState } from './sync/index';
 import { MemoryStorageAdapter } from './storage/index';
 import { NoSpendCapabilityError, InvalidKeyMaterialError } from './errors';
 import { initPoseidonPromise, Mnemonic } from './core/index';
@@ -130,6 +131,26 @@ describe('createArmadaSdk (§4.1)', () => {
     // Spend-path calls on a view-only wallet throw NoSpendCapabilityError.
     const fee = { schedule: { transfer: '0' }, broadcasterShieldedAddress: '0zk', feesCacheId: 'x', expiresAt: 0 };
     await expect(viewOnly.planTransfer({ outputs: [{ to0zk: '0zk', amount: 1n }], fee })).rejects.toThrow(NoSpendCapabilityError);
+  });
+
+  it('syncStatus reports the checkpoint (creationBlock-1 fresh) and syncing=false without a sync (P4.6)', async () => {
+    const sdk = await createArmadaSdk(makeConfig());
+    const wallet = await sdk.wallet.fromRootSecret(seed(0x66), { creationBlock: 5 });
+    expect(await wallet.syncStatus()).toEqual({ syncedThrough: 4, syncing: false }); // no persisted state yet
+    await sdk.close();
+  });
+
+  it('syncStatus hydrates the persisted checkpoint from storage (P4.6)', async () => {
+    const store = new MemoryStorageAdapter();
+    await store.open({ schemaVersion: 1, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1 });
+    const address = (await deriveKeyset(seed(0x77))).shieldedAddress;
+    await saveScanState(store, address, new WalletScanState(), 500); // pre-seed a checkpoint at block 500
+
+    // Plaintext storage so the wallet reads the raw adapter we seeded (bypasses the per-wallet key).
+    const sdk = await createArmadaSdk({ ...makeConfig(), storage: store, dangerouslyAllowPlaintextStorage: true });
+    const wallet = await sdk.wallet.fromRootSecret(seed(0x77), { creationBlock: 1 });
+    expect(await wallet.syncStatus()).toEqual({ syncedThrough: 500, syncing: false });
+    await sdk.close();
   });
 
   it('emits storage.chain-reset telemetry when a redeploy resets chain state (P3.7)', async () => {
