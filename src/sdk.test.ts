@@ -108,6 +108,23 @@ describe('createArmadaSdk (§4.1)', () => {
     await expect(viewOnly.planTransfer({ outputs: [{ to0zk: '0zk', amount: 1n }], fee })).rejects.toThrow(NoSpendCapabilityError);
   });
 
+  it('emits storage.chain-reset telemetry when a redeploy resets chain state (P3.7)', async () => {
+    // WHY: an operator should see chain-derived state being wiped on a deploy-block change. Pre-open the
+    // store under deployBlock 1, then construct an instance at deployBlock 2 → mismatch → reset → emit.
+    const store = new MemoryStorageAdapter();
+    await store.open({ schemaVersion: 1, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1 });
+    const events: { event: string; data: Readonly<Record<string, unknown>> }[] = [];
+    const cfg: ArmadaSdkConfig = {
+      ...makeConfig(),
+      storage: store,
+      pool: { chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 2, usdcAddress: USDC },
+      telemetry: { emit: (event, data) => events.push({ event, data }) },
+    };
+    const sdk = await createArmadaSdk(cfg);
+    expect(events).toContainEqual({ event: 'storage.chain-reset', data: { chainId: 31337, deployBlock: 2 } });
+    await sdk.close();
+  });
+
   it('supports multiple independent instances (no shared module state)', async () => {
     const a = await createArmadaSdk(makeConfig());
     const b = await createArmadaSdk(makeConfig());

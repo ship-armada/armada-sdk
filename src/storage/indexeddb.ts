@@ -85,15 +85,17 @@ export class IndexedDBStorageAdapter implements StorageAdapter {
     return db.transaction(STORE, mode).objectStore(STORE);
   }
 
-  async open(namespace: StorageNamespace): Promise<void> {
+  async open(namespace: StorageNamespace): Promise<{ reset: boolean }> {
     await this.database();
     const nsBytes = encodeNamespace(namespace);
     const previous = await this.get(NAMESPACE_KEY);
-    if (previous !== undefined && !bytesEqual(previous, nsBytes)) {
+    const reset = previous !== undefined && !bytesEqual(previous, nsBytes);
+    if (reset) {
       // Deployment changed under a preserved identity → reset chain-derived state (SPEC §4.3).
       await this.resetChainState();
     }
     await this.put(NAMESPACE_KEY, nsBytes);
+    return { reset };
   }
 
   async get(key: string): Promise<Uint8Array | undefined> {

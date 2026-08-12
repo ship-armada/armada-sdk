@@ -35,14 +35,16 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
 export class MemoryStorageAdapter implements StorageAdapter {
   private readonly store = new Map<string, Uint8Array>();
 
-  async open(namespace: StorageNamespace): Promise<void> {
+  async open(namespace: StorageNamespace): Promise<{ reset: boolean }> {
     const nsBytes = encodeNamespace(namespace);
     const previous = this.store.get(NAMESPACE_KEY);
-    if (previous !== undefined && !bytesEqual(previous, nsBytes)) {
+    const reset = previous !== undefined && !bytesEqual(previous, nsBytes);
+    if (reset) {
       // Deployment changed under a preserved identity → reset chain-derived state (SPEC §4.3).
       await this.resetChainState();
     }
     this.store.set(NAMESPACE_KEY, nsBytes);
+    return { reset };
   }
 
   async get(key: string): Promise<Uint8Array | undefined> {

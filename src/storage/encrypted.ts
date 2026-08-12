@@ -66,7 +66,7 @@ export class EncryptedStore implements StorageAdapter {
     }
   }
 
-  open(namespace: StorageNamespace): Promise<void> {
+  open(namespace: StorageNamespace): Promise<{ reset: boolean }> {
     return this.inner.open(namespace);
   }
 
