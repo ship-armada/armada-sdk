@@ -18,6 +18,13 @@ export interface PoolConfig {
   readonly additionalTokens?: readonly `0x${string}`[];
   readonly wrappers?: { gaslessShield?: `0x${string}`; yieldAdapter?: `0x${string}` };
   readonly cctp?: { domain: number; messenger: `0x${string}` };
+  /**
+   * Confirmations a commitment needs before it counts as **spendable** rather than **pending** in
+   * `balances()` (default 0 = count immediately). Set it to the pool's finality depth to give recent
+   * shields/transfers a reorg buffer in the balance view. (Spend-path gating and a checkpoint reorg
+   * margin are tracked separately — they need reorg-aware tree truncation.)
+   */
+  readonly finalityThreshold?: number;
 }
 
 export interface RpcConfig {

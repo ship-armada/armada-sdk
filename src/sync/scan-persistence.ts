@@ -28,13 +28,31 @@ export async function saveScanState(
   await storage.put(scanStateKey(shieldedAddress), encoder.encode(JSON.stringify(data)));
 }
 
-/** Load a wallet's persisted scan state, or `undefined` on a first run. */
+/**
+ * Load a wallet's persisted scan state, or `undefined` on a first run OR when the stored record is
+ * unreadable. Scan state is a chain-derived cache: a corrupt blob (a bit-flip, an interrupted write, an
+ * undecryptable record after a key/format change) must degrade to a cache MISS so `sync()` rescans from
+ * `creationBlock` — not throw and brick every future sync (the "delete the DB by hand" pitfall §4.3
+ * deletes). The next `saveScanState` overwrites the bad record.
+ */
 export async function loadScanState(
   storage: StorageAdapter,
   shieldedAddress: string,
 ): Promise<{ state: WalletScanState; syncedThrough: number } | undefined> {
-  const raw = await storage.get(scanStateKey(shieldedAddress));
+  let raw: Uint8Array | undefined;
+  try {
+    raw = await storage.get(scanStateKey(shieldedAddress));
+  } catch {
+    // e.g. an EncryptedStore GCM auth failure on a corrupted/foreign blob — treat as a cache miss.
+    return undefined;
+  }
   if (raw === undefined) return undefined;
-  const data = JSON.parse(decoder.decode(raw)) as PersistedScan;
-  return { state: WalletScanState.restore(data.snapshot), syncedThrough: data.syncedThrough };
+  try {
+    const data = JSON.parse(decoder.decode(raw)) as PersistedScan;
+    if (typeof data?.syncedThrough !== 'number' || data.snapshot === undefined) return undefined;
+    return { state: WalletScanState.restore(data.snapshot), syncedThrough: data.syncedThrough };
+  } catch {
+    // Malformed JSON / snapshot shape restore failure — rescan rather than wedge.
+    return undefined;
+  }
 }
