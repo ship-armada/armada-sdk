@@ -6,36 +6,9 @@
 //   ES2022 (no DOM) since the SDK also targets Node. Node consumers never instantiate this class.
 
 import type { StorageAdapter, StorageNamespace } from './index';
+import { NAMESPACE_KEY, isPreserved, encodeNamespace, bytesEqual } from './namespace';
 
-// Chain-derived state (merkle, TXOs, scan checkpoints) lives outside these prefixes and is wiped by
-// resetChainState. `identity/` holds wallet-identity records; `durable/` holds other rootSecret-scoped
-// records that MUST survive a redeploy — notably the §6.2 claim-seed counter, whose reset would cause
-// catastrophic seed reuse. Both are preserved across redeploys.
-const IDENTITY_PREFIX = 'identity/';
-const DURABLE_PREFIX = 'durable/';
-const NAMESPACE_KEY = 'identity/__namespace__';
 const STORE = 'kv';
-
-/** Keys that survive resetChainState (deployment change) — identity + durable rootSecret-scoped records. */
-function isPreserved(key: string): boolean {
-  return key.startsWith(IDENTITY_PREFIX) || key.startsWith(DURABLE_PREFIX);
-}
-
-const textEncoder = new TextEncoder();
-
-function encodeNamespace(ns: StorageNamespace): Uint8Array {
-  return textEncoder.encode(
-    `${ns.schemaVersion}|${ns.chainId}|${ns.poolAddress.toLowerCase()}|${ns.deployBlock}`,
-  );
-}
-
-function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i += 1) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
-}
 
 function toUint8Array(value: unknown): Uint8Array {
   if (value instanceof Uint8Array) return value;
