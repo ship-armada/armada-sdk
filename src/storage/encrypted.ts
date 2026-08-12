@@ -33,7 +33,7 @@ function randomNonce(): Uint8Array {
  * fresh 12-byte nonce prepended to the ciphertext. A tab crash / disk read leaks nothing without the
  * key; `get` throws on a wrong key or tampered blob (GCM auth failure).
  */
-export class EncryptedStore {
+export class EncryptedStore implements StorageAdapter {
   constructor(
     private readonly inner: StorageAdapter,
     private readonly key: Uint8Array,
@@ -58,10 +58,13 @@ export class EncryptedStore {
 
   async get(key: string): Promise<Uint8Array | undefined> {
     const blob = await this.inner.get(key);
-    if (blob === undefined) return undefined;
-    const nonce = blob.slice(0, NONCE_BYTES);
-    const ciphertext = blob.slice(NONCE_BYTES);
-    return gcm(this.key, nonce).decrypt(ciphertext);
+    return blob === undefined ? undefined : this.decrypt(blob);
+  }
+
+  async *list(prefix: string): AsyncIterable<{ key: string; value: Uint8Array }> {
+    for await (const { key, value } of this.inner.list(prefix)) {
+      yield { key, value: this.decrypt(value) };
+    }
   }
 
   del(key: string): Promise<void> {
@@ -74,5 +77,12 @@ export class EncryptedStore {
 
   close(): Promise<void> {
     return this.inner.close();
+  }
+
+  /** GCM-decrypt a `nonce ‖ ciphertext` blob. Throws on wrong key / tampered blob (auth failure). */
+  private decrypt(blob: Uint8Array): Uint8Array {
+    const nonce = blob.slice(0, NONCE_BYTES);
+    const ciphertext = blob.slice(NONCE_BYTES);
+    return gcm(this.key, nonce).decrypt(ciphertext);
   }
 }

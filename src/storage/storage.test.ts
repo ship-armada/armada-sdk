@@ -90,6 +90,19 @@ describe('EncryptedStore', () => {
     await expect(wrong.get('chain/note/1')).rejects.toThrow();
   });
 
+  it('list() decrypts each value so it is a full StorageAdapter (satisfies the type)', async () => {
+    // WHY: EncryptedStore must implement the whole StorageAdapter surface, or a consumer can't pass
+    // it as `config.storage`. `list` iterates the inner (ciphertext) entries and decrypts each value.
+    const store = new EncryptedStore(new MemoryStorageAdapter(), key);
+    await store.open(ns(1));
+    await store.put('chain/note/1', bytes('one'));
+    await store.put('chain/note/2', bytes('two'));
+    await store.put('identity/wallet/x', bytes('id'));
+    const out: Record<string, string> = {};
+    for await (const { key: k, value } of store.list('chain/note/')) out[k] = str(value);
+    expect(out).toEqual({ 'chain/note/1': 'one', 'chain/note/2': 'two' });
+  });
+
   it('deriveStorageKey is deterministic and rejects non-32-byte input', () => {
     const a = deriveStorageKey(new Uint8Array(32).fill(1));
     const b = deriveStorageKey(new Uint8Array(32).fill(1));
