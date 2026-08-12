@@ -27,7 +27,7 @@ import {
   type TokenBalance,
 } from './sync/index';
 import { EncryptedStore, deriveWalletStorageKey, type StorageAdapter } from './storage/index';
-import { planTransfer, planWitnessInputs, prove, type Plan, type ProofHandle } from './tx/index';
+import { planTransfer, planWitnessInputs, prove, runPreflight, type Plan, type ProofHandle, type PreflightResult, type FeeQuote } from './tx/index';
 import type { WitnessOutputRequest } from './tx/witness';
 import {
   deriveKeyset,
@@ -67,6 +67,10 @@ interface SdkContext {
   readonly rpcEventSource: RpcEventSource;
   /** On-chain pool commitment root at a given block — used to verify indexer-sourced batches. */
   readonly merkleRootAt: (blockTag: number) => Promise<string>;
+  /** Preflight (§4.7): is `root` still in the pool's accepted history for `treeNumber`? */
+  readonly isKnownRoot: (treeNumber: number, root: bigint) => Promise<boolean>;
+  /** Preflight (§4.7): has `(treeNumber, nullifier)` already been spent on-chain? */
+  readonly isNullifierSpent: (treeNumber: number, nullifier: bigint) => Promise<boolean>;
   readonly tokenDataGetter: TokenDataGetter;
   readonly chain: Chain;
   readonly chainId: number;
@@ -508,6 +512,24 @@ class ArmadaWallet implements Wallet {
       .map((txo) => ({ tree: txo.tree, nullifier: TransactNote.getNullifier(this.keyset.nullifyingKey, txo.position) }));
   }
 
+  async preflight(plan: Plan, options?: { feeQuote?: FeeQuote }): Promise<PreflightResult> {
+    // Cheap pre-proof checks (SPEC §4.7): the proved root must still be accepted by the pool, no input
+    // note may already be spent on-chain, and (if a quote is given) it must be unexpired — turning the
+    // 30-second-proof-then-revert failure into a typed finding. Nullifiers are derived from THIS plan's
+    // selected inputs (not the whole wallet), so it works view-only too.
+    const nullifiers = plan.selectedInputs.map((txo) => ({
+      tree: txo.tree,
+      nullifier: TransactNote.getNullifier(this.keyset.nullifyingKey, txo.position),
+    }));
+    return runPreflight({
+      plan,
+      nullifiers,
+      queries: { isKnownRoot: this.ctx.isKnownRoot, isNullifierSpent: this.ctx.isNullifierSpent },
+      ...(options?.feeQuote !== undefined ? { feeQuote: options.feeQuote } : {}),
+      now: Date.now(),
+    });
+  }
+
   async history(options?: { sinceBlock?: number }): Promise<HistoryEntry[]> {
     let entries = reconstructHistory({
       ownedTxos: this.scanState.ownedTxos(),
@@ -717,15 +739,32 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
     : rpcEventSource;
 
   // On-chain commitment root at a block — read at the synced head so verification compares like-for-like.
-  const rootIface = new Interface(['function merkleRoot() view returns (bytes32)']);
+  const rootIface = new Interface([
+    'function merkleRoot() view returns (bytes32)',
+    'function rootHistory(uint256, bytes32) view returns (bool)',
+    'function nullifiers(uint256, bytes32) view returns (bool)',
+  ]);
   const merkleRootAt = async (blockTag: number): Promise<string> => {
     const data = rootIface.encodeFunctionData('merkleRoot', []);
     const res = await provider.call({ to: config.pool.poolAddress, data, blockTag });
     return rootIface.decodeFunctionResult('merkleRoot', res)[0] as string;
   };
+  const bytes32 = (n: bigint): string => `0x${n.toString(16).padStart(64, '0')}`;
+  const isKnownRoot = async (treeNumber: number, root: bigint): Promise<boolean> => {
+    const data = rootIface.encodeFunctionData('rootHistory', [treeNumber, bytes32(root)]);
+    const res = await provider.call({ to: config.pool.poolAddress, data });
+    return rootIface.decodeFunctionResult('rootHistory', res)[0] as boolean;
+  };
+  const isNullifierSpent = async (treeNumber: number, nullifier: bigint): Promise<boolean> => {
+    const data = rootIface.encodeFunctionData('nullifiers', [treeNumber, bytes32(nullifier)]);
+    const res = await provider.call({ to: config.pool.poolAddress, data });
+    return rootIface.decodeFunctionResult('nullifiers', res)[0] as boolean;
+  };
 
   const ctx: SdkContext = {
     provider,
+    isKnownRoot,
+    isNullifierSpent,
     eventSource,
     rpcEventSource,
     merkleRootAt,

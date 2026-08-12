@@ -202,6 +202,10 @@ export type { TransactionData, TransactionBoundParams } from './serialize';
 export { prove } from './prove';
 export type { ProveParams } from './prove';
 
+// Preflight — cheap pre-proof checks over a Plan (SPEC §4.7).
+export { runPreflight } from './preflight';
+export type { PreflightCheck, PreflightFinding, PreflightResult, PreflightQueries, PreflightParams } from './preflight';
+
 // Shield-request builder — the ShieldRequest struct for privacyPool.shield() (#410).
 export { buildShieldRequest, generateShieldPrivateKey } from './shield';
 export type { ShieldRequest, ShieldRequestInput } from './shield';
