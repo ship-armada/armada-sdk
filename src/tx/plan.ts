@@ -5,7 +5,8 @@ import { getTokenDataERC20, getTokenDataHash } from '../core/index';
 import type { TXO } from '../sync/index';
 import { InsufficientBalanceError } from '../errors';
 import type { CircuitShape } from '../prover/index';
-import type { Plan, PlanOutput, PlanSummary, DecodedBoundParams } from './index';
+import type { Plan, PlanSelection, PlanOutput, PlanSummary, DecodedBoundParams } from './index';
+import type { WitnessInput } from './witness';
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as const;
 const ZERO_BYTES32 = `0x${'00'.repeat(32)}` as const;
@@ -80,7 +81,7 @@ function selectWithinTree(txos: readonly TXO[], target: bigint): { selected: TXO
  * because the relayer verifies the first decryptable note. The summary carries `feeOutput` separately;
  * the prove step is responsible for placing it first.
  */
-export function planTransfer(params: PlanTransferParams): Plan {
+export function planTransfer(params: PlanTransferParams): PlanSelection {
   const outputTotal = params.outputs.reduce((sum, o) => sum + o.value, 0n);
   const feeValue = params.fee?.value ?? 0n;
   const unshieldValue = params.unshield?.value ?? 0n;
@@ -153,4 +154,21 @@ export function planTransfer(params: PlanTransferParams): Plan {
   };
 
   return { shape, merkleRoot, summary, boundParams, selectedInputs: best.selected };
+}
+
+/**
+ * Build the witness inputs for a plan from its OWN captured merkle proofs (SPEC §4.6). Reading
+ * `plan.merkleProofs` — snapshotted at plan time alongside `plan.merkleRoot` — rather than deriving
+ * proofs from live scan state is what keeps the path elements consistent with the proved root: a sync
+ * that appends to the tree between planning and proving no longer produces an unprovable stale-root
+ * witness. Throws if a proof is missing (a plan that wasn't built by the wallet).
+ */
+export function planWitnessInputs(plan: Plan): WitnessInput[] {
+  return plan.selectedInputs.map((txo, i) => {
+    const merkleProofElements = plan.merkleProofs[i];
+    if (merkleProofElements === undefined) {
+      throw new Error(`planWitnessInputs: plan is missing a captured merkle proof for input ${i}`);
+    }
+    return { random: txo.random, value: txo.value, position: txo.position, merkleProofElements };
+  });
 }

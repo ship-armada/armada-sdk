@@ -173,6 +173,19 @@ export async function tryDecryptCommitment(
 }
 
 /**
+ * Verify a decrypted transact note's own commitment hash equals the on-chain leaf commitment (engine
+ * 9.6.0 fix). A crafted ciphertext can decrypt successfully for our viewing key yet carry a
+ * `(notePublicKey, tokenHash, value)` preimage that does NOT match the committed leaf; accepting it
+ * would record a wrong-value TXO (inflated balance, and a spend that fails at prove time). `note.hash`
+ * is `Poseidon(notePublicKey, tokenHash, value)`; `onChainCommitmentHash` is the leaf from the Transact
+ * event (0x-prefixed or bare). Callers drop the note when this returns false.
+ */
+export function decryptedCommitmentMatches(note: TransactNote, onChainCommitmentHash: string): boolean {
+  const onChain = BigInt(onChainCommitmentHash.startsWith('0x') ? onChainCommitmentHash : `0x${onChainCommitmentHash}`);
+  return note.hash === onChain;
+}
+
+/**
  * Sender side: recover a note WE sent from its on-chain ciphertext, using our own viewing key + the
  * note's `annotationData` (only the author can decrypt it). The returned `TransactNote` has
  * `receiverAddressData` = the RECIPIENT and `outputType` marking it a transfer / broadcaster fee /
