@@ -3,10 +3,18 @@
 
 import type { StorageAdapter, StorageNamespace } from './index';
 
-// Chain-derived state (merkle, TXOs, scan checkpoints) lives outside this prefix and is wiped by
-// resetChainState; wallet-identity records live under it and are preserved across redeploys.
+// Chain-derived state (merkle, TXOs, scan checkpoints) lives outside these prefixes and is wiped by
+// resetChainState. `identity/` holds wallet-identity records; `durable/` holds other rootSecret-scoped
+// records that MUST survive a redeploy — notably the §6.2 claim-seed counter, whose reset would cause
+// catastrophic seed reuse. Both are preserved across redeploys.
 const IDENTITY_PREFIX = 'identity/';
+const DURABLE_PREFIX = 'durable/';
 const NAMESPACE_KEY = 'identity/__namespace__';
+
+/** Keys that survive resetChainState (deployment change) — identity + durable rootSecret-scoped records. */
+function isPreserved(key: string): boolean {
+  return key.startsWith(IDENTITY_PREFIX) || key.startsWith(DURABLE_PREFIX);
+}
 
 const textEncoder = new TextEncoder();
 
@@ -58,7 +66,7 @@ export class MemoryStorageAdapter implements StorageAdapter {
 
   async resetChainState(): Promise<void> {
     for (const key of [...this.store.keys()]) {
-      if (!key.startsWith(IDENTITY_PREFIX)) this.store.delete(key);
+      if (!isPreserved(key)) this.store.delete(key);
     }
   }
 

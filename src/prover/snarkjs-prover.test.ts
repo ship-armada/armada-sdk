@@ -5,7 +5,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createSnarkjsProver } from './snarkjs-prover';
-import { ProofVerificationError } from '../errors';
+import { ProofVerificationError, AbortedError } from '../errors';
 import type { ArtifactSet, ProofProgress } from './index';
 
 const fixture = (name: string): string => fileURLToPath(new URL(`../../test/fixtures/prover/${name}`, import.meta.url));
@@ -59,7 +59,7 @@ describe('snarkjs ProverAdapter (§4.5)', () => {
     try {
       const controller = new AbortController();
       controller.abort();
-      await expect(prover.prove({ a: '3', b: '11' }, artifacts, { signal: controller.signal })).rejects.toThrow(/aborted/);
+      await expect(prover.prove({ a: '3', b: '11' }, artifacts, { signal: controller.signal })).rejects.toBeInstanceOf(AbortedError);
     } finally {
       await prover.close();
     }

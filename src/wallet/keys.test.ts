@@ -8,6 +8,7 @@ import { dirname, join } from 'node:path';
 import { initPoseidonPromise, verifyEDDSA } from '../core/index';
 import { deriveKeyset } from './derive';
 import { LocalSigner } from './local-signer';
+import { InvalidRequestError } from '../errors';
 import type { SpendSignRequest } from './index';
 
 interface KeysetVector {
@@ -101,5 +102,11 @@ describe('LocalSigner (SpendSigner)', () => {
     sigs.forEach((sig, i) => {
       expect(verifyEDDSA(messages[i]!, { R8: [sig.R8[0], sig.R8[1]], S: sig.S }, pubkey)).toBe(true);
     });
+  });
+
+  it('dispose() zeroizes the spending key and refuses to sign afterward (P3.2 zeroization)', async () => {
+    const signer = await LocalSigner.fromRootSecret(hexToBytes(v.rootSecret));
+    signer.dispose();
+    await expect(signer.signBatch([req(1n)])).rejects.toThrow(InvalidRequestError);
   });
 });

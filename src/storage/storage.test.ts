@@ -41,14 +41,16 @@ describe('MemoryStorageAdapter', () => {
     expect(await collect(s.list('chain/txo/'))).toEqual(['chain/txo/1', 'chain/txo/2']);
   });
 
-  it('resetChainState clears chain-derived keys, preserves identity/', async () => {
+  it('resetChainState clears chain-derived keys, preserves identity/ and durable/ (P3.4)', async () => {
     const s = new MemoryStorageAdapter();
     await s.open(ns(10));
     await s.put('chain/merkle/0', bytes('m'));
     await s.put('identity/wallet/x', bytes('id'));
+    await s.put('durable/claim-counter', bytes('7')); // MUST survive a redeploy — else seed reuse (§6.2)
     await s.resetChainState();
     expect(await s.get('chain/merkle/0')).toBeUndefined();
     expect(str((await s.get('identity/wallet/x'))!)).toBe('id');
+    expect(str((await s.get('durable/claim-counter'))!)).toBe('7');
   });
 
   it('reopening under a changed deployBlock auto-resets chain state but keeps identity', async () => {

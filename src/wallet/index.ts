@@ -27,6 +27,8 @@ export interface SpendSignRequest {
 export interface SpendSigner {
   getSpendingPublicKey(): Promise<[bigint, bigint]>;
   signBatch(requests: readonly SpendSignRequest[]): Promise<EddsaSignature[]>;
+  /** Optional: release/zeroize held key material (SPEC §4.2). A disposed signer refuses to sign. */
+  dispose?(): void;
 }
 
 /** A loaded wallet: viewing capability ± spend capability (view-only = no SpendSigner attached). */

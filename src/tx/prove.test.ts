@@ -10,6 +10,7 @@ import { createTransferNote } from '../sync/index';
 import { prove } from './prove';
 import { buildTransactCalldata, transactionToTuple } from './serialize';
 import { decodeTransact } from './decode';
+import { ProofHandleInvalidatedError, ProofExpiredError } from '../errors';
 import type { BuildWitnessParams } from './witness';
 import type { ArtifactSource, ArtifactSet, ProverAdapter, Groth16Proof, CircuitShape } from '../prover/index';
 import type { PlanSummary } from './index';
@@ -71,8 +72,9 @@ describe('prove() + ProofHandle (§4.6)', () => {
       close: async () => {},
     };
 
+    const FUTURE = 4102444800000; // 2100-01-01 — a policy TTL well beyond now, so the handle is usable.
     const handle = await prove(
-      { witness: await witnessParams(), artifacts, prover, poolAddress: POOL, expiresAt: 123 },
+      { witness: await witnessParams(), artifacts, prover, poolAddress: POOL, expiresAt: FUTURE },
       { onProgress: (p) => progress.push(p.fraction) },
     );
 
@@ -85,7 +87,7 @@ describe('prove() + ProofHandle (§4.6)', () => {
 
     // The handle owns calldata to the pool; it decodes back to the proved nullifiers/commitments.
     expect(handle.isValid).toBe(true);
-    expect(handle.expiresAt).toBe(123);
+    expect(handle.expiresAt).toBe(FUTURE);
     const calldata = handle.toTransactCalldata();
     expect(calldata.to).toBe(POOL);
     const [decoded] = decodeTransact(calldata.data);
@@ -103,7 +105,19 @@ describe('prove() + ProofHandle (§4.6)', () => {
     expect(handle.isValid).toBe(true);
     handle.invalidate();
     expect(handle.isValid).toBe(false);
-    expect(() => handle.toTransactCalldata()).toThrow(/invalidated/);
+    expect(() => handle.toTransactCalldata()).toThrow(ProofHandleInvalidatedError);
+  });
+
+  it('enforces the expiresAt policy TTL — an expired handle is invalid and refuses calldata (P3.5)', async () => {
+    // WHY: expiresAt was previously a hint nothing read (a footgun — it looked enforced). Now a handle
+    // proved with a past TTL is unusable, so a signer/app policy window is actually honored.
+    const artifacts: ArtifactSource = { resolve: async () => DUMMY_ARTIFACTS };
+    const prover: ProverAdapter = { prove: async () => DUMMY_PROOF, verify: async () => true, close: async () => {} };
+    const handle = await prove({ witness: await witnessParams(), artifacts, prover, poolAddress: POOL, expiresAt: 1 });
+
+    expect(handle.isValid).toBe(false);
+    expect(() => handle.toTransactCalldata()).toThrow(ProofExpiredError);
+    expect(() => handle.toTransactionData()).toThrow(ProofExpiredError);
   });
 
   it('exposes the proved Transaction struct for wrapper embedding, then refuses it once invalidated', async () => {

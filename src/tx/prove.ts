@@ -5,6 +5,7 @@ import { buildWitness, type BuildWitnessParams } from './witness';
 import { buildTransactCalldata, type TransactionData } from './serialize';
 import type { ArtifactSource, ProverAdapter, ProveOptions } from '../prover/index';
 import type { ProofHandle, TransactCalldata } from './index';
+import { ProofHandleInvalidatedError, ProofExpiredError } from '../errors';
 
 export interface ProveParams {
   /** The transfer witness to assemble + prove. */
@@ -21,8 +22,9 @@ export interface ProveParams {
 
 /**
  * A proved transaction. It owns the exact calldata it proves — `toTransactCalldata()` never re-derives
- * arguments (killing the stock SDK's silent proof-cache contract). Once `invalidate()`d it refuses to
- * hand out calldata.
+ * arguments (killing the stock SDK's silent proof-cache contract). It refuses to hand out calldata once
+ * `invalidate()`d OR past its `expiresAt` policy TTL (SPEC §4.6): a proof stays valid on-chain until an
+ * input is nullified, but a signer/app policy can bound the window, and now the handle actually enforces it.
  */
 class ProvedTransaction implements ProofHandle {
   private valid = true;
@@ -38,17 +40,26 @@ class ProvedTransaction implements ProofHandle {
     }
   }
 
-  toTransactCalldata(): TransactCalldata {
+  private get expired(): boolean {
+    return this.expiresAt !== undefined && Date.now() > this.expiresAt;
+  }
+
+  private assertUsable(): void {
     if (!this.valid) {
-      throw new Error('ProofHandle: invalidated — re-plan and re-prove');
+      throw new ProofHandleInvalidatedError('ProofHandle: invalidated — re-plan and re-prove');
     }
+    if (this.expired) {
+      throw new ProofExpiredError('ProofHandle: expired past its TTL — re-plan and re-prove');
+    }
+  }
+
+  toTransactCalldata(): TransactCalldata {
+    this.assertUsable();
     return this.calldata;
   }
 
   toTransactionData(): TransactionData {
-    if (!this.valid) {
-      throw new Error('ProofHandle: invalidated — re-plan and re-prove');
-    }
+    this.assertUsable();
     return this.transaction;
   }
 
@@ -57,7 +68,7 @@ class ProvedTransaction implements ProofHandle {
   }
 
   get isValid(): boolean {
-    return this.valid;
+    return this.valid && !this.expired;
   }
 }
 

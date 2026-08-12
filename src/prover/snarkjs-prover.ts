@@ -3,7 +3,7 @@
 
 import type { ProverAdapter, ArtifactSet, Groth16Proof, ProveOptions } from './index';
 import { toGroth16Proof, toSnarkjsProof, type SnarkjsProof } from './groth16-format';
-import { ProofVerificationError } from '../errors';
+import { ProofVerificationError, AbortedError } from '../errors';
 
 // snarkjs ships no types — model just the Groth16 surface we use.
 interface Groth16Backend {
@@ -34,7 +34,7 @@ export function createSnarkjsProver(): ProverAdapter {
       options?: ProveOptions,
     ): Promise<Groth16Proof> {
       if (options?.signal?.aborted) {
-        throw new Error('prove: aborted before start');
+        throw new AbortedError('prove: aborted before start');
       }
       const groth16 = await loadGroth16();
       // snarkjs has no fine-grained progress hook; emit coarse start/end phases (replaces yieldToPaint).

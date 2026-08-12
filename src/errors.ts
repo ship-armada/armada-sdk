@@ -72,3 +72,28 @@ export class ProofVerificationError extends ArmadaError {
 export class UnsupportedCircuitShapeError extends ArmadaError {
   readonly code = 'UNSUPPORTED_CIRCUIT_SHAPE';
 }
+
+/** A long operation (prove) was cancelled via its `AbortSignal`. Consumers match `code`, not message. */
+export class AbortedError extends ArmadaError {
+  readonly code = 'ABORTED';
+}
+
+/** A `ProofHandle` was used after `invalidate()` — re-plan and re-prove. */
+export class ProofHandleInvalidatedError extends ArmadaError {
+  readonly code = 'PROOF_HANDLE_INVALIDATED';
+}
+
+/** A `ProofHandle` was used past its `expiresAt` policy TTL (SPEC §4.6) — re-plan and re-prove. */
+export class ProofExpiredError extends ArmadaError {
+  readonly code = 'PROOF_EXPIRED';
+}
+
+/** Caller-supplied plan/request input is invalid (non-positive output, inconsistent adapt binding, …). */
+export class InvalidRequestError extends ArmadaError {
+  readonly code = 'INVALID_REQUEST';
+}
+
+/** A `SpendSigner` violated its contract (wrong signature count, or returned none). */
+export class SignerContractViolationError extends ArmadaError {
+  readonly code = 'SIGNER_CONTRACT_VIOLATION';
+}

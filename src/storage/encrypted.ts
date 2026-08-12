@@ -5,10 +5,13 @@ import { gcm } from '@noble/ciphers/aes';
 import { hkdf } from '@noble/hashes/hkdf';
 import { sha256 } from '@noble/hashes/sha256';
 import type { StorageAdapter, StorageNamespace } from './index';
+import { InvalidKeyMaterialError } from '../errors';
+import { DOMAIN_TAGS } from '../crypto/domain-tags';
 
-const STORAGE_KEY_SALT = new TextEncoder().encode('armada/sdk/storage/v1');
-const STORAGE_KEY_INFO = new TextEncoder().encode('at-rest-encryption');
-const STORAGE_KEY_INFO_WALLET = new TextEncoder().encode('at-rest-encryption/wallet-v1');
+const enc = new TextEncoder();
+const STORAGE_KEY_SALT = enc.encode(DOMAIN_TAGS.storage.salt);
+const STORAGE_KEY_INFO = enc.encode(DOMAIN_TAGS.storage.info);
+const STORAGE_KEY_INFO_WALLET = enc.encode(DOMAIN_TAGS.storage.infoWallet);
 const NONCE_BYTES = 12;
 const KEY_BYTES = 32;
 
@@ -18,7 +21,7 @@ const KEY_BYTES = 32;
  */
 export function deriveStorageKey(rootSecret: Uint8Array): Uint8Array {
   if (rootSecret.length !== KEY_BYTES) {
-    throw new Error(`deriveStorageKey: expected ${KEY_BYTES}-byte rootSecret, got ${rootSecret.length}`);
+    throw new InvalidKeyMaterialError(`deriveStorageKey: expected ${KEY_BYTES}-byte rootSecret, got ${rootSecret.length}`);
   }
   return hkdf(sha256, rootSecret, STORAGE_KEY_SALT, STORAGE_KEY_INFO, KEY_BYTES);
 }
@@ -59,7 +62,7 @@ export class EncryptedStore implements StorageAdapter {
     private readonly key: Uint8Array,
   ) {
     if (key.length !== KEY_BYTES) {
-      throw new Error(`EncryptedStore: key must be ${KEY_BYTES} bytes (AES-256)`);
+      throw new InvalidKeyMaterialError(`EncryptedStore: key must be ${KEY_BYTES} bytes (AES-256)`);
     }
   }
 

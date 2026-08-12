@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createWorkerProver, createProverWorkerHandler, type WorkerChannel, type ProverWorkerReply } from './worker-prover';
 import type { ArtifactSet } from './index';
+import { AbortedError } from '../errors';
 
 const fixture = (name: string): string => fileURLToPath(new URL(`../../test/fixtures/prover/${name}`, import.meta.url));
 const artifacts: ArtifactSet = {
@@ -45,7 +46,7 @@ describe('worker prover protocol + adapter (§4.5)', () => {
     try {
       const controller = new AbortController();
       controller.abort();
-      await expect(prover.prove({ a: '3', b: '11' }, artifacts, { signal: controller.signal })).rejects.toThrow(/aborted/);
+      await expect(prover.prove({ a: '3', b: '11' }, artifacts, { signal: controller.signal })).rejects.toBeInstanceOf(AbortedError);
     } finally {
       await prover.close();
     }
@@ -98,7 +99,7 @@ describe('worker prover protocol + adapter (§4.5)', () => {
       const controller = new AbortController();
       const inFlight = prover.prove({ a: '3', b: '11' }, artifacts, { signal: controller.signal });
       controller.abort();
-      await expect(inFlight).rejects.toThrow(/aborted/);
+      await expect(inFlight).rejects.toBeInstanceOf(AbortedError);
     } finally {
       await prover.close();
     }
