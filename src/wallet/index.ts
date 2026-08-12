@@ -96,7 +96,16 @@ export interface PlanTransferRequest {
 
 /** Enrollment factory (SPEC §4.2). rootSecret is the canonical identity; no mnemonic intermediary. */
 export interface WalletFactory {
-  fromRootSecret(rootSecret: Uint8Array, opts: { creationBlock: number; signer?: SpendSigner }): Promise<Wallet>;
+  /**
+   * Load a wallet from its rootSecret. Spend-capable by DEFAULT (SPEC §4.2.1: `LocalSigner` is the
+   * default) — the SDK derives a `LocalSigner` internally, since the rootSecret already grants spend
+   * power. Pass `signer` to attach a different signer (e.g. `ExternalSigner`), or `viewOnly: true` for
+   * a view-only wallet from a rootSecret (no spend key held; spend-path calls throw NoSpendCapabilityError).
+   */
+  fromRootSecret(
+    rootSecret: Uint8Array,
+    opts: { creationBlock: number; signer?: SpendSigner; viewOnly?: boolean },
+  ): Promise<Wallet>;
   /** Ephemeral, in-memory only, never persisted — for claimable payments (SPEC §6). */
   ephemeralFromSeed(seed: Uint8Array): Promise<Wallet>;
   /** BIP-39 compat for the relayer's existing mnemonic-provisioned wallet only. */

@@ -752,7 +752,11 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
   const wallet: WalletFactory = {
     async fromRootSecret(rootSecret, opts) {
       const keyset = await deriveKeyset(rootSecret);
-      return new ArmadaWallet(keyset, opts.creationBlock, opts.signer, ctx);
+      // Spend-capable by default: an explicit `signer` wins; else `viewOnly` opts out of spend entirely;
+      // else auto-derive a LocalSigner (the rootSecret already grants spend power, so withholding it
+      // buys no security — the least-privilege path is a view-only wallet from a viewing key).
+      const signer = opts.signer ?? (opts.viewOnly === true ? undefined : await LocalSigner.fromRootSecret(rootSecret));
+      return new ArmadaWallet(keyset, opts.creationBlock, signer, ctx);
     },
     async fromMnemonic(mnemonic, opts) {
       const keyset = await deriveKeysetFromMnemonic(mnemonic);
