@@ -16,6 +16,7 @@ import {
   newReceivedNotes,
   saveScanState,
   loadScanState,
+  scanStateKey,
   POOL_V2_EVENT_ABI,
   type EventSource,
   type SyncEventMap,
@@ -77,6 +78,8 @@ interface SdkContext {
   readonly deployBlock: number;
   /** Confirmations before a commitment is spendable vs pending in the balance view (default 0). */
   readonly finalityThreshold: number;
+  /** Blocks to stay behind head when scanning — reorg safety (default 0). */
+  readonly confirmationDepth: number;
   /** Circuit shapes the deployment can prove — plan-time fail-fast set, or undefined to skip the check. */
   readonly supportedShapes: ReadonlySet<string> | undefined;
   /** Canonical 32-byte hash (no 0x) of USDC — maps owned-note token hashes back to the address. */
@@ -167,6 +170,26 @@ export function finalRootCheckRequired(usingIndexer: boolean, fellBack: boolean)
 }
 
 /**
+ * The head block a sync scans TO — the chain head minus `confirmationDepth` (SPEC §4.4 reorg safety). By
+ * not scanning the last `confirmationDepth` blocks, a reorg of that depth or shallower can never remove a
+ * commitment we already persisted (the append-only tree can't un-append it), so the phantom-leaf/stuck-sync
+ * failure mode is avoided at the source. `0` (default) scans to head. Floored at 0. Pure for testability.
+ */
+export function effectiveScanHead(rawHead: number, confirmationDepth: number): number {
+  return Math.max(0, rawHead - confirmationDepth);
+}
+
+/**
+ * Whether a sync should self-heal from a reorg-poisoned PERSISTED tree by resetting + rescanning, rather
+ * than rethrowing (SPEC §4.4). True only when the failure is a `RootMismatchError`, the pre-batch (persisted)
+ * state ITSELF fails root verification (so the poison predates this batch — a reorg removed an already-scanned
+ * leaf), and we are not already inside a recovery (guards an infinite reset loop). Pure for testability.
+ */
+export function shouldRecoverFromReorg(error: unknown, persistedRootsInvalid: boolean, recovering: boolean): boolean {
+  return error instanceof RootMismatchError && persistedRootsInvalid && !recovering;
+}
+
+/**
  * Pick the `/fees` schedule key whose tier matches the plan's operation, so the in-band fee note
  * commits the amount the relayer will actually require (SPEC §4.6.1). The relayer prices per
  * submission selector (`relayer/modules/privacy-relay.ts::advertisedFeeForSelector`):
@@ -224,7 +247,7 @@ class ArmadaWallet implements Wallet {
 
   constructor(
     private readonly keyset: Keyset,
-    creationBlock: number,
+    private readonly creationBlock: number,
     private readonly signer: SpendSigner | undefined,
     private readonly ctx: SdkContext,
     // Ephemeral (claimable-payment) wallets are in-memory only: they never hydrate from or write to
@@ -379,9 +402,11 @@ class ArmadaWallet implements Wallet {
     }
   }
 
-  private async runSync(): Promise<{ fromBlock: number; syncedThrough: number; scanned: boolean }> {
+  private async runSync(recovering = false): Promise<{ fromBlock: number; syncedThrough: number; scanned: boolean }> {
     await this.hydrate();
-    const head = await this.ctx.provider.getBlockNumber();
+    // Scan only to head − confirmationDepth so a reorg of that depth or shallower can't remove a leaf we
+    // already persisted (§4.4 reorg safety); `confirmationDepth: 0` (default) scans to head.
+    const head = effectiveScanHead(await this.ctx.provider.getBlockNumber(), this.ctx.confirmationDepth);
     const { fromBlock, scanned } = planSyncWindow(this.syncedThrough, head);
     if (!scanned) return { fromBlock, syncedThrough: this.syncedThrough, scanned: false };
 
@@ -450,9 +475,40 @@ class ArmadaWallet implements Wallet {
     } catch (err) {
       // Roll the tree back to the pre-batch snapshot so a poisoned partial state can't wedge later syncs.
       this.scanState = WalletScanState.restore(rollback);
+      // A reorg can remove an already-PERSISTED leaf; the append-only tree can't un-append it, so the
+      // rolled-back (persisted) state itself fails root verification and every later sync would wedge on
+      // RootMismatchError. Self-heal by resetting chain-derived state and rescanning from creationBlock
+      // (blunt recovery — a surgical per-tree rebuild is tracked in issue #75). `recovering` guards a loop.
+      if (shouldRecoverFromReorg(err, await this.persistedRootsInvalid(head), recovering)) {
+        this.ctx.telemetry?.emit('sync.reorg-recovery', { fromBlock: this.creationBlock, head });
+        await this.resetChainDerivedState();
+        return this.runSync(true);
+      }
       this.emitter.emit('scan:error', { error: err instanceof Error ? err : new Error(String(err)) });
       throw err;
     }
+  }
+
+  /** True if the current (rolled-back = persisted) tree state fails on-chain root verification. */
+  private async persistedRootsInvalid(head: number): Promise<boolean> {
+    try {
+      await this.verifyRoots(head);
+      return false;
+    } catch (err) {
+      return err instanceof RootMismatchError;
+    }
+  }
+
+  /** Reset chain-derived state (in-memory + persisted record) to rescan from `creationBlock`; keeps identity. */
+  private async resetChainDerivedState(): Promise<void> {
+    this.scanState = new WalletScanState();
+    this.syncedThrough = this.creationBlock - 1;
+    this.hydrated = true; // do NOT re-hydrate the poisoned record on the recovery rescan
+    this.lastBalances.clear();
+    this.seenReceiveKeys.clear();
+    this.receiveBaselined = false;
+    // Delete the poisoned record so a crash mid-rescan can't re-hydrate it.
+    if (!this.ephemeral) await this.storage.del(scanStateKey(this.keyset.shieldedAddress));
   }
 
   // Push `note:received` for incoming transfers discovered since the last sync (`newReceivedNotes`
@@ -783,6 +839,7 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
     usdcAddress: config.pool.usdcAddress,
     deployBlock: config.pool.deployBlock,
     finalityThreshold: config.pool.finalityThreshold ?? 0,
+    confirmationDepth: config.pool.confirmationDepth ?? 0,
     supportedShapes: config.pool.supportedShapes !== undefined ? new Set(config.pool.supportedShapes) : undefined,
     usdcHash,
     tokenByHash,
