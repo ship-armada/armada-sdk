@@ -1,7 +1,7 @@
 // ABOUTME: Wallet-layer contracts (SPEC §4.2) — the SpendSigner custody boundary, enrollment factory,
 // ABOUTME: and view-only wallets. Implementations land in Phase 2; the interfaces are FROZEN here.
 
-import type { Plan, ProofHandle, FeeQuote, SpendIntentContext, CctpBinding } from '../tx/index';
+import type { Plan, ProofHandle, FeeQuote, SpendIntentContext, CctpBinding, PreflightResult } from '../tx/index';
 import type { ProveOptions } from '../prover/index';
 import type { TokenBalance, HistoryEntry, SyncEventMap, Unsubscribe } from '../sync/index';
 
@@ -53,6 +53,12 @@ export interface Wallet {
   /** Reconstructed transaction history from the wallet's own scan state (SPEC §5). Works view-only. */
   history(options?: { sinceBlock?: number }): Promise<HistoryEntry[]>;
   planTransfer(request: PlanTransferRequest): Promise<Plan>;
+  /**
+   * Cheap pre-proof checks over a plan (SPEC §4.7) — root freshness, input nullifiers unspent, and
+   * (if a `feeQuote` is passed) quote freshness. Returns a finding per check; the caller decides policy.
+   * Works view-only. Turns the 30s-proof-then-revert failure into a typed, pre-proof result.
+   */
+  preflight(plan: Plan, options?: { feeQuote?: FeeQuote }): Promise<PreflightResult>;
   /** Requests signatures from the attached SpendSigner during witness assembly, then proves. */
   prove(plan: Plan, options?: ProveOptions): Promise<ProofHandle>;
   /** Verifiable single-note disclosure receipt (SPEC §5.3). Available on view-only wallets too. */
