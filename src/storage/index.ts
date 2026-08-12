@@ -39,3 +39,7 @@ export interface StorageAdapter {
 export { MemoryStorageAdapter } from './memory';
 export { IndexedDBStorageAdapter } from './indexeddb';
 export { EncryptedStore, deriveStorageKey, deriveWalletStorageKey } from './encrypted';
+// Node-persistent adapter over an injected abstract-level DB (classic-level in prod). The consumer
+// brings the level package — the SDK stays browser-safe and free of native deps.
+export { LevelStorageAdapter } from './level';
+export type { AbstractLevelLike } from './level';
