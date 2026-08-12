@@ -90,6 +90,19 @@ describe('EncryptedStore', () => {
     await expect(wrong.get('chain/note/1')).rejects.toThrow();
   });
 
+  it('binds the record key as AAD — a blob moved to another key fails to decrypt (cut-and-paste)', async () => {
+    // WHY (M3): without AAD, an attacker with storage write access copies one record's ciphertext over
+    // another key and it silently decrypts under the same store key. Binding the key defeats that.
+    const inner = new MemoryStorageAdapter();
+    const store = new EncryptedStore(inner, key);
+    await store.open(ns(1));
+    await store.put('chain/scan-state/A', bytes('A notes'));
+    const blob = await inner.get('chain/scan-state/A');
+    await inner.put('chain/scan-state/B', blob!); // move A's blob onto key B
+    await expect(store.get('chain/scan-state/B')).rejects.toThrow();
+    expect(str((await store.get('chain/scan-state/A'))!)).toBe('A notes'); // A still fine
+  });
+
   it('list() decrypts each value so it is a full StorageAdapter (satisfies the type)', async () => {
     // WHY: EncryptedStore must implement the whole StorageAdapter surface, or a consumer can't pass
     // it as `config.storage`. `list` iterates the inner (ciphertext) entries and decrypts each value.
