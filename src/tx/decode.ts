@@ -4,28 +4,53 @@
 import { Interface } from 'ethers';
 import { formatCommitmentCiphertext, tryDecryptCommitment, type ReceiverNoteKeys } from '../sync/index';
 import type { TokenDataGetter, Chain } from '../core/index';
+import { InvalidRequestError } from '../errors';
 import type { DecodedTransact, DecodedBoundParams } from './index';
 
-/** ABI of the pool `transact(Transaction[])` entry point (Railgun V2 struct layout). */
-export const TRANSACT_ABI = [
-  'function transact(' +
-    '(' +
-    '((uint256,uint256),(uint256[2],uint256[2]),(uint256,uint256)) proof,' +
-    'bytes32 merkleRoot,' +
-    'bytes32[] nullifiers,' +
-    'bytes32[] commitments,' +
-    '(uint16 treeNumber,uint72 minGasPrice,uint8 unshield,uint64 chainID,address adaptContract,bytes32 adaptParams,' +
-    '(bytes32[4] ciphertext,bytes32 blindedSenderViewingKey,bytes32 blindedReceiverViewingKey,bytes annotationData,bytes memo)[] commitmentCiphertext' +
-    ') boundParams,' +
-    '(bytes32 npk,(uint8 tokenType,address tokenAddress,uint256 tokenSubID) token,uint120 value) unshieldPreimage' +
-    ')[] _transactions' +
-    ')',
+/**
+ * The on-chain `Transaction` tuple (Railgun V2 struct layout, field order load-bearing). Shared by the
+ * `transact()` ABI here and the wrapper entry-point ABIs (which embed a Transaction) so both decode
+ * against one definition.
+ */
+export const TRANSACTION_STRUCT =
+  '(' +
+  '((uint256,uint256),(uint256[2],uint256[2]),(uint256,uint256)) proof,' +
+  'bytes32 merkleRoot,' +
+  'bytes32[] nullifiers,' +
+  'bytes32[] commitments,' +
+  '(uint16 treeNumber,uint72 minGasPrice,uint8 unshield,uint64 chainID,address adaptContract,bytes32 adaptParams,' +
+  '(bytes32[4] ciphertext,bytes32 blindedSenderViewingKey,bytes32 blindedReceiverViewingKey,bytes annotationData,bytes memo)[] commitmentCiphertext' +
+  ') boundParams,' +
+  '(bytes32 npk,(uint8 tokenType,address tokenAddress,uint256 tokenSubID) token,uint120 value) unshieldPreimage' +
+  ')';
+
+/** ABI of the pool `transact(Transaction[])` entry point. */
+export const TRANSACT_ABI = [`function transact(${TRANSACTION_STRUCT}[] _transactions)`] as const;
+
+/**
+ * The wrapper entry points that embed a single `Transaction` at arg 0 (SPEC §4.6). Decoding these
+ * natively replaces the relayer's synthetic-`transact()` re-encoding hack. `redeemAndShield` embeds a
+ * Transaction too, but its relayer fee is contract-side (not a broadcaster output), so `extractFeeOutput`
+ * finds no fee note in it — that path is verified separately on-chain.
+ */
+const WRAPPER_ABI = [
+  `function atomicCrossChainUnshield(${TRANSACTION_STRUCT} _transaction, uint32 destinationDomain, address finalRecipient, uint256 maxFee, bytes32 uniqueNonce) returns (uint64)`,
+  `function lendAndShield(${TRANSACTION_STRUCT} _transaction, bytes32 _npk, (bytes32[3] encryptedBundle, bytes32 shieldKey) _shieldCiphertext) returns (uint256)`,
+  `function redeemAndShield(${TRANSACTION_STRUCT} _transaction, bytes32 _npk, (bytes32[3] encryptedBundle, bytes32 shieldKey) _shieldCiphertext, bytes32 _feeNpk, (bytes32[3] encryptedBundle, bytes32 shieldKey) _feeShieldCiphertext, uint256 _feeAmount) returns (uint256)`,
 ] as const;
 
 // UnshieldType.NONE — no unshield output on this transaction.
 const UNSHIELD_NONE = 0;
 
 const iface = new Interface(TRANSACT_ABI as unknown as string[]);
+const wrapperIface = new Interface(WRAPPER_ABI as unknown as string[]);
+// Selector → wrapper function name (each embeds the Transaction at arg 0). Verified: 0x2bcba06a /
+// 0xf2987ad1 / 0x7e220759 (ethers id(sig).slice(0,10)).
+const WRAPPER_FN_BY_SELECTOR: Record<string, string> = {};
+for (const fn of ['atomicCrossChainUnshield', 'lendAndShield', 'redeemAndShield']) {
+  WRAPPER_FN_BY_SELECTOR[wrapperIface.getFunction(fn)!.selector] = fn;
+}
+const TRANSACT_SELECTOR = iface.getFunction('transact')!.selector;
 
 // The shape ethers decodes a Transaction tuple into (named Result access): uints → bigint, bytes/address → hex.
 interface RawCiphertext {
@@ -98,13 +123,26 @@ function decodeOne(tx: RawTx): DecodedTransact {
 }
 
 /**
- * Decode a `transact(Transaction[])` calldata blob into one `DecodedTransact` per bundled transaction.
- * Pure/synchronous — the verifier feeds raw relay calldata and gets structured nullifiers, commitments,
- * bound params, and the output note ciphertexts (for in-band fee extraction).
+ * Decode relay calldata into one `DecodedTransact` per embedded transaction — natively understanding
+ * both a bare `transact(Transaction[])` (N transactions) AND the wrapper entry points
+ * `atomicCrossChainUnshield` / `lendAndShield` / `redeemAndShield` (one embedded Transaction each, at
+ * arg 0). This replaces the relayer's synthetic-`transact()` re-encoding: a verifier feeds raw calldata
+ * regardless of the outer selector and gets the same structured nullifiers/commitments/boundParams/output
+ * ciphertexts, since the broadcaster fee note lives in `boundParams.commitmentCiphertext[]` either way.
+ * Throws on an unrecognized selector.
  */
 export function decodeTransact(calldata: string): DecodedTransact[] {
-  const [transactions] = iface.decodeFunctionData('transact', calldata) as unknown as [RawTx[]];
-  return transactions.map(decodeOne);
+  const selector = calldata.slice(0, 10);
+  if (selector === TRANSACT_SELECTOR) {
+    const [transactions] = iface.decodeFunctionData('transact', calldata) as unknown as [RawTx[]];
+    return transactions.map(decodeOne);
+  }
+  const fn = WRAPPER_FN_BY_SELECTOR[selector];
+  if (fn !== undefined) {
+    const args = wrapperIface.decodeFunctionData(fn, calldata);
+    return [decodeOne(args[0] as unknown as RawTx)]; // the embedded Transaction is arg 0 in every wrapper
+  }
+  throw new InvalidRequestError(`decodeTransact: unrecognized selector ${selector}`);
 }
 
 /**

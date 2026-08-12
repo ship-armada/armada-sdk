@@ -187,8 +187,24 @@ export interface TransactDecoder {
   ): Promise<{ tokenAddress: `0x${string}`; value: bigint } | undefined>;
 }
 
-// Native transact() calldata decoder + in-band fee-note recovery (the TransactDecoder methods).
-export { decodeTransact, extractFeeOutput, TRANSACT_ABI } from './decode';
+// Native transact()/wrapper calldata decoder + in-band fee-note recovery (the TransactDecoder methods).
+export { decodeTransact, extractFeeOutput, TRANSACT_ABI, TRANSACTION_STRUCT } from './decode';
+
+// Wrapper calldata builders — embed a proved Transaction into the yield / cross-chain-unshield entry points.
+export {
+  buildAtomicCrossChainUnshieldCalldata,
+  buildLendAndShieldCalldata,
+  buildRedeemAndShieldCalldata,
+} from './wrappers';
+export type { ShieldCiphertextArg } from './wrappers';
+
+// Shield fee gross-up + npk-reconstruction fee verification (§4.6.1/#410).
+export { shieldFee, shieldNet, grossUpShieldFee, reconstructShieldNpk, verifyShieldFeeNote } from './shield-fee';
+export type { ShieldFeeTiers } from './shield-fee';
+
+// Gasless cross-chain shield — the two ShieldData notes + EIP-712 CrossChainShieldIntent (#410).
+export { buildGaslessCrossChainShield, hashShieldData, hashCrossChainShieldIntent } from './gasless-cross-chain-shield';
+export type { ShieldData, CrossChainShieldIntent, CrossChainShieldIntentTypedData, GaslessCrossChainShieldInput } from './gasless-cross-chain-shield';
 
 // Transfer planning — inspectable Plan (TXO selection + change + fee output + circuit shape).
 export { planTransfer, planWitnessInputs } from './plan';
@@ -211,8 +227,8 @@ export { buildShieldRequest, generateShieldPrivateKey } from './shield';
 export type { ShieldRequest, ShieldRequestInput } from './shield';
 
 // Gasless shield — EIP-712 ShieldIntent + requestsHash for GaslessShieldWrapper.gaslessShield (#410).
-export { buildGaslessShield, hashShieldRequests, buildShieldIntentTypedData, hashShieldIntent } from './gasless-shield';
-export type { GaslessShieldInput, ShieldIntent, ShieldIntentTypedData } from './gasless-shield';
+export { buildGaslessShield, hashShieldRequests, buildShieldIntentTypedData, hashShieldIntent, buildPermitTypedData, hashPermit } from './gasless-shield';
+export type { GaslessShieldInput, ShieldIntent, ShieldIntentTypedData, PermitMessage, PermitTypedData } from './gasless-shield';
 
 // Circuit witness assembly — full notes + merkle proofs + SpendSigner signature → circuit inputs.
 export { buildWitness, computeSpendIntentDigest, hashSpendBoundParams } from './witness';
