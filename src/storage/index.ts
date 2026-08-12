@@ -20,7 +20,11 @@ export interface StorageNamespace {
  * rootSecret-derived key. Multi-instance safe: no process-wide lock files.
  */
 export interface StorageAdapter {
-  open(namespace: StorageNamespace): Promise<void>;
+  /**
+   * Bind the store to `namespace`. Returns `{ reset: true }` when a namespace mismatch (a redeploy under
+   * a preserved identity) triggered a chain-state reset, so the instance can surface it as telemetry.
+   */
+  open(namespace: StorageNamespace): Promise<{ reset: boolean }>;
   get(key: string): Promise<Uint8Array | undefined>;
   put(key: string, value: Uint8Array): Promise<void>;
   del(key: string): Promise<void>;

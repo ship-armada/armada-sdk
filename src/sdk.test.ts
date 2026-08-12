@@ -50,16 +50,23 @@ describe('createArmadaSdk (§4.1)', () => {
     expect(wallet.shieldedAddress).toBe((await deriveKeyset(seed(0x11))).shieldedAddress);
   });
 
-  it('gates spend capability on an attached signer', async () => {
+  it('fromRootSecret is spend-capable by default; viewOnly opts out; explicit signer wins', async () => {
     const sdk = await createArmadaSdk(makeConfig());
-    const viewOnly = await sdk.wallet.fromRootSecret(seed(0x22), { creationBlock: 1 });
+
+    // Default (SPEC §4.2.1): the SDK auto-attaches a LocalSigner — the rootSecret already grants spend power.
+    const spendable = await sdk.wallet.fromRootSecret(seed(0x22), { creationBlock: 1 });
+    expect(spendable.canSpend).toBe(true);
+
+    // Opt out for a view-only wallet from a rootSecret (no spend key held).
+    const viewOnly = await sdk.wallet.fromRootSecret(seed(0x22), { creationBlock: 1, viewOnly: true });
     expect(viewOnly.canSpend).toBe(false);
 
-    const spendable = await sdk.wallet.fromRootSecret(seed(0x22), {
+    // An explicit signer (e.g. ExternalSigner) is used as-is.
+    const explicit = await sdk.wallet.fromRootSecret(seed(0x22), {
       creationBlock: 1,
       signer: await LocalSigner.fromRootSecret(seed(0x22)),
     });
-    expect(spendable.canSpend).toBe(true);
+    expect(explicit.canSpend).toBe(true);
   });
 
   it('close() releases the prover', async () => {
@@ -106,6 +113,23 @@ describe('createArmadaSdk (§4.1)', () => {
     // Spend-path calls on a view-only wallet throw NoSpendCapabilityError.
     const fee = { schedule: { transfer: '0' }, broadcasterShieldedAddress: '0zk', feesCacheId: 'x', expiresAt: 0 };
     await expect(viewOnly.planTransfer({ outputs: [{ to0zk: '0zk', amount: 1n }], fee })).rejects.toThrow(NoSpendCapabilityError);
+  });
+
+  it('emits storage.chain-reset telemetry when a redeploy resets chain state (P3.7)', async () => {
+    // WHY: an operator should see chain-derived state being wiped on a deploy-block change. Pre-open the
+    // store under deployBlock 1, then construct an instance at deployBlock 2 → mismatch → reset → emit.
+    const store = new MemoryStorageAdapter();
+    await store.open({ schemaVersion: 1, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1 });
+    const events: { event: string; data: Readonly<Record<string, unknown>> }[] = [];
+    const cfg: ArmadaSdkConfig = {
+      ...makeConfig(),
+      storage: store,
+      pool: { chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 2, usdcAddress: USDC },
+      telemetry: { emit: (event, data) => events.push({ event, data }) },
+    };
+    const sdk = await createArmadaSdk(cfg);
+    expect(events).toContainEqual({ event: 'storage.chain-reset', data: { chainId: 31337, deployBlock: 2 } });
+    await sdk.close();
   });
 
   it('supports multiple independent instances (no shared module state)', async () => {

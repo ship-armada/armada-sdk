@@ -11,6 +11,7 @@ import {
   decodeAddress,
 } from '../core/index';
 import { createTransferNote, encryptNoteToReceiver, type CommitmentCiphertextV2 } from '../sync/index';
+import { SignerContractViolationError } from '../errors';
 import type { SpendSigner } from '../wallet/index';
 import type { PlanSummary, DecodedBoundParams, CctpBinding } from './index';
 import type { CircuitShape } from '../prover/index';
@@ -249,7 +250,7 @@ export async function buildWitness(params: BuildWitnessParams): Promise<BuiltWit
   };
   const [signature] = await params.signer.signBatch([{ message, context }]);
   if (signature === undefined) {
-    throw new Error('buildWitness: signer returned no signature');
+    throw new SignerContractViolationError('buildWitness: signer returned no signature');
   }
 
   const formattedInputs: FormattedCircuitInputs = {

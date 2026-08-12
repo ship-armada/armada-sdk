@@ -1,8 +1,9 @@
 // ABOUTME: ExternalSigner test double (SPEC §4.2.1) — a SpendSigner that delegates to an injected
-// ABOUTME: backend, standing in for an out-of-process signer (HSM/enclave/Salt-gated) in tests.
+// ABOUTME: backend, standing in for an out-of-process signer (HSM/enclave/policy-gated) in tests.
 
 import type { SpendSigner, SpendSignRequest, EddsaSignature } from './index';
 import { assertValidBabyJubjubPublicKey } from './keys-validate';
+import { SignerContractViolationError } from '../errors';
 
 /** Signature backend: receives the ENTIRE batch of intents at once, returns one signature per request. */
 export type SignBackend = (requests: readonly SpendSignRequest[]) => Promise<EddsaSignature[]>;
@@ -31,7 +32,7 @@ export class ExternalSigner implements SpendSigner {
   async signBatch(requests: readonly SpendSignRequest[]): Promise<EddsaSignature[]> {
     const signatures = await this.signBackend(requests);
     if (signatures.length !== requests.length) {
-      throw new Error(
+      throw new SignerContractViolationError(
         `ExternalSigner: backend returned ${signatures.length} signatures for ${requests.length} requests`,
       );
     }

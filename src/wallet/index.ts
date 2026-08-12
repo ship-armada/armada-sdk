@@ -27,6 +27,8 @@ export interface SpendSignRequest {
 export interface SpendSigner {
   getSpendingPublicKey(): Promise<[bigint, bigint]>;
   signBatch(requests: readonly SpendSignRequest[]): Promise<EddsaSignature[]>;
+  /** Optional: release/zeroize held key material (SPEC §4.2). A disposed signer refuses to sign. */
+  dispose?(): void;
 }
 
 /** A loaded wallet: viewing capability ± spend capability (view-only = no SpendSigner attached). */
@@ -94,7 +96,16 @@ export interface PlanTransferRequest {
 
 /** Enrollment factory (SPEC §4.2). rootSecret is the canonical identity; no mnemonic intermediary. */
 export interface WalletFactory {
-  fromRootSecret(rootSecret: Uint8Array, opts: { creationBlock: number; signer?: SpendSigner }): Promise<Wallet>;
+  /**
+   * Load a wallet from its rootSecret. Spend-capable by DEFAULT (SPEC §4.2.1: `LocalSigner` is the
+   * default) — the SDK derives a `LocalSigner` internally, since the rootSecret already grants spend
+   * power. Pass `signer` to attach a different signer (e.g. `ExternalSigner`), or `viewOnly: true` for
+   * a view-only wallet from a rootSecret (no spend key held; spend-path calls throw NoSpendCapabilityError).
+   */
+  fromRootSecret(
+    rootSecret: Uint8Array,
+    opts: { creationBlock: number; signer?: SpendSigner; viewOnly?: boolean },
+  ): Promise<Wallet>;
   /** Ephemeral, in-memory only, never persisted — for claimable payments (SPEC §6). */
   ephemeralFromSeed(seed: Uint8Array): Promise<Wallet>;
   /** BIP-39 compat for the relayer's existing mnemonic-provisioned wallet only. */

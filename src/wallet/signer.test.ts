@@ -10,6 +10,7 @@ import { LocalSigner } from './local-signer';
 import { ExternalSigner } from './external-signer';
 import { deriveViewOnlyIdentity } from './view-only';
 import type { SpendSignRequest } from './index';
+import { SignerContractViolationError } from '../errors';
 
 interface KeysetVector {
   rootSecret: string;
@@ -77,7 +78,7 @@ describe('ExternalSigner (custody boundary is swappable)', () => {
       async () => [], // returns 0 signatures
       async () => [1n, 2n],
     );
-    await expect(bad.signBatch([req(1n), req(2n)])).rejects.toThrow(/2 requests/);
+    await expect(bad.signBatch([req(1n), req(2n)])).rejects.toBeInstanceOf(SignerContractViolationError);
   });
 });
 

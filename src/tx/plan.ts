@@ -3,7 +3,7 @@
 
 import { getTokenDataERC20, getTokenDataHash } from '../core/index';
 import type { TXO } from '../sync/index';
-import { InsufficientBalanceError, UnsupportedCircuitShapeError } from '../errors';
+import { InsufficientBalanceError, UnsupportedCircuitShapeError, InvalidRequestError } from '../errors';
 import { shapeKey, type CircuitShape } from '../prover/index';
 import type { Plan, PlanSelection, PlanOutput, PlanSummary, DecodedBoundParams, CctpBinding } from './index';
 import { verifyCctpBinding } from './adapt-params';
@@ -100,7 +100,7 @@ export function planTransfer(params: PlanTransferParams): PlanSelection {
   const unshieldValue = params.unshield?.value ?? 0n;
   const target = outputTotal + feeValue + unshieldValue;
   if (target <= 0n) {
-    throw new Error('planTransfer: total output (outputs + fee + unshield) must be positive');
+    throw new InvalidRequestError('planTransfer: total output (outputs + fee + unshield) must be positive');
   }
 
   const tokenHash = getTokenDataHash(getTokenDataERC20(params.tokenAddress));
@@ -172,7 +172,7 @@ export function planTransfer(params: PlanTransferParams): PlanSelection {
   if (adaptBinding !== undefined) {
     const encoded = params.unshield?.adaptParams;
     if (encoded === undefined || !verifyCctpBinding(encoded, adaptBinding.recipient, adaptBinding.destDomain, adaptBinding.maxFee)) {
-      throw new Error('planTransfer: unshield.adaptBinding does not match unshield.adaptParams');
+      throw new InvalidRequestError('planTransfer: unshield.adaptBinding does not match unshield.adaptParams');
     }
   }
 

@@ -119,6 +119,7 @@ export async function extractFeeOutput(
   broadcaster: ReceiverNoteKeys,
   tokenDataGetter: TokenDataGetter,
   chain?: Chain,
+  expected?: { readonly tokenAddress?: `0x${string}`; readonly minValue?: bigint },
 ): Promise<{ tokenAddress: `0x${string}`; value: bigint } | undefined> {
   const commitmentSet = new Set(decoded.commitments.map((c) => c.toString()));
   for (const ciphertext of decoded.commitmentCiphertexts) {
@@ -128,7 +129,13 @@ export async function extractFeeOutput(
     if (note === undefined) continue;
     // Binding check: the note we decrypted must correspond to an actual on-chain commitment.
     if (!commitmentSet.has(note.hash.toString())) continue;
-    return { tokenAddress: note.tokenData.tokenAddress as `0x${string}`, value: note.value };
+    const tokenAddress = note.tokenData.tokenAddress as `0x${string}`;
+    // Optional relayer-side guard: only accept a fee in the expected token AND at least the advertised
+    // amount, so a call site can't forget the comparison (a fee note in the wrong token or underpaid is
+    // skipped, not returned). Omit `expected` to get the first bound broadcaster note unconditionally.
+    if (expected?.tokenAddress !== undefined && tokenAddress.toLowerCase() !== expected.tokenAddress.toLowerCase()) continue;
+    if (expected?.minValue !== undefined && note.value < expected.minValue) continue;
+    return { tokenAddress, value: note.value };
   }
   return undefined;
 }

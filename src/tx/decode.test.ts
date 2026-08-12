@@ -179,4 +179,26 @@ describe('decodeTransact (§4.6)', () => {
     const [decoded] = decodeTransact(calldata);
     expect(await extractFeeOutput(decoded!, rk(broadcaster), tokenGetter())).toBeUndefined();
   });
+
+  it('extractFeeOutput enforces the optional expected token + minimum value (P3.7 guard)', async () => {
+    // WHY: a relayer verifies the fee note is in the right token AND ≥ the advertised amount. Passing
+    // `expected` makes the SDK do the comparison so the call site can't forget it.
+    const fee = 5_000n;
+    const feeNote = await makeCommitment(fee, broadcaster);
+    const calldata = buildCalldata([feeNote.note.hash], [feeNote.ct]);
+    const [decoded] = decodeTransact(calldata);
+
+    // Matches token + meets the minimum → returned.
+    expect(
+      await extractFeeOutput(decoded!, rk(broadcaster), tokenGetter(), undefined, { tokenAddress: USDC as `0x${string}`, minValue: fee }),
+    ).toEqual({ tokenAddress: USDC, value: fee });
+    // Underpaid (advertised fee higher than the note) → skipped.
+    expect(
+      await extractFeeOutput(decoded!, rk(broadcaster), tokenGetter(), undefined, { minValue: fee + 1n }),
+    ).toBeUndefined();
+    // Wrong expected token → skipped.
+    expect(
+      await extractFeeOutput(decoded!, rk(broadcaster), tokenGetter(), undefined, { tokenAddress: `0x${'22'.repeat(20)}` }),
+    ).toBeUndefined();
+  });
 });

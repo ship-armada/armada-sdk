@@ -182,6 +182,8 @@ export interface TransactDecoder {
     broadcaster: BroadcasterIdentity,
     tokenDataGetter: TokenDataGetter,
     chain?: Chain,
+    /** Optional guard: require the fee note be in this token and ≥ this value, else skip it. */
+    expected?: { readonly tokenAddress?: `0x${string}`; readonly minValue?: bigint },
   ): Promise<{ tokenAddress: `0x${string}`; value: bigint } | undefined>;
 }
 

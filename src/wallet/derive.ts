@@ -2,6 +2,7 @@
 // ABOUTME: mnemonic-detour path, retained to preserve testnet identity. Verified vs keyset-vectors.json.
 
 import { Mnemonic, deriveNodes, WalletNode, encodeAddress } from '../core/index';
+import { InvalidKeyMaterialError } from '../errors';
 
 export interface Keyset {
   readonly spendingPublicKey: [bigint, bigint];
@@ -49,7 +50,7 @@ export async function deriveKeysetFromMnemonic(mnemonic: string, index = 0): Pro
  */
 export async function deriveKeyset(rootSecret: Uint8Array): Promise<Keyset> {
   if (rootSecret.length !== 32) {
-    throw new Error(`deriveKeyset: expected 32-byte rootSecret, got ${rootSecret.length}`);
+    throw new InvalidKeyMaterialError(`deriveKeyset: expected 32-byte rootSecret, got ${rootSecret.length}`);
   }
   return deriveKeysetFromMnemonic(Mnemonic.fromEntropy(bytesToHex(rootSecret)), 0);
 }

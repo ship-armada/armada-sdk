@@ -3,6 +3,7 @@
 
 import type { ProverAdapter, ArtifactSet, Groth16Proof, ProveOptions } from './index';
 import { createSnarkjsProver } from './snarkjs-prover';
+import { AbortedError } from '../errors';
 
 /**
  * Why not worker_threads here: snarkjs/ffjavascript pulls in the `web-worker` polyfill, which fails
@@ -99,13 +100,13 @@ export function createWorkerProver(channel: WorkerChannel): ProverAdapter {
         return;
       }
       if (signal?.aborted) {
-        reject(new Error('prove: aborted before start'));
+        reject(new AbortedError('prove: aborted before start'));
         return;
       }
       const onAbort = (): void => {
         // Drop the pending entry so a later reply is ignored, and reject the caller (no worker respawn —
         // the worker keeps running the abandoned proof, but the caller is unblocked immediately).
-        if (pending.delete(id)) reject(new Error('prove: aborted'));
+        if (pending.delete(id)) reject(new AbortedError('prove: aborted'));
       };
       pending.set(id, {
         resolve: (r) => { signal?.removeEventListener('abort', onAbort); resolve(r); },
@@ -118,7 +119,7 @@ export function createWorkerProver(channel: WorkerChannel): ProverAdapter {
 
   return {
     async prove(formattedInputs: unknown, artifacts: ArtifactSet, options?: ProveOptions): Promise<Groth16Proof> {
-      if (options?.signal?.aborted) throw new Error('prove: aborted before start');
+      if (options?.signal?.aborted) throw new AbortedError('prove: aborted before start');
       options?.onProgress?.({ phase: 'proving', fraction: 0 });
       const reply = await request(
         { op: 'prove', input: formattedInputs, wasm: artifacts.wasm, zkey: artifacts.zkey },

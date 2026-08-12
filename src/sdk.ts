@@ -198,6 +198,9 @@ export function planSyncWindow(
   return { fromBlock: syncedThrough + 1, scanned: head > syncedThrough };
 }
 
+// Max concurrent `getBlock` calls when attaching timestamps in history() — bounds RPC fan-out.
+const HISTORY_BLOCK_CONCURRENCY = 8;
+
 class ArmadaWallet implements Wallet {
   private scanState = new WalletScanState();
   private syncedThrough: number;
@@ -520,14 +523,19 @@ class ArmadaWallet implements Wallet {
       const since = options.sinceBlock;
       entries = entries.filter((e) => e.blockNumber >= since);
     }
-    // Attach block timestamps, batched over the distinct blocks the entries touch.
+    // Attach block timestamps, fetched over the distinct blocks the entries touch. Capped concurrency:
+    // an unbounded Promise.all over a 10k-note wallet's blocks would flood the RPC and get rate-limited.
     const times = new Map<number, number>();
-    await Promise.all(
-      [...new Set(entries.map((e) => e.blockNumber))].map(async (b) => {
-        const block = await this.ctx.provider.getBlock(b);
-        if (block !== null) times.set(b, block.timestamp);
-      }),
-    );
+    const distinctBlocks = [...new Set(entries.map((e) => e.blockNumber))];
+    for (let i = 0; i < distinctBlocks.length; i += HISTORY_BLOCK_CONCURRENCY) {
+      const chunk = distinctBlocks.slice(i, i + HISTORY_BLOCK_CONCURRENCY);
+      await Promise.all(
+        chunk.map(async (b) => {
+          const block = await this.ctx.provider.getBlock(b);
+          if (block !== null) times.set(b, block.timestamp);
+        }),
+      );
+    }
     return entries.map((e) => {
       const ts = times.get(e.blockNumber);
       return ts !== undefined ? { ...e, timestamp: ts } : e;
@@ -660,7 +668,12 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
   await initPoseidonPromise;
 
   // Namespace the store by (schema, chain, pool, deployBlock); a mismatch resets chain-derived state.
-  await config.storage.open({ schemaVersion: 1, chainId: config.pool.chainId, poolAddress: config.pool.poolAddress, deployBlock: config.pool.deployBlock });
+  const { reset } = await config.storage.open({ schemaVersion: 1, chainId: config.pool.chainId, poolAddress: config.pool.poolAddress, deployBlock: config.pool.deployBlock });
+  if (reset) {
+    // Surface redeploy resets so an operator can see chain-derived state being wiped (SPEC §8-safe:
+    // public chain config only, no keys/addresses/amounts).
+    config.telemetry?.emit('storage.chain-reset', { chainId: config.pool.chainId, deployBlock: config.pool.deployBlock });
+  }
 
   const provider: Provider =
     config.rpc.urls.length > 1
@@ -739,7 +752,11 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
   const wallet: WalletFactory = {
     async fromRootSecret(rootSecret, opts) {
       const keyset = await deriveKeyset(rootSecret);
-      return new ArmadaWallet(keyset, opts.creationBlock, opts.signer, ctx);
+      // Spend-capable by default: an explicit `signer` wins; else `viewOnly` opts out of spend entirely;
+      // else auto-derive a LocalSigner (the rootSecret already grants spend power, so withholding it
+      // buys no security — the least-privilege path is a view-only wallet from a viewing key).
+      const signer = opts.signer ?? (opts.viewOnly === true ? undefined : await LocalSigner.fromRootSecret(rootSecret));
+      return new ArmadaWallet(keyset, opts.creationBlock, signer, ctx);
     },
     async fromMnemonic(mnemonic, opts) {
       const keyset = await deriveKeysetFromMnemonic(mnemonic);

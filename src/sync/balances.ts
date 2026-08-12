@@ -1,5 +1,5 @@
 // ABOUTME: Balance aggregation (SPEC §4.4) — per-token spendable/pending from a wallet's decrypted
-// ABOUTME: TXO set, spent-nullifier events, and a finality threshold. Collapses Railgun's POI buckets.
+// ABOUTME: TXO set, spent-nullifier events, and a finality threshold. Collapses the stock proof-buckets.
 
 import { TransactNote } from '../core/index';
 
