@@ -48,6 +48,11 @@ export interface Wallet {
    * and `scanned` (false when head hadn't advanced past the checkpoint, i.e. no work was done).
    */
   sync(): Promise<{ fromBlock: number; syncedThrough: number; scanned: boolean }>;
+  /**
+   * Current sync state (SPEC §4.4 `sdk.sync.status`) — the persisted checkpoint block and whether a sync
+   * is in flight. Cheap: hydrates the checkpoint from storage once, does no getLogs and no state change.
+   */
+  syncStatus(): Promise<{ syncedThrough: number; syncing: boolean }>;
   /** Per-token spendable/pending balances over the synced TXO set. */
   balances(): Promise<TokenBalance[]>;
   /** Reconstructed transaction history from the wallet's own scan state (SPEC §5). Works view-only. */

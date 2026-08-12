@@ -358,6 +358,13 @@ class ArmadaWallet implements Wallet {
     return this.emitter.on(event, listener);
   }
 
+  async syncStatus(): Promise<{ syncedThrough: number; syncing: boolean }> {
+    // Cheap status (SPEC §4.4): the persisted checkpoint + whether a sync is in flight. Hydrates once so
+    // the checkpoint reflects storage even before the first sync (no getLogs / no state mutation).
+    await this.hydrate();
+    return { syncedThrough: this.syncedThrough, syncing: this.syncInFlight !== undefined };
+  }
+
   async sync(): Promise<{ fromBlock: number; syncedThrough: number; scanned: boolean }> {
     // Coalesce concurrent syncs (UI poll + manual refresh) onto one run: two calls both mutating the
     // shared append-only tree would double-apply a range and throw a merkle position gap.
