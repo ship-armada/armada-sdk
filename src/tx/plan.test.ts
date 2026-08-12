@@ -4,8 +4,9 @@
 import { describe, it, expect } from 'vitest';
 import { getTokenDataERC20, getTokenDataHash } from '../core/index';
 import type { TXO } from '../sync/index';
-import { InsufficientBalanceError } from '../errors';
+import { InsufficientBalanceError, UnsupportedCircuitShapeError } from '../errors';
 import { planTransfer, planWitnessInputs } from './plan';
+import { encodeCctpBinding } from './adapt-params';
 import type { Plan } from './index';
 
 const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' as const;
@@ -82,6 +83,28 @@ describe('planTransfer (§4.6)', () => {
     expect(plan.boundParams.adaptParams).toBe(BINDING);
     expect(plan.boundParams.adaptContract).toBe('0x0000000000000000000000000000000000000000');
     expect(plan.boundParams.unshield).toBe(1);
+  });
+
+  it('surfaces a matching decoded CCTP binding on boundParams.decodedAdaptParams, rejects a mismatch (M2)', () => {
+    const RECIPIENT_EVM = `0x${'ab'.repeat(20)}` as const;
+    const binding = { kind: 'cctp' as const, recipient: RECIPIENT_EVM, destDomain: 3, maxFee: 500n };
+    const adaptParams = encodeCctpBinding(binding.recipient, binding.destDomain, binding.maxFee);
+    const plan = planTransfer({
+      ...base,
+      outputs: [],
+      txos: [txo(0, 5n)],
+      unshield: { recipient: RECIPIENT_EVM, value: 5n, adaptParams, adaptBinding: binding },
+    });
+    expect(plan.boundParams.decodedAdaptParams).toEqual(binding);
+
+    // A binding that does not encode to the committed adaptParams is rejected (the signer would otherwise
+    // inspect a destination the proof doesn't bind).
+    expect(() =>
+      planTransfer({
+        ...base, outputs: [], txos: [txo(0, 5n)],
+        unshield: { recipient: RECIPIENT_EVM, value: 5n, adaptParams, adaptBinding: { ...binding, destDomain: 9 } },
+      }),
+    ).toThrow(/does not match/);
   });
 
   it('binds unshield.adaptContract into boundParams.adaptContract (relay-adapt / yield adapter)', () => {
@@ -190,6 +213,30 @@ describe('planTransfer (§4.6)', () => {
         fee: { broadcasterShieldedAddress: BROADCASTER, value: 1n }, // needs 4, have 3
       }),
     ).toThrow(InsufficientBalanceError);
+  });
+
+  it('rejects an unprovable shape up front when supportedShapes is configured (P1.5)', () => {
+    // WHY: a fragmented wallet needing e.g. 3 inputs produces a shape (3x2) the deployment may have no
+    // artifact for. Fail at plan time with a typed error, not after the signer ran + 30s of proving.
+    const supportedShapes = new Set(['1x2', '2x2']); // no 3x2
+    // 3 dust notes to cover 5 → 3 inputs (3x2 with change). Not in the set → reject.
+    expect(() =>
+      planTransfer({
+        ...base,
+        outputs: [{ toShieldedAddress: RECIPIENT, value: 5n }],
+        txos: [txo(0, 2n, USDC_HASH, 0), txo(0, 2n, USDC_HASH, 1), txo(0, 2n, USDC_HASH, 2)],
+        supportedShapes,
+      }),
+    ).toThrow(UnsupportedCircuitShapeError);
+
+    // A single note covering the spend is a supported 1x2 (recipient + change) → allowed.
+    const plan = planTransfer({
+      ...base,
+      outputs: [{ toShieldedAddress: RECIPIENT, value: 5n }],
+      txos: [txo(0, 8n)],
+      supportedShapes,
+    });
+    expect(plan.shape).toEqual({ nullifiers: 1, commitments: 2 });
   });
 
   it('returns the selected input TXOs (for the witness builder)', () => {

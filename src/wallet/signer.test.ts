@@ -38,6 +38,7 @@ const req = (message: bigint): SpendSignRequest => ({
   message,
   context: {
     nullifiers: [], commitmentsOut: [], merkleRoot: 0n,
+    commitmentCiphertext: [],
     boundParams: {
       treeNumber: 0, minGasPrice: 0n, unshield: 0, chainID: 0n,
       adaptContract: '0x0000000000000000000000000000000000000000',

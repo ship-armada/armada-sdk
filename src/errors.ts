@@ -61,3 +61,14 @@ export class InvalidKeyMaterialError extends ArmadaError {
 export class ProofVerificationError extends ArmadaError {
   readonly code = 'PROOF_VERIFICATION';
 }
+
+/**
+ * A plan selected a circuit shape (`<nullifiers>x<commitments>`) the deployment has no artifact for
+ * (SPEC §4.6). Surfaced at plan time — before the signing ceremony and proving — so a fragmented wallet
+ * fails fast with a clear signal rather than an opaque artifact-resolve error 30s in. Typically means
+ * the spend needs more input notes than any supported shape allows (multi-transaction batching, which
+ * this pipeline does not yet do).
+ */
+export class UnsupportedCircuitShapeError extends ArmadaError {
+  readonly code = 'UNSUPPORTED_CIRCUIT_SHAPE';
+}

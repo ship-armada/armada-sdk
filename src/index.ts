@@ -25,6 +25,12 @@ export interface PoolConfig {
    * margin are tracked separately — they need reorg-aware tree truncation.)
    */
   readonly finalityThreshold?: number;
+  /**
+   * Circuit shapes (`<nullifiers>x<commitments>`, e.g. `"2x3"`) the deployment has artifacts for. When
+   * set, `planTransfer` rejects an unprovable shape up front with `UnsupportedCircuitShapeError` instead
+   * of failing late at artifact resolution / on-chain. Omit to skip the check.
+   */
+  readonly supportedShapes?: readonly string[];
 }
 
 export interface RpcConfig {

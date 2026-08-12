@@ -209,7 +209,7 @@ export { buildGaslessShield, hashShieldRequests, buildShieldIntentTypedData, has
 export type { GaslessShieldInput, ShieldIntent, ShieldIntentTypedData } from './gasless-shield';
 
 // Circuit witness assembly — full notes + merkle proofs + SpendSigner signature → circuit inputs.
-export { buildWitness } from './witness';
+export { buildWitness, computeSpendIntentDigest, hashSpendBoundParams } from './witness';
 export type {
   BuildWitnessParams,
   BuiltWitness,
@@ -217,4 +217,5 @@ export type {
   WitnessOutputRequest,
   WitnessSenderContext,
   FormattedCircuitInputs,
+  SpendIntentContext,
 } from './witness';

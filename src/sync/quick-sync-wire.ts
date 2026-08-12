@@ -163,18 +163,28 @@ function str(v: unknown, field: string): string {
   if (typeof v !== 'string') throw new QuickSyncSchemaError(`quick-sync: ${field} must be a string`);
   return v;
 }
-function num(v: unknown, field: string): number {
-  if (typeof v !== 'number' || !Number.isFinite(v))
-    throw new QuickSyncSchemaError(`quick-sync: ${field} must be a finite number`);
+// Every numeric field in the wire format is a non-negative integer (tree/position/block/tokenType).
+// An indexer is untrusted, so reject negatives, fractions, NaN/Infinity, and (with `max`) out-of-range
+// values — a `position` past the tree size or a negative block would otherwise poison the scan state.
+const LEAVES_PER_TREE = 65536;
+function num(v: unknown, field: string, max?: number): number {
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < 0)
+    throw new QuickSyncSchemaError(`quick-sync: ${field} must be a non-negative integer`);
+  if (max !== undefined && v > max)
+    throw new QuickSyncSchemaError(`quick-sync: ${field} must be <= ${max}`);
   return v;
 }
 function big(v: unknown, field: string): bigint {
   if (typeof v !== 'string') throw new QuickSyncSchemaError(`quick-sync: ${field} must be a decimal string`);
+  let parsed: bigint;
   try {
-    return BigInt(v);
+    parsed = BigInt(v);
   } catch {
     throw new QuickSyncSchemaError(`quick-sync: ${field} is not a valid integer ("${v}")`);
   }
+  // value/fee/amount/nullifier are all non-negative field elements — a negative is malformed.
+  if (parsed < 0n) throw new QuickSyncSchemaError(`quick-sync: ${field} must be non-negative`);
+  return parsed;
 }
 function hexToBytes(hex: string, field: string): Uint8Array {
   const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
@@ -196,7 +206,7 @@ function parseShield(v: unknown, i: number): DecodedShieldCommitment {
   if (!isObject(td)) throw new QuickSyncSchemaError(`quick-sync: shields[${i}].tokenData must be an object`);
   return {
     tree: num(v.tree, `shields[${i}].tree`),
-    position: num(v.position, `shields[${i}].position`),
+    position: num(v.position, `shields[${i}].position`, LEAVES_PER_TREE - 1),
     blockNumber: num(v.blockNumber, `shields[${i}].blockNumber`),
     txid: str(v.txid, `shields[${i}].txid`),
     hash: str(v.hash, `shields[${i}].hash`),
@@ -217,8 +227,10 @@ function parseTransact(v: unknown, i: number): DecodedTransactCommitment {
   if (!isObject(v)) throw new QuickSyncSchemaError(`quick-sync: transacts[${i}] must be an object`);
   const c = v.ciphertext;
   if (!isObject(c)) throw new QuickSyncSchemaError(`quick-sync: transacts[${i}].ciphertext must be an object`);
-  if (!Array.isArray(c.ciphertext))
-    throw new QuickSyncSchemaError(`quick-sync: transacts[${i}].ciphertext.ciphertext must be an array`);
+  // The on-chain V2 envelope is exactly [ivTag, data0, data1, data2]; a wrong arity would otherwise
+  // blow up later in unpackCiphertext with a generic error instead of a typed schema rejection.
+  if (!Array.isArray(c.ciphertext) || c.ciphertext.length !== 4)
+    throw new QuickSyncSchemaError(`quick-sync: transacts[${i}].ciphertext.ciphertext must be a 4-element array`);
   const ciphertext: CommitmentCiphertextV2 = {
     ciphertext: c.ciphertext.map((x, j) => str(x, `transacts[${i}].ciphertext.ciphertext[${j}]`)),
     blindedSenderViewingKey: hexToBytes(
@@ -234,7 +246,7 @@ function parseTransact(v: unknown, i: number): DecodedTransactCommitment {
   };
   return {
     tree: num(v.tree, `transacts[${i}].tree`),
-    position: num(v.position, `transacts[${i}].position`),
+    position: num(v.position, `transacts[${i}].position`, LEAVES_PER_TREE - 1),
     blockNumber: num(v.blockNumber, `transacts[${i}].blockNumber`),
     txid: str(v.txid, `transacts[${i}].txid`),
     hash: str(v.hash, `transacts[${i}].hash`),

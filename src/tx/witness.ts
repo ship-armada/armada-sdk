@@ -12,9 +12,66 @@ import {
 } from '../core/index';
 import { createTransferNote, encryptNoteToReceiver, type CommitmentCiphertextV2 } from '../sync/index';
 import type { SpendSigner } from '../wallet/index';
-import type { PlanSummary } from './index';
+import type { PlanSummary, DecodedBoundParams, CctpBinding } from './index';
 import type { CircuitShape } from '../prover/index';
 import type { TransactionBoundParams } from './serialize';
+
+/**
+ * The fully-bound spend intent handed to the `SpendSigner` (SPEC §4.2.1). It carries EVERYTHING needed
+ * to (a) inspect the intent — including the decoded cross-chain binding on `boundParams.decodedAdaptParams`
+ * — and (b) recompute the signed `message` from first principles via `computeSpendIntentDigest`, so an
+ * external/policy signer never has to trust a digest it cannot verify against the human-readable context.
+ */
+export interface SpendIntentContext {
+  readonly nullifiers: readonly bigint[];
+  readonly commitmentsOut: readonly bigint[];
+  readonly merkleRoot: bigint;
+  readonly boundParams: DecodedBoundParams;
+  /** The output-note ciphertexts folded into `boundParamsHash` — required to recompute the digest. */
+  readonly commitmentCiphertext: readonly CommitmentCiphertextV2[];
+  readonly summary: PlanSummary;
+}
+
+/**
+ * Hash the bound params exactly as the circuit/contract does (`hashBoundParamsV2`). Only the six
+ * proof-bound fields + the output ciphertexts enter the hash — `decodedAdaptParams` is inspection-only
+ * (the proof commits the one-way `adaptParams` keccak, not the decoded tuple). Shared by witness
+ * assembly and `computeSpendIntentDigest` so both derive byte-identical hashes.
+ */
+export function hashSpendBoundParams(
+  boundParams: Pick<DecodedBoundParams, 'treeNumber' | 'minGasPrice' | 'unshield' | 'chainID' | 'adaptContract' | 'adaptParams'>,
+  ciphertexts: readonly CommitmentCiphertextV2[],
+): bigint {
+  const boundParamsForHash = {
+    treeNumber: boundParams.treeNumber,
+    minGasPrice: boundParams.minGasPrice,
+    unshield: boundParams.unshield,
+    chainID: boundParams.chainID,
+    adaptContract: boundParams.adaptContract,
+    adaptParams: boundParams.adaptParams,
+    commitmentCiphertext: ciphertexts.map((ct) => ({
+      ciphertext: ct.ciphertext.map(hx),
+      blindedSenderViewingKey: bytesToHex(ct.blindedSenderViewingKey),
+      blindedReceiverViewingKey: bytesToHex(ct.blindedReceiverViewingKey),
+      annotationData: hx(ct.annotationData),
+      memo: hx(ct.memo),
+    })),
+  };
+  return hashBoundParamsV2(boundParamsForHash as unknown as Parameters<typeof hashBoundParamsV2>[0]);
+}
+
+/**
+ * Recompute the spend-auth digest (`message`) from an intent context — `poseidon([merkleRoot,
+ * boundParamsHash, ...nullifiers, ...commitmentsOut])`. A `SpendSigner` implementation calls this and
+ * asserts it equals the `message` it was asked to sign, so a compromised host cannot pair a benign
+ * context with a malicious digest (SPEC §4.2.1). `CctpBinding` type re-exported for signer authors.
+ */
+export function computeSpendIntentDigest(context: SpendIntentContext): bigint {
+  const boundParamsHash = hashSpendBoundParams(context.boundParams, context.commitmentCiphertext);
+  return poseidon([context.merkleRoot, boundParamsHash, ...context.nullifiers, ...context.commitmentsOut]);
+}
+
+export type { CctpBinding };
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as const;
 const ZERO_BYTES32 = `0x${'00'.repeat(32)}` as const;
@@ -70,6 +127,8 @@ export interface BuildWitnessParams {
   readonly unshieldOutput?: { readonly recipient: `0x${string}`; readonly value: bigint };
   readonly adaptContract?: `0x${string}`;
   readonly adaptParams?: `0x${string}`;
+  /** Decoded cross-chain binding (inspection-only) surfaced to the signer as `boundParams.decodedAdaptParams`. */
+  readonly decodedAdaptParams?: CctpBinding;
 }
 
 /** The flattened circuit inputs snarkjs consumes (`FormattedCircuitInputsRailgun`). */
@@ -163,30 +222,32 @@ export async function buildWitness(params: BuildWitnessParams): Promise<BuiltWit
   const adaptContract = params.adaptContract ?? ZERO_ADDRESS;
   const adaptParams = params.adaptParams ?? ZERO_BYTES32;
 
-  // Bound-params hash — the abi.encode struct must match the contract's Verifier.hashBoundParams.
-  const boundParamsForHash = {
+  // The decoded bound params — carries the CCTP binding (inspection-only) alongside the six proof-bound
+  // fields. `hashSpendBoundParams` reads only the proof-bound fields + ciphertexts (must match
+  // Verifier.hashBoundParams); the signer sees the whole thing plus the ciphertexts to recompute the digest.
+  const boundParamsDecoded: DecodedBoundParams = {
     treeNumber: params.treeNumber,
     minGasPrice,
     unshield,
     chainID,
     adaptContract,
     adaptParams,
-    commitmentCiphertext: ciphertexts.map((ct) => ({
-      ciphertext: ct.ciphertext.map(hx),
-      blindedSenderViewingKey: bytesToHex(ct.blindedSenderViewingKey),
-      blindedReceiverViewingKey: bytesToHex(ct.blindedReceiverViewingKey),
-      annotationData: hx(ct.annotationData),
-      memo: hx(ct.memo),
-    })),
+    ...(params.decodedAdaptParams !== undefined ? { decodedAdaptParams: params.decodedAdaptParams } : {}),
   };
-  const boundParamsHash = hashBoundParamsV2(boundParamsForHash as unknown as Parameters<typeof hashBoundParamsV2>[0]);
+  const boundParamsHash = hashSpendBoundParams(boundParamsDecoded, ciphertexts);
 
-  // Spend-auth signature over the pinned intent digest.
+  // Spend-auth signature over the pinned intent digest — the context is fully bound so the signer can
+  // recompute `message` via `computeSpendIntentDigest` (SPEC §4.2.1).
   const message = poseidon([params.merkleRoot, boundParamsHash, ...nullifiers, ...commitmentsOut]);
-  const boundParamsContext = { treeNumber: params.treeNumber, minGasPrice, unshield, chainID, adaptContract, adaptParams };
-  const [signature] = await params.signer.signBatch([
-    { message, context: { nullifiers, commitmentsOut, merkleRoot: params.merkleRoot, boundParams: boundParamsContext, summary: params.summary } },
-  ]);
+  const context: SpendIntentContext = {
+    nullifiers,
+    commitmentsOut,
+    merkleRoot: params.merkleRoot,
+    boundParams: boundParamsDecoded,
+    commitmentCiphertext: ciphertexts,
+    summary: params.summary,
+  };
+  const [signature] = await params.signer.signBatch([{ message, context }]);
   if (signature === undefined) {
     throw new Error('buildWitness: signer returned no signature');
   }

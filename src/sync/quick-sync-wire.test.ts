@@ -117,4 +117,21 @@ describe('quick-sync wire contract', () => {
       }),
     ).toThrow(QuickSyncSchemaError);
   });
+
+  it('rejects out-of-range / non-integer numbers and malformed ciphertext arity (M1 hardening)', () => {
+    // WHY: an untrusted indexer could send a negative block, a fractional/oversized position, a negative
+    // value, or a wrong-arity ciphertext — each must be a typed schema rejection (→ RPC fallback), not a
+    // silently-poisoned scan or a generic crash deep in unpackCiphertext.
+    const good = serializeQuickSync(EVENTS, 1);
+    expect(() => parseQuickSync({ ...good, shields: [{ ...good.shields[0], blockNumber: -1 }] })).toThrow(QuickSyncSchemaError);
+    expect(() => parseQuickSync({ ...good, shields: [{ ...good.shields[0], position: 1.5 }] })).toThrow(QuickSyncSchemaError);
+    expect(() => parseQuickSync({ ...good, shields: [{ ...good.shields[0], position: 65536 }] })).toThrow(QuickSyncSchemaError);
+    expect(() => parseQuickSync({ ...good, shields: [{ ...good.shields[0], value: '-1' }] })).toThrow(QuickSyncSchemaError);
+    expect(() =>
+      parseQuickSync({
+        ...good,
+        transacts: [{ ...good.transacts[0], ciphertext: { ...good.transacts[0]!.ciphertext, ciphertext: ['a', 'b', 'c'] } }],
+      }),
+    ).toThrow(QuickSyncSchemaError);
+  });
 });
