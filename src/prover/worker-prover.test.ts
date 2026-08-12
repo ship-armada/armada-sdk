@@ -28,12 +28,16 @@ function inProcessChannel(): WorkerChannel {
 }
 
 describe('worker prover protocol + adapter (§4.5)', () => {
-  it('proves and verifies through the message channel (real snarkjs)', async () => {
+  it('proves and verifies through the message channel, forwarding real progress phases (P4.5)', async () => {
     const prover = createWorkerProver(inProcessChannel());
     try {
-      const proof = await prover.prove({ a: '3', b: '11' }, artifacts);
+      const progress: string[] = [];
+      const proof = await prover.prove({ a: '3', b: '11' }, artifacts, { onProgress: (p) => progress.push(p.phase) });
       expect(proof.a).toHaveLength(2);
       expect(proof.b[0]).toHaveLength(2);
+      // The in-worker prover's witness→proving phases cross the channel to the main-thread caller.
+      expect(progress).toContain('witness');
+      expect(progress).toContain('proving');
       expect(await prover.verify(proof, [33n], artifacts.vkey)).toBe(true);
       expect(await prover.verify(proof, [34n], artifacts.vkey)).toBe(false);
     } finally {
