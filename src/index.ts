@@ -26,6 +26,14 @@ export interface PoolConfig {
    */
   readonly finalityThreshold?: number;
   /**
+   * Blocks to stay behind chain head when scanning (SPEC §4.4 reorg safety, default 0 = scan to head).
+   * The SDK only persists commitments up to `head − confirmationDepth`, so a reorg of that depth or
+   * shallower can't remove an already-scanned leaf (the append-only tree can't un-append it). Set it to a
+   * small value on a fast-finality hub (a few blocks) or the finality depth for zero reorg exposure; the
+   * cost is that notes in the last `confirmationDepth` blocks aren't visible/spendable until they're deeper.
+   */
+  readonly confirmationDepth?: number;
+  /**
    * Circuit shapes (`<nullifiers>x<commitments>`, e.g. `"2x3"`) the deployment has artifacts for. When
    * set, `planTransfer` rejects an unprovable shape up front with `UnsupportedCircuitShapeError` instead
    * of failing late at artifact resolution / on-chain. Omit to skip the check.

@@ -9,7 +9,10 @@ import {
   feeScheduleKey,
   finalRootCheckRequired,
   resolveWalletStorage,
+  effectiveScanHead,
+  shouldRecoverFromReorg,
 } from './sdk';
+import { RootMismatchError } from './errors';
 import { deriveKeyset, LocalSigner } from './wallet/index';
 import { saveScanState, WalletScanState } from './sync/index';
 import { MemoryStorageAdapter } from './storage/index';
@@ -302,6 +305,29 @@ describe('finalRootCheckRequired — every sync verifies the accepted tree again
   it('an indexer batch already served+verified need not double-check', () => {
     // WHY: the served path verified the current root before acceptance; re-reading it is a wasted eth_call.
     expect(finalRootCheckRequired(true, false)).toBe(false);
+  });
+});
+
+describe('effectiveScanHead — stay confirmationDepth blocks behind head (§4.4 reorg safety)', () => {
+  it('scans to head when confirmationDepth is 0 (default), and holds back by the depth otherwise', () => {
+    expect(effectiveScanHead(1000, 0)).toBe(1000); // default: scan to head (no behavior change)
+    expect(effectiveScanHead(1000, 3)).toBe(997); // stay 3 blocks behind — a ≤3-deep reorg can't poison persisted leaves
+    expect(effectiveScanHead(2, 5)).toBe(0); // floored at 0 (planSyncWindow then reports scanned:false)
+  });
+});
+
+describe('shouldRecoverFromReorg — self-heal a reorg-poisoned persisted tree (§4.4)', () => {
+  const rme = new RootMismatchError('tree root not in history');
+
+  it('recovers only on a RootMismatchError whose PERSISTED state is itself invalid, and not while recovering', () => {
+    // A reorg removed an already-persisted leaf → the rolled-back (persisted) tree fails root verify → rescan.
+    expect(shouldRecoverFromReorg(rme, true, false)).toBe(true);
+    // The persisted state is fine → this was just a bad batch → rethrow (a retry re-fetches), no reset.
+    expect(shouldRecoverFromReorg(rme, false, false)).toBe(false);
+    // Already inside a recovery rescan → don't reset again (guards an infinite loop).
+    expect(shouldRecoverFromReorg(rme, true, true)).toBe(false);
+    // A non-root-mismatch error (e.g. RPC failure) is not a reorg → don't reset.
+    expect(shouldRecoverFromReorg(new Error('rpc down'), true, false)).toBe(false);
   });
 });
 
