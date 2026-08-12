@@ -25,12 +25,14 @@ export class FilesystemArtifactSource implements ArtifactSource {
     const fs = await import('node:fs/promises');
     const path = await import('node:path');
     const p = artifactPaths(shape);
-    const [wasm, zkey, vkeyRaw] = await Promise.all([
+    const [wasm, zkey, vkeyBytes] = await Promise.all([
       fs.readFile(path.join(this.baseDir, p.wasm)),
       fs.readFile(path.join(this.baseDir, p.zkey)),
-      fs.readFile(path.join(this.baseDir, p.vkey), 'utf8'),
+      fs.readFile(path.join(this.baseDir, p.vkey)),
     ]);
-    return { wasm: new Uint8Array(wasm), zkey: new Uint8Array(zkey), vkey: JSON.parse(vkeyRaw) as object };
+    // Keep the raw vkey bytes (for the manifest integrity check) and parse the object from them.
+    const vkeyRaw = new Uint8Array(vkeyBytes);
+    return { wasm: new Uint8Array(wasm), zkey: new Uint8Array(zkey), vkey: JSON.parse(new TextDecoder().decode(vkeyRaw)) as object, vkeyRaw };
   }
 }
 
@@ -76,10 +78,14 @@ export class HttpArtifactSource implements ArtifactSource {
         throw new Error(`HttpArtifactSource: ${name} fetch failed (${res.status}) for shape ${shapeDir(shape)}`);
       }
     }
+    // Read the vkey as raw bytes (not `.json()`) so its SHA-256 can be verified against the manifest;
+    // parse the object from those same bytes.
+    const vkeyRaw = new Uint8Array(await vkeyRes.arrayBuffer());
     const set: ArtifactSet = {
       wasm: new Uint8Array(await wasmRes.arrayBuffer()),
       zkey: new Uint8Array(await zkeyRes.arrayBuffer()),
-      vkey: (await vkeyRes.json()) as object,
+      vkey: JSON.parse(new TextDecoder().decode(vkeyRaw)) as object,
+      vkeyRaw,
     };
     // Fail-closed integrity: unless the caller explicitly opted out at construction, a wasm/zkey whose
     // SHA-256 doesn't match the pinned manifest throws ArtifactIntegrityError before it reaches the prover.

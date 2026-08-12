@@ -46,14 +46,14 @@ describe('ArtifactSource impls (§4.5)', () => {
 
   const bytesResponse = (bytes: Uint8Array): Response =>
     ({ ok: true, status: 200, arrayBuffer: async () => new Uint8Array(bytes).buffer } as unknown as Response);
-  const jsonResponse = (obj: unknown): Response =>
-    ({ ok: true, status: 200, json: async () => obj } as unknown as Response);
+  const VKEY_BYTES = new TextEncoder().encode(VKEY_RAW);
   // A fetch serving the mul fixture, optionally with a tampered zkey to exercise the integrity gate.
+  // vkey is served as raw bytes now (the source reads it via arrayBuffer to hash it, not .json()).
   const fixtureFetch = (opts?: { tamperZkey?: boolean }): typeof fetch =>
     (async (url: string): Promise<Response> => {
       if (url.endsWith('main_1x1.wasm')) return bytesResponse(WASM);
       if (url.endsWith('final.zkey')) return bytesResponse(opts?.tamperZkey ? new Uint8Array([0, 1, 2, 3]) : ZKEY);
-      if (url.endsWith('vkey.json')) return jsonResponse(JSON.parse(VKEY_RAW));
+      if (url.endsWith('vkey.json')) return bytesResponse(VKEY_BYTES);
       return { ok: false, status: 404 } as unknown as Response;
     }) as unknown as typeof fetch;
   const manifest: ArtifactManifest = { [shapeKey(SHAPE)]: artifactDigest({ wasm: WASM, zkey: ZKEY, vkey: {} }) };

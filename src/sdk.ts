@@ -65,9 +65,7 @@ interface SdkContext {
   readonly eventSource: EventSource;
   /** Always the RPC source: covers any tail the indexer lags, and is the verification fallback. */
   readonly rpcEventSource: RpcEventSource;
-  /** On-chain pool commitment root at a given block — used to verify indexer-sourced batches. */
-  readonly merkleRootAt: (blockTag: number) => Promise<string>;
-  /** Preflight (§4.7): is `root` still in the pool's accepted history for `treeNumber`? */
+  /** Sync root-verify + preflight (§4.4/§4.7): is `root` a member of the pool's accepted history for `treeNumber`? */
   readonly isKnownRoot: (treeNumber: number, root: bigint) => Promise<boolean>;
   /** Preflight (§4.7): has `(treeNumber, nullifier)` already been spent on-chain? */
   readonly isNullifierSpent: (treeNumber: number, nullifier: bigint) => Promise<boolean>;
@@ -88,6 +86,8 @@ interface SdkContext {
   readonly tokenByHash: ReadonlyMap<string, TokenData>;
   /** Yield adapter address (lowercased), when configured — an unshield to it marks a yield op. */
   readonly yieldAdapterAddress?: string;
+  /** CCTP messenger address, when configured — preflight checks its liveness for cross-chain plans. */
+  readonly cctpMessenger?: `0x${string}`;
   readonly poolAddress: `0x${string}`;
   readonly prover: ProverAdapter;
   readonly artifacts: ArtifactSource;
@@ -336,22 +336,23 @@ class ArmadaWallet implements Wallet {
   }
 
   /**
-   * Verify the built commitment tree reproduces the on-chain root at `head`. Any dropped/reordered
-   * commitment cascades leaf positions across tree boundaries, so the current (highest) tree's root
-   * diverges — checking it against `merkleRoot()` at the same block is sufficient to detect a bad batch.
+   * Verify EVERY built tree's root is an accepted on-chain root for that tree (`pool.rootHistory`), not
+   * just the current (highest) tree. A dropped tail of a COMPLETED tree does not shift the current tree's
+   * root, so a single-tree check misses it; a per-tree `rootHistory` membership check catches any
+   * dropped/reordered/extra commitment in any tree. `rootHistory` is cumulative, so the current tree's
+   * live root is a member too. `head` is informational (the check is against current chain state).
    */
-  private async verifyCurrentRoot(head: number): Promise<void> {
+  private async verifyRoots(head: number): Promise<void> {
     const trees = this.scanState.treeNumbers();
-    if (trees.length === 0) return;
-    const currentTree = trees[trees.length - 1]!;
-    const computed = this.scanState.treeRoot(currentTree);
-    const onChain = await this.ctx.merkleRootAt(head);
-    const norm = (r: string): string => (r.startsWith('0x') ? r.slice(2) : r).toLowerCase();
-    if (norm(computed) !== norm(onChain)) {
-      throw new RootMismatchError(
-        `indexer sync: tree ${currentTree} root ${computed} != on-chain merkleRoot ${onChain} @block ${head}`,
-      );
-    }
+    await Promise.all(
+      trees.map(async (tree) => {
+        const computed = this.scanState.treeRoot(tree);
+        const root = BigInt(computed.startsWith('0x') ? computed : `0x${computed}`);
+        if (!(await this.ctx.isKnownRoot(tree, root))) {
+          throw new RootMismatchError(`sync: tree ${tree} root ${computed} not in pool rootHistory @block ${head}`);
+        }
+      }),
+    );
   }
 
   on<K extends keyof SyncEventMap>(event: K, listener: (payload: SyncEventMap[K]) => void): Unsubscribe {
@@ -411,7 +412,7 @@ class ArmadaWallet implements Wallet {
           // mismatch — discards the batch and re-scans from RPC (the source of truth), rather than
           // failing the whole sync on a degraded indexer (SPEC §4.4).
           ({ tailCovered } = await this.applyToHead(from, head, decryptors, emitProgress));
-          await this.verifyCurrentRoot(head);
+          await this.verifyRoots(head);
         } catch {
           fellBack = true;
           this.scanState = WalletScanState.restore(rollback);
@@ -426,7 +427,7 @@ class ArmadaWallet implements Wallet {
       // the provider returned bad/truncated logs. It throws → the outer catch rolls back and refuses to
       // advance the checkpoint, so a retry re-scans the range cleanly instead of persisting a corrupt tree.
       if (finalRootCheckRequired(usingIndexer, fellBack)) {
-        await this.verifyCurrentRoot(head);
+        await this.verifyRoots(head);
       }
 
       // Quick-sync observability (SPEC §8): report whether the configured indexer served a
@@ -528,11 +529,19 @@ class ArmadaWallet implements Wallet {
       tree: txo.tree,
       nullifier: TransactNote.getNullifier(this.keyset.nullifyingKey, txo.position),
     }));
+    // Cross-chain unshield (a CCTP adaptParams binding) → add a messenger-liveness check when configured.
+    const messenger = this.ctx.cctpMessenger;
+    const isCrossChain = plan.boundParams.decodedAdaptParams !== undefined;
+    const cctpLiveness =
+      isCrossChain && messenger !== undefined
+        ? async (): Promise<boolean> => (await this.ctx.provider.getCode(messenger)) !== '0x'
+        : undefined;
     return runPreflight({
       plan,
       nullifiers,
       queries: { isKnownRoot: this.ctx.isKnownRoot, isNullifierSpent: this.ctx.isNullifierSpent },
       ...(options?.feeQuote !== undefined ? { feeQuote: options.feeQuote } : {}),
+      ...(cctpLiveness !== undefined ? { cctpLiveness } : {}),
       now: Date.now(),
     });
   }
@@ -745,17 +754,11 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
     ? new IndexerEventSource({ baseUrl: config.indexer.url, chainId: config.pool.chainId })
     : rpcEventSource;
 
-  // On-chain commitment root at a block — read at the synced head so verification compares like-for-like.
+  // Pool view getters for sync root-verification + preflight (per-tree accepted roots + spent nullifiers).
   const rootIface = new Interface([
-    'function merkleRoot() view returns (bytes32)',
     'function rootHistory(uint256, bytes32) view returns (bool)',
     'function nullifiers(uint256, bytes32) view returns (bool)',
   ]);
-  const merkleRootAt = async (blockTag: number): Promise<string> => {
-    const data = rootIface.encodeFunctionData('merkleRoot', []);
-    const res = await provider.call({ to: config.pool.poolAddress, data, blockTag });
-    return rootIface.decodeFunctionResult('merkleRoot', res)[0] as string;
-  };
   const bytes32 = (n: bigint): string => `0x${n.toString(16).padStart(64, '0')}`;
   const isKnownRoot = async (treeNumber: number, root: bigint): Promise<boolean> => {
     const data = rootIface.encodeFunctionData('rootHistory', [treeNumber, bytes32(root)]);
@@ -774,7 +777,6 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
     isNullifierSpent,
     eventSource,
     rpcEventSource,
-    merkleRootAt,
     tokenDataGetter,
     chain: { type: ChainType.EVM, id: config.pool.chainId },
     chainId: config.pool.chainId,
@@ -787,6 +789,7 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
     ...(config.pool.wrappers?.yieldAdapter !== undefined
       ? { yieldAdapterAddress: config.pool.wrappers.yieldAdapter.toLowerCase() }
       : {}),
+    ...(config.pool.cctp?.messenger !== undefined ? { cctpMessenger: config.pool.cctp.messenger } : {}),
     poolAddress: config.pool.poolAddress,
     prover: config.prover,
     artifacts: config.artifacts,

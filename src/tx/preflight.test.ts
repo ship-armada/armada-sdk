@@ -2,7 +2,8 @@
 // ABOUTME: Plan, with injected on-chain queries so the orchestration is exercised without a chain.
 
 import { describe, it, expect } from 'vitest';
-import { runPreflight, type PreflightQueries } from './preflight';
+import { AbiCoder } from 'ethers';
+import { runPreflight, readShieldsPaused, type PreflightQueries } from './preflight';
 import type { Plan } from './index';
 
 const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' as const;
@@ -28,11 +29,43 @@ const allGood: PreflightQueries = { isKnownRoot: async () => true, isNullifierSp
 const NOW = 1_000_000;
 
 describe('runPreflight (§4.7)', () => {
-  it('passes when the root is fresh, no input is spent, and the fee quote is unexpired', async () => {
+  it('passes when the root is fresh, no input is spent, the fee quote is unexpired, and balances suffice', async () => {
     const res = await runPreflight({ plan: plan(), nullifiers, queries: allGood, feeQuote: { expiresAt: NOW + 1 }, now: NOW });
     expect(res.ok).toBe(true);
-    expect(res.findings.map((f) => f.check)).toEqual(['root-freshness', 'nullifier-unspent', 'nullifier-unspent', 'fee-quote-expiry']);
+    expect(res.findings.map((f) => f.check)).toEqual([
+      'root-freshness', 'nullifier-unspent', 'nullifier-unspent', 'fee-quote-expiry', 'balance-sufficiency',
+    ]);
     expect(res.findings.every((f) => f.ok)).toBe(true);
+  });
+
+  it('fails balance-sufficiency when the plan inputs do not cover outputs + fee + unshield', async () => {
+    const p = plan();
+    const underfunded: typeof p = { ...p, summary: { ...p.summary, inputTotal: 1n, outputs: [{ toShieldedAddress: '0zk', value: 5n, tokenAddress: USDC }] } };
+    const res = await runPreflight({ plan: underfunded, nullifiers, queries: allGood, now: NOW });
+    expect(res.ok).toBe(false);
+    expect(res.findings.find((f) => f.check === 'balance-sufficiency')).toMatchObject({ ok: false });
+  });
+
+  it('runs cctp-liveness only when provided, failing on a dead messenger', async () => {
+    const live = await runPreflight({ plan: plan(), nullifiers, queries: allGood, now: NOW, cctpLiveness: async () => true });
+    expect(live.findings.find((f) => f.check === 'cctp-liveness')).toMatchObject({ ok: true });
+
+    const dead = await runPreflight({ plan: plan(), nullifiers, queries: allGood, now: NOW, cctpLiveness: async () => false });
+    expect(dead.ok).toBe(false);
+    expect(dead.findings.find((f) => f.check === 'cctp-liveness')).toMatchObject({ ok: false });
+
+    // Not provided (transfer/unshield) → no cctp-liveness finding.
+    const none = await runPreflight({ plan: plan(), nullifiers, queries: allGood, now: NOW });
+    expect(none.findings.some((f) => f.check === 'cctp-liveness')).toBe(false);
+  });
+
+  it('runs shield-pause only when provided, failing when shields are paused', async () => {
+    const paused = await runPreflight({ plan: plan(), nullifiers, queries: allGood, now: NOW, shieldsPaused: async () => true });
+    expect(paused.ok).toBe(false);
+    expect(paused.findings.find((f) => f.check === 'shield-pause')).toMatchObject({ ok: false });
+
+    const open = await runPreflight({ plan: plan(), nullifiers, queries: allGood, now: NOW, shieldsPaused: async () => false });
+    expect(open.findings.find((f) => f.check === 'shield-pause')).toMatchObject({ ok: true });
   });
 
   it('fails root-freshness when the plan root is no longer in the pool history', async () => {
@@ -58,5 +91,20 @@ describe('runPreflight (§4.7)', () => {
     const noQuote = await runPreflight({ plan: plan(), nullifiers, queries: allGood, now: NOW });
     expect(noQuote.findings.some((f) => f.check === 'fee-quote-expiry')).toBe(false);
     expect(noQuote.ok).toBe(true);
+  });
+});
+
+describe('readShieldsPaused (§4.7 shield-pause reader)', () => {
+  const coder = AbiCoder.defaultAbiCoder();
+  const CONTROLLER = '0x' + '55'.repeat(20);
+
+  it('encodes shieldsPaused() and decodes the boolean from an injected eth_call', async () => {
+    const ethCall = async (tx: { to: string; data: string }): Promise<string> => {
+      expect(tx.to).toBe(CONTROLLER);
+      expect(tx.data.slice(0, 10)).toBe('0x4d52a10e'); // selector of shieldsPaused()
+      return coder.encode(['bool'], [true]);
+    };
+    expect(await readShieldsPaused(ethCall, CONTROLLER)).toBe(true);
+    expect(await readShieldsPaused(async () => coder.encode(['bool'], [false]), CONTROLLER)).toBe(false);
   });
 });
