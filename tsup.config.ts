@@ -38,6 +38,8 @@ const entry = {
   // Lean prover entry — prover code + snarkjs only, NO vendored engine/core/wasm. A browser Web
   // Worker imports this (not the 13MB wasm-inlined root) so the worker chunk stays small + bundles fast.
   'prover/index': 'src/prover/index.ts',
+  // Prebuilt Web Worker entry — self-wires the prover handler; point a browser Worker at it directly.
+  'prover/worker': 'src/prover/worker-entry.ts',
 }
 
 export default defineConfig([

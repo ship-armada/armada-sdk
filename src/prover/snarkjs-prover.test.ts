@@ -28,7 +28,10 @@ describe('snarkjs ProverAdapter (§4.5)', () => {
       expect(proof.b).toHaveLength(2);
       expect(proof.b[0]).toHaveLength(2);
       expect(proof.c).toHaveLength(2);
-      expect(progress.length).toBeGreaterThan(0);
+      // Real two-phase progress (P4.5): a witness phase then a proving phase, each start→end.
+      expect(progress.map((p) => p.phase)).toContain('witness');
+      expect(progress.map((p) => p.phase)).toContain('proving');
+      expect(progress).toContainEqual({ phase: 'proving', fraction: 1 });
 
       // Public signal is the output c = 3 * 11 = 33.
       expect(await prover.verify(proof, [33n], artifacts.vkey)).toBe(true);

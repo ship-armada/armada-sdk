@@ -5,20 +5,18 @@ import type { ProverAdapter, ArtifactSet, Groth16Proof, ProveOptions } from './i
 import { toGroth16Proof, toSnarkjsProof, type SnarkjsProof } from './groth16-format';
 import { ProofVerificationError, AbortedError } from '../errors';
 
-// snarkjs ships no types — model just the Groth16 surface we use.
-interface Groth16Backend {
-  fullProve(
-    input: unknown,
-    wasm: Uint8Array,
-    zkey: Uint8Array,
-    logger?: unknown,
-  ): Promise<{ proof: SnarkjsProof; publicSignals: string[] }>;
-  verify(vkey: object, publicSignals: string[], proof: SnarkjsProof): Promise<boolean>;
+// snarkjs ships no types — model just the surface we use. We drive witness-calculation and proving as
+// SEPARATE steps (not `fullProve`) so we can emit a real witness→proving phase boundary for progress.
+interface SnarkjsBackend {
+  readonly wtns: { calculate(input: unknown, wasm: Uint8Array, wtns: object): Promise<void> };
+  readonly groth16: {
+    prove(zkey: Uint8Array, wtns: object): Promise<{ proof: SnarkjsProof; publicSignals: string[] }>;
+    verify(vkey: object, publicSignals: string[], proof: SnarkjsProof): Promise<boolean>;
+  };
 }
 
-async function loadGroth16(): Promise<Groth16Backend> {
-  const mod = (await import('snarkjs')) as unknown as { groth16: Groth16Backend };
-  return mod.groth16;
+async function loadSnarkjs(): Promise<SnarkjsBackend> {
+  return (await import('snarkjs')) as unknown as SnarkjsBackend;
 }
 
 /**
@@ -36,10 +34,16 @@ export function createSnarkjsProver(): ProverAdapter {
       if (options?.signal?.aborted) {
         throw new AbortedError('prove: aborted before start');
       }
-      const groth16 = await loadGroth16();
-      // snarkjs has no fine-grained progress hook; emit coarse start/end phases (replaces yieldToPaint).
+      const snarkjs = await loadSnarkjs();
+      // Two real phases (SPEC §4.5): witness calculation, then Groth16 proving. Splitting `fullProve`
+      // into `wtns.calculate` + `groth16.prove` gives a deterministic phase boundary (witness done is a
+      // meaningful milestone for a large circuit) instead of the old start/end-only `proving` signal.
+      const wtns: { type: 'mem' } = { type: 'mem' };
+      options?.onProgress?.({ phase: 'witness', fraction: 0 });
+      await snarkjs.wtns.calculate(formattedInputs, artifacts.wasm, wtns);
+      options?.onProgress?.({ phase: 'witness', fraction: 1 });
       options?.onProgress?.({ phase: 'proving', fraction: 0 });
-      const { proof, publicSignals } = await groth16.fullProve(formattedInputs, artifacts.wasm, artifacts.zkey);
+      const { proof, publicSignals } = await snarkjs.groth16.prove(artifacts.zkey, wtns);
       options?.onProgress?.({ phase: 'proving', fraction: 1 });
       // Local self-check (SPEC §4.5): verify the fresh proof against its own vkey before returning, so a
       // proof that would revert on-chain (a witness-assembly or corrupted-artifact bug) is a typed error
@@ -49,7 +53,7 @@ export function createSnarkjsProver(): ProverAdapter {
       if (vkey !== undefined) {
         let ok = false;
         try {
-          ok = await groth16.verify(vkey, publicSignals, proof);
+          ok = await snarkjs.groth16.verify(vkey, publicSignals, proof);
         } catch (err) {
           throw new ProofVerificationError('local proof self-check errored', { cause: err });
         }
@@ -59,8 +63,8 @@ export function createSnarkjsProver(): ProverAdapter {
     },
 
     async verify(proof: Groth16Proof, publicSignals: bigint[], vkey: object): Promise<boolean> {
-      const groth16 = await loadGroth16();
-      return groth16.verify(vkey, publicSignals.map((s) => s.toString()), toSnarkjsProof(proof));
+      const snarkjs = await loadSnarkjs();
+      return snarkjs.groth16.verify(vkey, publicSignals.map((s) => s.toString()), toSnarkjsProof(proof));
     },
 
     async close(): Promise<void> {
