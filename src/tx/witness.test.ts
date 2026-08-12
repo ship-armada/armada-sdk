@@ -10,8 +10,9 @@ import { deriveKeyset, type Keyset } from '../wallet/derive';
 import { LocalSigner } from '../wallet/local-signer';
 import { UTXOMerkletree } from '../sync/merkletree';
 import { createTransferNote, tryDecryptCommitment } from '../sync/index';
-import { buildWitness, type WitnessInput, type WitnessSenderContext } from './witness';
-import type { PlanSummary } from './index';
+import { buildWitness, computeSpendIntentDigest, type WitnessInput, type WitnessSenderContext } from './witness';
+import type { SpendSigner, SpendSignRequest, EddsaSignature } from '../wallet/index';
+import type { PlanSummary, CctpBinding } from './index';
 
 const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' as const;
 const nToHex = (n: bigint): string => n.toString(16).padStart(64, '0');
@@ -91,6 +92,38 @@ describe('buildWitness (§4.6)', () => {
     const message = poseidon([built.publicInputs.merkleRoot, built.publicInputs.boundParamsHash, ...built.publicInputs.nullifiers, ...built.publicInputs.commitmentsOut]);
     const ok = verifyEDDSA(message, { R8: [fi.signature[0], fi.signature[1]], S: fi.signature[2] }, sender.spendingPublicKey);
     expect(ok).toBe(true);
+  });
+
+  it('hands the signer a context from which it can recompute the signed digest (M2, SPEC §4.2.1)', async () => {
+    // WHY: a policy/external signer must be able to verify that `message` corresponds to the
+    // human-inspectable context it approved — otherwise a compromised host could pair a benign context
+    // with a malicious digest. computeSpendIntentDigest(context) === message closes that gap.
+    const captured: SpendSignRequest[] = [];
+    const capturingSigner: SpendSigner = {
+      getSpendingPublicKey: () => signer.getSpendingPublicKey(),
+      signBatch: async (reqs): Promise<EddsaSignature[]> => { captured.push(...reqs); return signer.signBatch(reqs); },
+    };
+    const { input, merkleRoot } = await makeInput(10n);
+    const cctp: CctpBinding = { kind: 'cctp', recipient: `0x${'ab'.repeat(20)}`, destDomain: 3, maxFee: 500n };
+    const built = await buildWitness({
+      inputs: [input],
+      outputs: [{ receiverAddress: broadcaster.shieldedAddress, value: 1n }],
+      tokenAddress: USDC, sender: senderCtx(), signer: capturingSigner, summary,
+      merkleRoot, treeNumber: 0, chainType: 0, chainId: 31337,
+      unshield: 1, unshieldOutput: { recipient: `0x${'ab'.repeat(20)}`, value: 9n },
+      adaptContract: `0x${'cd'.repeat(20)}`, adaptParams: `0x${'ab'.repeat(32)}`, decodedAdaptParams: cctp,
+    });
+
+    expect(captured).toHaveLength(1);
+    const req = captured[0]!;
+    // The signer can recompute the digest it signed purely from the context it was shown.
+    expect(computeSpendIntentDigest(req.context)).toBe(req.message);
+    // And that digest is exactly what the witness proves against.
+    expect(req.message).toBe(
+      poseidon([built.publicInputs.merkleRoot, built.publicInputs.boundParamsHash, ...built.publicInputs.nullifiers, ...built.publicInputs.commitmentsOut]),
+    );
+    // The decoded cross-chain destination is inspectable in the context (not just the one-way keccak).
+    expect(req.context.boundParams.decodedAdaptParams).toEqual(cctp);
   });
 
   it('appends the unshield as the LAST commitment — npk = recipient, no ciphertext (public output)', async () => {

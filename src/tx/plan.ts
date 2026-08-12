@@ -3,9 +3,10 @@
 
 import { getTokenDataERC20, getTokenDataHash } from '../core/index';
 import type { TXO } from '../sync/index';
-import { InsufficientBalanceError } from '../errors';
-import type { CircuitShape } from '../prover/index';
-import type { Plan, PlanSelection, PlanOutput, PlanSummary, DecodedBoundParams } from './index';
+import { InsufficientBalanceError, UnsupportedCircuitShapeError } from '../errors';
+import { shapeKey, type CircuitShape } from '../prover/index';
+import type { Plan, PlanSelection, PlanOutput, PlanSummary, DecodedBoundParams, CctpBinding } from './index';
+import { verifyCctpBinding } from './adapt-params';
 import type { WitnessInput } from './witness';
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as const;
@@ -47,11 +48,23 @@ export interface PlanTransferParams {
     readonly value: bigint;
     readonly adaptParams?: `0x${string}`;
     readonly adaptContract?: `0x${string}`;
+    /**
+     * The DECODED cross-chain binding matching `adaptParams` — carried through to the signer as
+     * `boundParams.decodedAdaptParams` so an external/policy signer can inspect the CCTP destination it
+     * authorizes. When provided it MUST encode to `adaptParams` (asserted), else the plan is rejected.
+     */
+    readonly adaptBinding?: CctpBinding;
   };
   /** Per-tree merkle roots (the input notes' tree must have an entry). */
   readonly roots: ReadonlyMap<number, bigint>;
   readonly chainID: bigint;
   readonly minGasPrice?: bigint;
+  /**
+   * Shape keys (`<nullifiers>x<commitments>`) the deployment has circuit artifacts for. When provided,
+   * `planTransfer` rejects a plan whose shape isn't in the set with `UnsupportedCircuitShapeError` —
+   * fail-fast, before the signer is asked and 30s of proving is spent. Omit to skip the check.
+   */
+  readonly supportedShapes?: ReadonlySet<string>;
 }
 
 /** Railgun unshield flag (boundParams). NONE = plain transfer; UNSHIELD = a normal unshield. */
@@ -135,6 +148,15 @@ export function planTransfer(params: PlanTransferParams): PlanSelection {
     outputs.length + (feeOutput ? 1 : 0) + (changeValue > 0n ? 1 : 0) + (params.unshield ? 1 : 0);
   const shape: CircuitShape = { nullifiers: best.selected.length, commitments };
 
+  // Fail fast if the deployment has no circuit for this shape — before the signer is asked and proving
+  // starts. A fragmented wallet whose covering set needs more inputs than any supported shape allows
+  // lands here (multi-transaction batching is not yet implemented).
+  if (params.supportedShapes !== undefined && !params.supportedShapes.has(shapeKey(shape))) {
+    throw new UnsupportedCircuitShapeError(
+      `planTransfer: no circuit artifact for shape ${shapeKey(shape)} (inputs=${shape.nullifiers}, commitments=${shape.commitments})`,
+    );
+  }
+
   const summary: PlanSummary = {
     tokenAddress: params.tokenAddress,
     inputTotal: best.total,
@@ -144,6 +166,16 @@ export function planTransfer(params: PlanTransferParams): PlanSelection {
     ...(params.unshield ? { unshield: { recipient: params.unshield.recipient, value: params.unshield.value } } : {}),
   };
 
+  // If the caller supplied a decoded CCTP binding, it must match the encoded adaptParams the proof
+  // commits — otherwise the signer would inspect a destination the proof doesn't actually bind.
+  const adaptBinding = params.unshield?.adaptBinding;
+  if (adaptBinding !== undefined) {
+    const encoded = params.unshield?.adaptParams;
+    if (encoded === undefined || !verifyCctpBinding(encoded, adaptBinding.recipient, adaptBinding.destDomain, adaptBinding.maxFee)) {
+      throw new Error('planTransfer: unshield.adaptBinding does not match unshield.adaptParams');
+    }
+  }
+
   const boundParams: DecodedBoundParams = {
     treeNumber: best.tree,
     minGasPrice: params.minGasPrice ?? 0n,
@@ -151,6 +183,7 @@ export function planTransfer(params: PlanTransferParams): PlanSelection {
     chainID: params.chainID,
     adaptContract: params.unshield?.adaptContract ?? ZERO_ADDRESS,
     adaptParams: params.unshield?.adaptParams ?? ZERO_BYTES32,
+    ...(adaptBinding !== undefined ? { decodedAdaptParams: adaptBinding } : {}),
   };
 
   return { shape, merkleRoot, summary, boundParams, selectedInputs: best.selected };

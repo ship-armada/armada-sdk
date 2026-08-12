@@ -75,6 +75,8 @@ interface SdkContext {
   readonly deployBlock: number;
   /** Confirmations before a commitment is spendable vs pending in the balance view (default 0). */
   readonly finalityThreshold: number;
+  /** Circuit shapes the deployment can prove — plan-time fail-fast set, or undefined to skip the check. */
+  readonly supportedShapes: ReadonlySet<string> | undefined;
   /** Canonical 32-byte hash (no 0x) of USDC — maps owned-note token hashes back to the address. */
   readonly usdcHash: string;
   /** hash (no 0x) → TokenData for every registered token (USDC + additionalTokens) — resolves a
@@ -385,19 +387,24 @@ class ArmadaWallet implements Wallet {
     // otherwise wedge every later sync with a permanent position gap (the in-process form of §4.3's pitfall).
     const rollback = this.scanState.snapshot();
     try {
-      const { tailCovered } = await this.applyToHead(from, head, decryptors, emitProgress);
+      let tailCovered = false;
       let fellBack = false;
 
       if (usingIndexer) {
         try {
+          // The indexer is untrusted: its fetch, wire-schema parse, apply, AND root-verify all live
+          // inside this try so ANY failure — malformed/garbage response, HTTP error, position gap, root
+          // mismatch — discards the batch and re-scans from RPC (the source of truth), rather than
+          // failing the whole sync on a degraded indexer (SPEC §4.4).
+          ({ tailCovered } = await this.applyToHead(from, head, decryptors, emitProgress));
           await this.verifyCurrentRoot(head);
-        } catch (err) {
-          if (!(err instanceof RootMismatchError)) throw err;
-          // Indexer served a tree that doesn't match chain — discard it and re-scan from RPC (truth).
+        } catch {
           fellBack = true;
           this.scanState = WalletScanState.restore(rollback);
           await this.applyBatch(this.ctx.rpcEventSource, from, head, decryptors, emitProgress);
         }
+      } else {
+        ({ tailCovered } = await this.applyToHead(from, head, decryptors, emitProgress));
       }
 
       // Final guard (SPEC §4.4): the accepted tree — RPC baseline or post-fallback RPC rescan — must
@@ -551,11 +558,13 @@ class ArmadaWallet implements Wallet {
               value: request.unshield.amount,
               ...(request.unshield.adaptParams ? { adaptParams: request.unshield.adaptParams } : {}),
               ...(request.unshield.adaptContract ? { adaptContract: request.unshield.adaptContract } : {}),
+              ...(request.unshield.adaptBinding ? { adaptBinding: request.unshield.adaptBinding } : {}),
             },
           }
         : {}),
       roots,
       chainID: BigInt(this.ctx.chainId),
+      ...(this.ctx.supportedShapes !== undefined ? { supportedShapes: this.ctx.supportedShapes } : {}),
     });
     // Capture each selected input's merkle proof from the SAME scan state the roots came from (no await
     // since roots were read above), so the plan owns proofs consistent with its `merkleRoot`. `prove()`
@@ -603,6 +612,8 @@ class ArmadaWallet implements Wallet {
           // pass the plan's values so a cross-chain unshield's CCTP binding is committed by the proof.
           adaptContract: plan.boundParams.adaptContract,
           adaptParams: plan.boundParams.adaptParams,
+          // Decoded CCTP binding (inspection-only) so the signer sees the destination it authorizes (§4.2.1).
+          ...(plan.boundParams.decodedAdaptParams ? { decodedAdaptParams: plan.boundParams.decodedAdaptParams } : {}),
           ...(plan.summary.unshield ? { unshieldOutput: plan.summary.unshield } : {}),
         },
         artifacts: this.ctx.artifacts,
@@ -711,6 +722,7 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
     usdcAddress: config.pool.usdcAddress,
     deployBlock: config.pool.deployBlock,
     finalityThreshold: config.pool.finalityThreshold ?? 0,
+    supportedShapes: config.pool.supportedShapes !== undefined ? new Set(config.pool.supportedShapes) : undefined,
     usdcHash,
     tokenByHash,
     ...(config.pool.wrappers?.yieldAdapter !== undefined

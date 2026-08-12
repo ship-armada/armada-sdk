@@ -1,7 +1,7 @@
 // ABOUTME: Wallet-layer contracts (SPEC §4.2) — the SpendSigner custody boundary, enrollment factory,
 // ABOUTME: and view-only wallets. Implementations land in Phase 2; the interfaces are FROZEN here.
 
-import type { DecodedBoundParams, PlanSummary, Plan, ProofHandle, FeeQuote } from '../tx/index';
+import type { Plan, ProofHandle, FeeQuote, SpendIntentContext, CctpBinding } from '../tx/index';
 import type { ProveOptions } from '../prover/index';
 import type { TokenBalance, HistoryEntry, SyncEventMap, Unsubscribe } from '../sync/index';
 
@@ -9,17 +9,13 @@ export type EddsaSignature = { readonly R8: readonly [bigint, bigint]; readonly 
 
 /**
  * A fully-bound spend intent handed to the signer. `message` is the pinned poseidon digest (§2);
- * `context` carries everything needed to inspect/gate the intent (decoded adapt calldata included).
+ * `context` (a `SpendIntentContext`) carries everything needed to inspect/gate the intent — decoded
+ * adapt calldata AND the output ciphertexts — so a signer can recompute `message` via
+ * `computeSpendIntentDigest(context)` and refuse a digest that doesn't match the context it approved.
  */
 export interface SpendSignRequest {
   readonly message: bigint;
-  readonly context: {
-    readonly nullifiers: readonly bigint[];
-    readonly commitmentsOut: readonly bigint[];
-    readonly merkleRoot: bigint;
-    readonly boundParams: DecodedBoundParams;
-    readonly summary: PlanSummary;
-  };
+  readonly context: SpendIntentContext;
 }
 
 /**
@@ -79,7 +75,14 @@ export interface Wallet {
 
 export interface PlanTransferRequest {
   readonly outputs: readonly { to0zk: string; amount: bigint; memo?: string }[];
-  readonly unshield?: { recipient: `0x${string}`; amount: bigint; adaptParams?: `0x${string}`; adaptContract?: `0x${string}` };
+  readonly unshield?: {
+    recipient: `0x${string}`;
+    amount: bigint;
+    adaptParams?: `0x${string}`;
+    adaptContract?: `0x${string}`;
+    /** Decoded CCTP binding matching `adaptParams` — surfaced to the signer for destination inspection (§4.2.1). */
+    adaptBinding?: CctpBinding;
+  };
   readonly fee: FeeQuote;
   /**
    * Token being spent. Defaults to the pool's USDC. Set it to spend a non-USDC shielded balance
