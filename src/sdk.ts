@@ -73,6 +73,8 @@ interface SdkContext {
   readonly usdcAddress: `0x${string}`;
   /** Pool deploy block — the genesis scan floor for wallets with no earlier creationBlock (e.g. ephemeral). */
   readonly deployBlock: number;
+  /** Confirmations before a commitment is spendable vs pending in the balance view (default 0). */
+  readonly finalityThreshold: number;
   /** Canonical 32-byte hash (no 0x) of USDC — maps owned-note token hashes back to the address. */
   readonly usdcHash: string;
   /** hash (no 0x) → TokenData for every registered token (USDC + additionalTokens) — resolves a
@@ -207,6 +209,9 @@ class ArmadaWallet implements Wallet {
   // emit only genuinely-new incoming notes.
   private readonly seenReceiveKeys = new Set<string>();
   private receiveBaselined = false;
+  // The in-flight sync run, if any — concurrent sync() calls coalesce onto it instead of both mutating
+  // the shared append-only scan state (which would double-apply a range and throw a position gap).
+  private syncInFlight: Promise<{ fromBlock: number; syncedThrough: number; scanned: boolean }> | undefined;
 
   constructor(
     private readonly keyset: Keyset,
@@ -345,6 +350,19 @@ class ArmadaWallet implements Wallet {
   }
 
   async sync(): Promise<{ fromBlock: number; syncedThrough: number; scanned: boolean }> {
+    // Coalesce concurrent syncs (UI poll + manual refresh) onto one run: two calls both mutating the
+    // shared append-only tree would double-apply a range and throw a merkle position gap.
+    if (this.syncInFlight !== undefined) return this.syncInFlight;
+    const run = this.runSync();
+    this.syncInFlight = run;
+    try {
+      return await run;
+    } finally {
+      this.syncInFlight = undefined;
+    }
+  }
+
+  private async runSync(): Promise<{ fromBlock: number; syncedThrough: number; scanned: boolean }> {
     await this.hydrate();
     const head = await this.ctx.provider.getBlockNumber();
     const { fromBlock, scanned } = planSyncWindow(this.syncedThrough, head);
@@ -359,14 +377,14 @@ class ArmadaWallet implements Wallet {
 
     this.emitter.emit('scan:started', { fromBlock, toBlock: head });
     this.emitter.emit('scan:progress', { syncedThrough: from - 1, fraction: 0 });
-    try {
-      const decryptors = this.decryptors();
-      // Snapshot before applying so we can roll back a batch that fails root verification — on the
-      // indexer path (untrusted source) AND the RPC path (a provider that silently truncates a
-      // getLogs range yields a tree missing commitments that must not be persisted).
-      const usingIndexer = this.ctx.eventSource !== this.ctx.rpcEventSource;
-      const rollback = this.scanState.snapshot();
 
+    const decryptors = this.decryptors();
+    const usingIndexer = this.ctx.eventSource !== this.ctx.rpcEventSource;
+    // Snapshot BEFORE applying so ANY failure below — a partial apply mid-batch, a root mismatch, a save
+    // error — rolls the in-memory tree back to its pre-batch state. A half-applied append-only tree would
+    // otherwise wedge every later sync with a permanent position gap (the in-process form of §4.3's pitfall).
+    const rollback = this.scanState.snapshot();
+    try {
       const { tailCovered } = await this.applyToHead(from, head, decryptors, emitProgress);
       let fellBack = false;
 
@@ -383,17 +401,11 @@ class ArmadaWallet implements Wallet {
       }
 
       // Final guard (SPEC §4.4): the accepted tree — RPC baseline or post-fallback RPC rescan — must
-      // reproduce the on-chain root. This is the ONLY verification on the pure-RPC path; a mismatch
-      // means the provider returned bad/truncated logs, so roll back and refuse to advance the
-      // checkpoint rather than persist a corrupt tree (a retry re-scans the range cleanly).
+      // reproduce the on-chain root. This is the ONLY verification on the pure-RPC path; a mismatch means
+      // the provider returned bad/truncated logs. It throws → the outer catch rolls back and refuses to
+      // advance the checkpoint, so a retry re-scans the range cleanly instead of persisting a corrupt tree.
       if (finalRootCheckRequired(usingIndexer, fellBack)) {
-        try {
-          await this.verifyCurrentRoot(head);
-        } catch (err) {
-          if (!(err instanceof RootMismatchError)) throw err;
-          this.scanState = WalletScanState.restore(rollback);
-          throw err;
-        }
+        await this.verifyCurrentRoot(head);
       }
 
       // Quick-sync observability (SPEC §8): report whether the configured indexer served a
@@ -414,6 +426,8 @@ class ArmadaWallet implements Wallet {
       this.emitReceivedNotes();
       return { fromBlock, syncedThrough: head, scanned: true };
     } catch (err) {
+      // Roll the tree back to the pre-batch snapshot so a poisoned partial state can't wedge later syncs.
+      this.scanState = WalletScanState.restore(rollback);
       this.emitter.emit('scan:error', { error: err instanceof Error ? err : new Error(String(err)) });
       throw err;
     }
@@ -450,7 +464,7 @@ class ArmadaWallet implements Wallet {
   // including a token fully spent (drops out of `balances()`, so we emit a zero). Unregistered tokens
   // (unknown hash → no address) are skipped. First sync after load emits the baseline for held tokens.
   private emitBalanceUpdates(head: number): void {
-    const balances = this.scanState.balances(this.keyset.nullifyingKey, { currentBlock: head, finalityThreshold: 0 });
+    const balances = this.scanState.balances(this.keyset.nullifyingKey, { currentBlock: head, finalityThreshold: this.ctx.finalityThreshold });
     const seen = new Set<string>();
     for (const b of balances) {
       seen.add(b.tokenHash);
@@ -475,7 +489,7 @@ class ArmadaWallet implements Wallet {
 
   async balances(): Promise<TokenBalance[]> {
     const head = await this.ctx.provider.getBlockNumber();
-    return this.scanState.balances(this.keyset.nullifyingKey, { currentBlock: head, finalityThreshold: 0 });
+    return this.scanState.balances(this.keyset.nullifyingKey, { currentBlock: head, finalityThreshold: this.ctx.finalityThreshold });
   }
 
   spendableNullifiers(): readonly { readonly tree: number; readonly nullifier: bigint }[] {
@@ -696,6 +710,7 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
     chainId: config.pool.chainId,
     usdcAddress: config.pool.usdcAddress,
     deployBlock: config.pool.deployBlock,
+    finalityThreshold: config.pool.finalityThreshold ?? 0,
     usdcHash,
     tokenByHash,
     ...(config.pool.wrappers?.yieldAdapter !== undefined
@@ -746,8 +761,17 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
   return {
     wallet,
     async close() {
-      await config.prover.close();
-      await config.storage.close();
+      // Release every resource even if an earlier close throws: the ethers provider holds polling
+      // timers/sockets that keep a Node process alive (a leak in the relayer/tests) if never destroyed.
+      try {
+        await config.prover.close();
+      } finally {
+        try {
+          await config.storage.close();
+        } finally {
+          provider.destroy();
+        }
+      }
     },
   };
 }

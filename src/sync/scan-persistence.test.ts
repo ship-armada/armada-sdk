@@ -3,7 +3,7 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initPoseidonPromise, TransactNote } from '../core/index';
-import { MemoryStorageAdapter } from '../storage/index';
+import { MemoryStorageAdapter, EncryptedStore, deriveStorageKey } from '../storage/index';
 import { WalletScanState } from './scan-engine';
 import type { DecodedPoolEvents, DecodedTransactCommitment } from './event-decoder';
 import type { CommitmentCiphertextV2 } from './note-crypto';
@@ -82,5 +82,26 @@ describe('scan-state persistence (§4.3/§4.4)', () => {
     const storage = new MemoryStorageAdapter();
     await storage.open({ schemaVersion: 1, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1 });
     expect(await loadScanState(storage, 'nobody')).toBeUndefined();
+  });
+
+  it('degrades a corrupt (unparseable) record to a cache miss instead of throwing (M4)', async () => {
+    // WHY: scan state is chain-derived cache. A bit-flip / interrupted write must rescan, not brick every
+    // future sync — the in-process form of the "delete the DB by hand" pitfall §4.3 removes.
+    const storage = new MemoryStorageAdapter();
+    await storage.open({ schemaVersion: 1, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1 });
+    await storage.put('chain/scan-state/0zk_alice', new TextEncoder().encode('{not valid json'));
+    expect(await loadScanState(storage, '0zk_alice')).toBeUndefined();
+  });
+
+  it('degrades an undecryptable encrypted record to a cache miss (M4, GCM auth failure)', async () => {
+    // A record written under one key and read under another (key rotation / corruption) throws GCM auth
+    // failure inside get(); loadScanState must swallow it and rescan rather than propagate and wedge sync.
+    const inner = new MemoryStorageAdapter();
+    await inner.open({ schemaVersion: 1, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1 });
+    const writer = new EncryptedStore(inner, deriveStorageKey(new Uint8Array(32).fill(1)));
+    await saveScanState(writer, '0zk_bob', await buildState(), 42);
+
+    const reader = new EncryptedStore(inner, deriveStorageKey(new Uint8Array(32).fill(2))); // wrong key
+    expect(await loadScanState(reader, '0zk_bob')).toBeUndefined();
   });
 });

@@ -30,6 +30,12 @@ type RequestPayload = DistributiveOmit<ProverWorkerRequest, 'id'>;
 export interface WorkerChannel {
   post(message: ProverWorkerRequest): void;
   onMessage(handler: (reply: ProverWorkerReply) => void): void;
+  /**
+   * Optional: report a worker-level failure (crash / exit / transport error). Wire it to the Web
+   * Worker's `error`/`messageerror` events so an in-flight `prove()` REJECTS instead of hanging forever
+   * when the worker dies (e.g. OOM on a large zkey). Omit it and only close() drains pending requests.
+   */
+  onError?(handler: (error: Error) => void): void;
   terminate(): void;
 }
 
@@ -66,6 +72,14 @@ export function createProverWorkerHandler(
 export function createWorkerProver(channel: WorkerChannel): ProverAdapter {
   const pending = new Map<number, { resolve: (r: ProverWorkerReply) => void; reject: (e: Error) => void }>();
   let nextId = 0;
+  let closed = false;
+
+  // Fail every in-flight request at once — used on close() and on a worker-level error.
+  const rejectAll = (error: Error): void => {
+    for (const p of pending.values()) p.reject(error);
+    pending.clear();
+  };
+
   channel.onMessage((reply) => {
     const p = pending.get(reply.id);
     if (p === undefined) return;
@@ -73,12 +87,31 @@ export function createWorkerProver(channel: WorkerChannel): ProverAdapter {
     if ('error' in reply) p.reject(new Error(reply.error));
     else p.resolve(reply);
   });
+  // A worker crash/exit/transport error must reject in-flight requests, not leave them hanging forever.
+  channel.onError?.((error) => rejectAll(error instanceof Error ? error : new Error(String(error))));
 
-  const request = (msg: RequestPayload): Promise<ProverWorkerReply> => {
+  const request = (msg: RequestPayload, signal?: AbortSignal): Promise<ProverWorkerReply> => {
     const id = nextId;
     nextId += 1;
     return new Promise<ProverWorkerReply>((resolve, reject) => {
-      pending.set(id, { resolve, reject });
+      if (closed) {
+        reject(new Error('worker prover: closed'));
+        return;
+      }
+      if (signal?.aborted) {
+        reject(new Error('prove: aborted before start'));
+        return;
+      }
+      const onAbort = (): void => {
+        // Drop the pending entry so a later reply is ignored, and reject the caller (no worker respawn —
+        // the worker keeps running the abandoned proof, but the caller is unblocked immediately).
+        if (pending.delete(id)) reject(new Error('prove: aborted'));
+      };
+      pending.set(id, {
+        resolve: (r) => { signal?.removeEventListener('abort', onAbort); resolve(r); },
+        reject: (e) => { signal?.removeEventListener('abort', onAbort); reject(e); },
+      });
+      signal?.addEventListener('abort', onAbort, { once: true });
       channel.post({ ...msg, id } as ProverWorkerRequest);
     });
   };
@@ -87,7 +120,10 @@ export function createWorkerProver(channel: WorkerChannel): ProverAdapter {
     async prove(formattedInputs: unknown, artifacts: ArtifactSet, options?: ProveOptions): Promise<Groth16Proof> {
       if (options?.signal?.aborted) throw new Error('prove: aborted before start');
       options?.onProgress?.({ phase: 'proving', fraction: 0 });
-      const reply = await request({ op: 'prove', input: formattedInputs, wasm: artifacts.wasm, zkey: artifacts.zkey });
+      const reply = await request(
+        { op: 'prove', input: formattedInputs, wasm: artifacts.wasm, zkey: artifacts.zkey },
+        options?.signal,
+      );
       options?.onProgress?.({ phase: 'proving', fraction: 1 });
       return (reply as { proof: Groth16Proof }).proof;
     },
@@ -96,6 +132,10 @@ export function createWorkerProver(channel: WorkerChannel): ProverAdapter {
       return (reply as { ok: boolean }).ok;
     },
     async close(): Promise<void> {
+      closed = true;
+      // Reject any in-flight requests so awaiting callers don't hang once the worker is terminated
+      // (terminate() below kills the worker before it can reply to the graceful close op).
+      rejectAll(new Error('worker prover: closed'));
       channel.post({ op: 'close', id: nextId });
       nextId += 1;
       channel.terminate();
