@@ -3,6 +3,7 @@
 
 import { keccak256, AbiCoder, TypedDataEncoder } from 'ethers';
 import { buildShieldRequest, type ShieldRequest } from './shield';
+import { grossUpShieldFee, type ShieldFeeTiers } from './shield-fee';
 
 const coder = AbiCoder.defaultAbiCoder();
 
@@ -78,8 +79,17 @@ export interface GaslessShieldInput {
   readonly nonce: bigint;
   /** The user's own shielded deposit. */
   readonly userShield: { readonly shieldedAddress: string; readonly amount: bigint; readonly tokenAddress: string };
-  /** The relayer's fee note (a shield to the broadcaster's 0zk). */
-  readonly feeShield: { readonly shieldedAddress: string; readonly amount: bigint; readonly tokenAddress: string };
+  /**
+   * The relayer's fee note (a shield to the broadcaster's 0zk). When `grossUp` is set, `amount` is the
+   * NET amount the relayer must receive and the SDK grosses it up for the on-chain shield fee (§4.6.1);
+   * otherwise `amount` is the literal gross note value.
+   */
+  readonly feeShield: {
+    readonly shieldedAddress: string;
+    readonly amount: bigint;
+    readonly tokenAddress: string;
+    readonly grossUp?: ShieldFeeTiers;
+  };
 }
 
 /**
@@ -92,7 +102,15 @@ export async function buildGaslessShield(
   shieldPrivateKey: Uint8Array,
 ): Promise<{ shieldRequests: ShieldRequest[]; requestsHash: `0x${string}`; typedData: ShieldIntentTypedData }> {
   const userNote = await buildShieldRequest(input.userShield, shieldPrivateKey);
-  const feeNote = await buildShieldRequest(input.feeShield, shieldPrivateKey);
+  // Gross up the fee note so the relayer nets `amount` AFTER the pool's shield fee (§4.6.1); if no tiers
+  // are given, `amount` is used verbatim as the gross note value.
+  const feeValue = input.feeShield.grossUp !== undefined
+    ? grossUpShieldFee(input.feeShield.amount, input.feeShield.grossUp)
+    : input.feeShield.amount;
+  const feeNote = await buildShieldRequest(
+    { shieldedAddress: input.feeShield.shieldedAddress, amount: feeValue, tokenAddress: input.feeShield.tokenAddress },
+    shieldPrivateKey,
+  );
   const shieldRequests = [userNote.shieldRequest, feeNote.shieldRequest];
   const requestsHash = hashShieldRequests(shieldRequests);
   const typedData = buildShieldIntentTypedData({
@@ -101,4 +119,61 @@ export async function buildGaslessShield(
     intent: { user: input.user, requestsHash, integrator: input.integrator, deadline: input.deadline, nonce: input.nonce },
   });
   return { shieldRequests, requestsHash, typedData };
+}
+
+/** EIP-2612 permit message the user signs so the wrapper can pull USDC gaslessly (owner→spender allowance). */
+export interface PermitMessage {
+  readonly owner: `0x${string}`;
+  readonly spender: `0x${string}`;
+  readonly value: bigint;
+  readonly nonce: bigint;
+  readonly deadline: bigint;
+}
+
+export interface PermitTypedData {
+  readonly domain: { name: string; version: string; chainId: number; verifyingContract: `0x${string}` };
+  readonly types: Record<string, ReadonlyArray<{ name: string; type: string }>>;
+  readonly message: PermitMessage;
+}
+
+const PERMIT_TYPES = {
+  Permit: [
+    { name: 'owner', type: 'address' },
+    { name: 'spender', type: 'address' },
+    { name: 'value', type: 'uint256' },
+    { name: 'nonce', type: 'uint256' },
+    { name: 'deadline', type: 'uint256' },
+  ],
+} as const;
+
+/**
+ * Build the EIP-2612 permit typed data for the gasless shield's token pull. The wrapper calls
+ * `token.permit(owner, spender=wrapper, value=totalAmount, deadline, v,r,s)` then `transferFrom`, so the
+ * user signs this permit in addition to the ShieldIntent. The domain is the TOKEN's own EIP-712 domain —
+ * pass its `name`/`version` (e.g. USDC "USD Coin"/"2") and the `nonce` from `token.nonces(owner)`.
+ * `value` must be the sum of all shield-note gross values (the wrapper pulls the total).
+ */
+export function buildPermitTypedData(params: {
+  token: { address: `0x${string}`; name: string; version: string };
+  chainId: number;
+  owner: `0x${string}`;
+  spender: `0x${string}`;
+  value: bigint;
+  nonce: bigint;
+  deadline: bigint;
+}): PermitTypedData {
+  return {
+    domain: { name: params.token.name, version: params.token.version, chainId: params.chainId, verifyingContract: params.token.address },
+    types: PERMIT_TYPES,
+    message: { owner: params.owner, spender: params.spender, value: params.value, nonce: params.nonce, deadline: params.deadline },
+  };
+}
+
+/** The EIP-712 digest the token verifies for an EIP-2612 permit. */
+export function hashPermit(typedData: PermitTypedData): `0x${string}` {
+  return TypedDataEncoder.hash(
+    typedData.domain,
+    typedData.types as Record<string, Array<{ name: string; type: string }>>,
+    typedData.message,
+  ) as `0x${string}`;
 }
