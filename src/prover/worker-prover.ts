@@ -1,7 +1,7 @@
 // ABOUTME: Worker prover (SPEC §4.5) — a message protocol + main-thread ProverAdapter + a worker-side
 // ABOUTME: handler. The consumer supplies the env's Worker (browser Web Worker); snarkjs runs in it.
 
-import type { ProverAdapter, ArtifactSet, Groth16Proof, ProveOptions } from './index';
+import type { ProverAdapter, ArtifactSet, Groth16Proof, ProveOptions, ProofProgress } from './index';
 import { createSnarkjsProver } from './snarkjs-prover';
 import { AbortedError } from '../errors';
 
@@ -21,6 +21,7 @@ export type ProverWorkerRequest =
 export type ProverWorkerReply =
   | { readonly id: number; readonly proof: Groth16Proof }
   | { readonly id: number; readonly ok: boolean }
+  | { readonly id: number; readonly progress: ProofProgress } // intermediate — does NOT settle the request
   | { readonly id: number; readonly error: string };
 
 // Distributive omit so each request union member keeps its discriminant-specific fields.
@@ -52,7 +53,9 @@ export function createProverWorkerHandler(
   return async (request: ProverWorkerRequest): Promise<void> => {
     try {
       if (request.op === 'prove') {
-        const proof = await prover.prove(request.input, { wasm: request.wasm, zkey: request.zkey } as ArtifactSet);
+        const proof = await prover.prove(request.input, { wasm: request.wasm, zkey: request.zkey } as ArtifactSet, {
+          onProgress: (p) => post({ id: request.id, progress: p }), // forward real witness/proving phases across the channel
+        });
         post({ id: request.id, proof });
       } else if (request.op === 'verify') {
         const ok = await prover.verify(request.proof, request.publicSignals.map((s) => BigInt(s)), request.vkey);
@@ -71,7 +74,10 @@ export function createProverWorkerHandler(
  * `close()` posts a close request (so the worker terminates its curve threads) then terminates the channel.
  */
 export function createWorkerProver(channel: WorkerChannel): ProverAdapter {
-  const pending = new Map<number, { resolve: (r: ProverWorkerReply) => void; reject: (e: Error) => void }>();
+  const pending = new Map<
+    number,
+    { resolve: (r: ProverWorkerReply) => void; reject: (e: Error) => void; onProgress?: (p: ProofProgress) => void }
+  >();
   let nextId = 0;
   let closed = false;
 
@@ -84,6 +90,10 @@ export function createWorkerProver(channel: WorkerChannel): ProverAdapter {
   channel.onMessage((reply) => {
     const p = pending.get(reply.id);
     if (p === undefined) return;
+    if ('progress' in reply) {
+      p.onProgress?.(reply.progress); // intermediate — forward, keep the request pending
+      return;
+    }
     pending.delete(reply.id);
     if ('error' in reply) p.reject(new Error(reply.error));
     else p.resolve(reply);
@@ -91,7 +101,7 @@ export function createWorkerProver(channel: WorkerChannel): ProverAdapter {
   // A worker crash/exit/transport error must reject in-flight requests, not leave them hanging forever.
   channel.onError?.((error) => rejectAll(error instanceof Error ? error : new Error(String(error))));
 
-  const request = (msg: RequestPayload, signal?: AbortSignal): Promise<ProverWorkerReply> => {
+  const request = (msg: RequestPayload, signal?: AbortSignal, onProgress?: (p: ProofProgress) => void): Promise<ProverWorkerReply> => {
     const id = nextId;
     nextId += 1;
     return new Promise<ProverWorkerReply>((resolve, reject) => {
@@ -111,6 +121,7 @@ export function createWorkerProver(channel: WorkerChannel): ProverAdapter {
       pending.set(id, {
         resolve: (r) => { signal?.removeEventListener('abort', onAbort); resolve(r); },
         reject: (e) => { signal?.removeEventListener('abort', onAbort); reject(e); },
+        ...(onProgress !== undefined ? { onProgress } : {}),
       });
       signal?.addEventListener('abort', onAbort, { once: true });
       channel.post({ ...msg, id } as ProverWorkerRequest);
@@ -120,12 +131,12 @@ export function createWorkerProver(channel: WorkerChannel): ProverAdapter {
   return {
     async prove(formattedInputs: unknown, artifacts: ArtifactSet, options?: ProveOptions): Promise<Groth16Proof> {
       if (options?.signal?.aborted) throw new AbortedError('prove: aborted before start');
-      options?.onProgress?.({ phase: 'proving', fraction: 0 });
+      // Real progress now crosses the channel from the in-worker prover (witness → proving phases).
       const reply = await request(
         { op: 'prove', input: formattedInputs, wasm: artifacts.wasm, zkey: artifacts.zkey },
         options?.signal,
+        options?.onProgress,
       );
-      options?.onProgress?.({ phase: 'proving', fraction: 1 });
       return (reply as { proof: Groth16Proof }).proof;
     },
     async verify(proof: Groth16Proof, publicSignals: bigint[], vkey: object): Promise<boolean> {
@@ -141,5 +152,29 @@ export function createWorkerProver(channel: WorkerChannel): ProverAdapter {
       nextId += 1;
       channel.terminate();
     },
+  };
+}
+
+/** The subset of a browser `Worker` this SDK uses — a real `Worker` satisfies it structurally. */
+export interface BrowserWorkerLike {
+  postMessage(message: ProverWorkerRequest): void;
+  onmessage: ((event: { data: ProverWorkerReply }) => void) | null;
+  onerror: ((event: { message?: string }) => void) | null;
+  terminate(): void;
+}
+
+/**
+ * Wrap a browser `Worker` as a `WorkerChannel`. Pair with the prebuilt worker entry so consumers don't
+ * hand-write the glue:
+ *
+ *   const worker = new Worker(new URL('@armada/sdk/prover/worker', import.meta.url), { type: 'module' });
+ *   const prover = createWorkerProver(webWorkerChannel(worker));
+ */
+export function webWorkerChannel(worker: BrowserWorkerLike): WorkerChannel {
+  return {
+    post: (message) => worker.postMessage(message),
+    onMessage: (handler) => { worker.onmessage = (event) => handler(event.data); },
+    onError: (handler) => { worker.onerror = (event) => handler(new Error(event.message ?? 'worker error')); },
+    terminate: () => worker.terminate(),
   };
 }

@@ -60,6 +60,11 @@
       "types": "./dist/prover/index.d.ts",
       "import": "./dist/prover/index.js",
       "require": "./dist/prover/index.cjs"
+    },
+    "./prover/worker": {
+      "types": "./dist/prover/worker.d.ts",
+      "import": "./dist/prover/worker.js",
+      "require": "./dist/prover/worker.cjs"
     }
   },
   "scripts": {
