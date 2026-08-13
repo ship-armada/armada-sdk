@@ -51,6 +51,7 @@ import {
   TransactNote,
   encodeAddress,
   initPoseidonPromise,
+  initCurve25519Promise,
   type TokenData,
   type TokenDataGetter,
   type Chain,
@@ -759,7 +760,12 @@ class ArmadaWallet implements Wallet {
  * resumes from the last synced block rather than rescanning from genesis.
  */
 export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSdk> {
-  await initPoseidonPromise;
+  // Gate on BOTH engine WASM crypto inits before returning a ready instance — Poseidon (tree/note
+  // hashing, needed for root verification) AND curve25519 (ECDH shared-key derivation in note
+  // decryption). Each fires as its own module-load side effect; awaiting only Poseidon left the first
+  // scan able to trial-decrypt against un-ready curve25519 WASM (tree hashing works, so `verifyRoots`
+  // passes, but decryption can silently yield nothing). Awaiting both makes "ready" an explicit contract.
+  await Promise.all([initPoseidonPromise, initCurve25519Promise]);
 
   // Namespace the store by (schema, chain, pool, deployBlock); a mismatch resets chain-derived state.
   const { reset } = await config.storage.open({ schemaVersion: 1, chainId: config.pool.chainId, poolAddress: config.pool.poolAddress, deployBlock: config.pool.deployBlock });
