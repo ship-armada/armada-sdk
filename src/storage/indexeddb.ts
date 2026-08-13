@@ -7,6 +7,7 @@
 
 import type { StorageAdapter, StorageNamespace } from './index';
 import { NAMESPACE_KEY, isPreserved, encodeNamespace, bytesEqual } from './namespace';
+import { StorageConflictError } from '../errors';
 
 const STORE = 'kv';
 
@@ -32,13 +33,52 @@ function txDone(tx: IDBTransaction): Promise<void> {
 }
 
 /**
- * IndexedDB-backed KV. Multi-instance safe (no lock files). Values are stored as `Uint8Array`
- * (structured-clone native). `dbName` scopes the database — pass a per-app name.
+ * IndexedDB-backed KV. Values are stored as `Uint8Array` (structured-clone native). `dbName` scopes the
+ * database — pass a per-app name. `open()` takes an origin-scoped EXCLUSIVE Web Lock on `dbName` (held
+ * until `close()`): IndexedDB itself allows many connections to one DB, but the SDK's scan-state
+ * read-modify-write is not safe across instances, so a second live instance on the same DB fails loud
+ * with `StorageConflictError` instead of silently corrupting shared scan state.
  */
 export class IndexedDBStorageAdapter implements StorageAdapter {
   private db: IDBDatabase | undefined;
+  private lockRelease: (() => void) | undefined;
 
   constructor(private readonly dbName: string) {}
+
+  /**
+   * Acquire an origin-scoped exclusive lock on `dbName` (Web Locks API), held for this adapter's
+   * lifetime. Turns concurrent same-DB instances (silent scan-state corruption) into a loud
+   * `StorageConflictError` — the browser analog of `LevelStorageAdapter`'s single-process file lock.
+   * Feature-detected: environments without `navigator.locks` (older browsers / test harnesses) skip it.
+   */
+  private async acquireLock(): Promise<void> {
+    if (this.lockRelease !== undefined) return; // already held — open() is idempotent
+    const locks: LockManager | undefined =
+      typeof navigator !== 'undefined' && 'locks' in navigator ? navigator.locks : undefined;
+    if (locks === undefined) return;
+    const name = `armada-sdk-storage:${this.dbName}`;
+    await new Promise<void>((acquired, failed) => {
+      locks
+        .request(name, { mode: 'exclusive', ifAvailable: true }, (lock) => {
+          if (lock === null) {
+            // Another live instance in this origin holds the DB — fail fast, don't queue.
+            failed(
+              new StorageConflictError(
+                `IndexedDBStorageAdapter: database "${this.dbName}" is already open by another live SDK ` +
+                  `instance in this origin; close it before creating another (concurrent instances corrupt scan state)`,
+              ),
+            );
+            return undefined;
+          }
+          acquired();
+          // Hold the lock until close() resolves this promise.
+          return new Promise<void>((release) => {
+            this.lockRelease = release;
+          });
+        })
+        .catch((err: unknown) => failed(err instanceof Error ? err : new Error(String(err))));
+    });
+  }
 
   private async database(): Promise<IDBDatabase> {
     if (this.db !== undefined) return this.db;
@@ -59,6 +99,7 @@ export class IndexedDBStorageAdapter implements StorageAdapter {
   }
 
   async open(namespace: StorageNamespace): Promise<{ reset: boolean }> {
+    await this.acquireLock();
     await this.database();
     const nsBytes = encodeNamespace(namespace);
     const previous = await this.get(NAMESPACE_KEY);
@@ -114,5 +155,8 @@ export class IndexedDBStorageAdapter implements StorageAdapter {
       this.db.close();
       this.db = undefined;
     }
+    // Release the exclusive lock so a fresh instance for this DB can open (unlock → lock → unlock).
+    this.lockRelease?.();
+    this.lockRelease = undefined;
   }
 }
