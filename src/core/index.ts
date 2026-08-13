@@ -4,6 +4,11 @@
 // Poseidon(BN254) — the foundational hash. `initPoseidonPromise` must resolve before use (WASM init).
 export { poseidon, poseidonHex, initPoseidonPromise } from '../../vendor/railgun-engine/dist/utils/poseidon';
 
+// curve25519 scalar-mult WASM init — must resolve before ECDH note decryption (`getSharedSymmetricKey`).
+// A separate WASM from Poseidon's, initialized as its own module-load side effect; both must be awaited
+// before the first scan (`createArmadaSdk` gates on them) or trial-decryption can run against un-ready WASM.
+export { initCurve25519Promise } from '../../vendor/railgun-engine/dist/utils/scalar-multiply';
+
 // Notes: commitment hash `getHash(npk, tokenHash, value)` + `getNullifier(nullifyingKey, leafIndex)`.
 export { TransactNote } from '../../vendor/railgun-engine/dist/note/transact-note';
 
