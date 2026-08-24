@@ -9,6 +9,7 @@ import {
   getTokenDataERC20,
   getTokenDataHash,
   decodeAddress,
+  OutputType,
 } from '../core/index';
 import { createTransferNote, encryptNoteToReceiver, type CommitmentCiphertextV2 } from '../sync/index';
 import { SignerContractViolationError } from '../errors';
@@ -94,6 +95,12 @@ export interface WitnessOutputRequest {
   readonly receiverAddress: string; // 0zk address
   readonly value: bigint;
   readonly memo?: string;
+  /**
+   * How the AUTHOR classifies this output (default `Transfer`). It is carried in the note's annotation
+   * data, encrypted to the author's own viewing key, and is the only way the sender can later tell a
+   * recipient transfer from the broadcaster fee and its own change when reconstructing send history.
+   */
+  readonly outputType?: OutputType;
 }
 
 /** The spending wallet's key material for witness assembly (spend key stays in the SpendSigner). */
@@ -191,6 +198,7 @@ export async function buildWitness(params: BuildWitnessParams): Promise<BuiltWit
       value: out.value,
       tokenData,
       ...(out.memo !== undefined ? { memoText: out.memo } : {}),
+      ...(out.outputType !== undefined ? { outputType: out.outputType } : {}),
     });
     const ciphertext = await encryptNoteToReceiver(
       note,

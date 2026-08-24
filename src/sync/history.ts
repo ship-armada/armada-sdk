@@ -198,13 +198,14 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
     else list.push(s);
   }
 
-  // Which owned notes we spent, and in which txid.
-  const spendTxidOf = new Map<TXO, string>();
+  // Which owned notes we spent, and in which spend. The whole Nullify marker is kept (not just its
+  // txid) because the spend's own block — not the input note's origin block — dates the send entry.
+  const spendOf = new Map<TXO, SpentNullifier>();
   for (const txo of ownedTxos) {
     const spend = spendByKey.get(nullifierKey(txo.tree, TransactNote.getNullifier(nullifyingKey, txo.position)));
-    if (spend !== undefined) spendTxidOf.set(txo, spend.txid);
+    if (spend !== undefined) spendOf.set(txo, spend);
   }
-  const ownSpendTxids = new Set(spendTxidOf.values());
+  const ownSpendTxids = new Set([...spendOf.values()].map((s) => s.txid));
 
   // Per-txid USDC aggregation.
   interface Agg {
@@ -226,8 +227,8 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
   };
   for (const txo of ownedTxos) {
     if (!isUsdc(txo.tokenHash)) continue;
-    const spentIn = spendTxidOf.get(txo);
-    if (spentIn !== undefined) agg(spentIn, txo.blockNumber).inputs += txo.value;
+    const spentIn = spendOf.get(txo);
+    if (spentIn !== undefined) agg(spentIn.txid, spentIn.blockNumber).inputs += txo.value;
     if (ownSpendTxids.has(txo.txid) && txo.origin === 'transact') {
       agg(txo.txid, txo.blockNumber).change += txo.value;
     } else {
