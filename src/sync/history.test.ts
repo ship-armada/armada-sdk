@@ -167,6 +167,31 @@ describe('reconstructHistory (H2 — sends / unshields / yield)', () => {
     expect(sent.sentOutputs).toEqual([{ recipientShieldedAddress: '0zk_bob', value: 480_000n, memo: 'hi' }]);
   });
 
+  it('transfer-sent excludes the change-to-self and the fee from sentOutputs', () => {
+    // WHY: a send's authored outputs are fee + recipients + change-to-self. Only the recipients are
+    // "who we paid" — the fee belongs in `broadcasterFee` and the change is our own money coming back.
+    // The scan filter already drops Change sender-side, but the classification must hold here too, so
+    // an untagged-output regression upstream cannot leak the fee/change into the recipient list.
+    const sentOutputs: SentOutput[] = [
+      { txid: SPEND, blockNumber: 30, tokenHash: USDC_HASH, value: 20_000n, recipientShieldedAddress: '0zk_relayer', outputType: 1 },
+      { txid: SPEND, blockNumber: 30, tokenHash: USDC_HASH, value: 480_000n, recipientShieldedAddress: '0zk_bob', outputType: 0 },
+      { txid: SPEND, blockNumber: 30, tokenHash: USDC_HASH, value: 400_000n, recipientShieldedAddress: '0zk_self', outputType: 2 },
+    ];
+    const entries = reconstructHistory({ ...base, ownedTxos: [inputNote, changeNote], unshields: [], sentOutputs });
+    const sent = entries.find((e) => e.txid === SPEND)!;
+    expect(sent.sentOutputs).toEqual([{ recipientShieldedAddress: '0zk_bob', value: 480_000n }]);
+    expect(sent.broadcasterFee).toBe(20_000n);
+  });
+
+  it('transfer-sent is dated by the spend block, not the spent input\'s origin block', () => {
+    // WHY: the input note was created by an EARLIER transaction (block 5); the send happened at block
+    // 30. Dating the send by its input's origin block backdates it — the entry would sort next to, and
+    // display the timestamp of, the deposit that funded it.
+    const entries = reconstructHistory({ ...base, ownedTxos: [inputNote, changeNote], unshields: [] });
+    expect(inputNote.blockNumber).toBe(5); // the input's origin block, distinct from the spend's
+    expect(entries.find((e) => e.txid === SPEND)).toMatchObject({ category: 'transfer-sent', blockNumber: 30 });
+  });
+
   it('yield-withdraw: USDC receive in a tx that also carries the adapter Unshield leg', () => {
     const WITHDRAW = tx('66');
     const returned = txo({ tree: 0, position: 9, value: 950_000n, txid: WITHDRAW, origin: 'transact', blockNumber: 40 });

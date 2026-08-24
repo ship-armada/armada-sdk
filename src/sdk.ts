@@ -683,11 +683,12 @@ class ArmadaWallet implements Wallet {
     // Use the proofs the plan captured at plan time (NOT a fresh scan-state read) so the path elements
     // match `plan.merkleRoot` even if a sync advanced the tree since planning (SPEC §4.6).
     const inputs = planWitnessInputs(plan);
-    // Emit order (Spike 2): broadcaster fee note FIRST, then recipients, then change back to self.
+    // Emit order (Spike 2): broadcaster fee note FIRST, then recipients, then change back to self. Each
+    // output carries its OutputType so sender-side recovery can tell fee/recipient/change apart later.
     const outputs: WitnessOutputRequest[] = [];
-    if (plan.summary.feeOutput) outputs.push({ receiverAddress: plan.summary.feeOutput.toShieldedAddress, value: plan.summary.feeOutput.value });
-    for (const o of plan.summary.outputs) outputs.push({ receiverAddress: o.toShieldedAddress, value: o.value, ...(o.memo !== undefined ? { memo: o.memo } : {}) });
-    if (plan.summary.changeValue > 0n) outputs.push({ receiverAddress: this.keyset.shieldedAddress, value: plan.summary.changeValue });
+    if (plan.summary.feeOutput) outputs.push({ receiverAddress: plan.summary.feeOutput.toShieldedAddress, value: plan.summary.feeOutput.value, outputType: OutputType.BroadcasterFee });
+    for (const o of plan.summary.outputs) outputs.push({ receiverAddress: o.toShieldedAddress, value: o.value, outputType: OutputType.Transfer, ...(o.memo !== undefined ? { memo: o.memo } : {}) });
+    if (plan.summary.changeValue > 0n) outputs.push({ receiverAddress: this.keyset.shieldedAddress, value: plan.summary.changeValue, outputType: OutputType.Change });
 
     return prove(
       {

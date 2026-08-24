@@ -4,12 +4,12 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import {
   initPoseidonPromise, poseidon, verifyEDDSA, TransactNote,
-  getTokenDataERC20, getTokenDataHash,
+  getTokenDataERC20, getTokenDataHash, OutputType,
 } from '../core/index';
 import { deriveKeyset, type Keyset } from '../wallet/derive';
 import { LocalSigner } from '../wallet/local-signer';
 import { UTXOMerkletree } from '../sync/merkletree';
-import { createTransferNote, tryDecryptCommitment } from '../sync/index';
+import { createTransferNote, tryDecryptCommitment, tryDecryptSentCommitment } from '../sync/index';
 import { buildWitness, computeSpendIntentDigest, type WitnessInput, type WitnessSenderContext } from './witness';
 import type { SpendSigner, SpendSignRequest, EddsaSignature } from '../wallet/index';
 import type { PlanSummary, CctpBinding } from './index';
@@ -179,6 +179,57 @@ describe('buildWitness (§4.6)', () => {
       getter,
     );
     expect(recvNote?.value).toBe(6n);
+  });
+
+  it('round-trips each output\'s OutputType to the author via annotation data', async () => {
+    // WHY: the outputType is the ONLY sender-side signal separating the broadcaster fee and our own
+    // change from a genuine recipient transfer. It travels on-chain inside annotationData, encrypted to
+    // the author's own viewing key — if buildWitness drops it, reconstructed send history reports the
+    // fee and the change as recipients and never surfaces the broadcaster fee.
+    const { input, merkleRoot } = await makeInput(10n);
+    const built = await buildWitness({
+      inputs: [input],
+      outputs: [
+        { receiverAddress: broadcaster.shieldedAddress, value: 1n, outputType: OutputType.BroadcasterFee },
+        { receiverAddress: recipient.shieldedAddress, value: 6n, outputType: OutputType.Transfer },
+        { receiverAddress: sender.shieldedAddress, value: 3n, outputType: OutputType.Change },
+      ],
+      tokenAddress: USDC, sender: senderCtx(), signer, summary,
+      merkleRoot, treeNumber: 0, chainType: 0, chainId: 31337,
+    });
+
+    const getter = { getTokenDataFromHash: async () => tokenData };
+    const senderKeys = {
+      addressData: { masterPublicKey: sender.masterPublicKey, viewingPublicKey: sender.viewingPublicKey },
+      viewingPrivateKey: sender.viewingPrivateKey,
+    };
+    const recovered = await Promise.all(
+      built.boundParams.commitmentCiphertext.map((c) => tryDecryptSentCommitment(c, senderKeys, getter)),
+    );
+    expect(recovered.map((n) => n?.value)).toEqual([1n, 6n, 3n]);
+    expect(recovered.map((n) => n?.outputType)).toEqual([
+      OutputType.BroadcasterFee, // 1
+      OutputType.Transfer, // 0
+      OutputType.Change, // 2
+    ]);
+  });
+
+  it('defaults an untyped output to OutputType.Transfer', async () => {
+    // WHY: outputType is optional on WitnessOutputRequest — callers that omit it must keep the
+    // pre-existing behaviour of tagging every output a plain transfer.
+    const { input, merkleRoot } = await makeInput(10n);
+    const built = await buildWitness({
+      inputs: [input],
+      outputs: [{ receiverAddress: recipient.shieldedAddress, value: 10n }],
+      tokenAddress: USDC, sender: senderCtx(), signer, summary,
+      merkleRoot, treeNumber: 0, chainType: 0, chainId: 31337,
+    });
+    const note = await tryDecryptSentCommitment(
+      built.boundParams.commitmentCiphertext[0]!,
+      { addressData: { masterPublicKey: sender.masterPublicKey, viewingPublicKey: sender.viewingPublicKey }, viewingPrivateKey: sender.viewingPrivateKey },
+      { getTokenDataFromHash: async () => tokenData },
+    );
+    expect(note?.outputType).toBe(OutputType.Transfer);
   });
 
   it('produces a bound-params hash reduced into the SNARK field', async () => {

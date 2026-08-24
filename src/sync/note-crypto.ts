@@ -53,6 +53,9 @@ export const DEFAULT_EVM_CHAIN: Chain = { type: ChainType.EVM, id: 1 };
 /**
  * Build a transfer note with the wallet-source tag set (required for V2 annotation data). Sender
  * address is hidden by default (`showSenderAddressToRecipient=false`), matching the privacy default.
+ * `outputType` (default `Transfer`) rides in the annotation data — encrypted to the SENDER's own
+ * viewing key — and is what classifies the note as a recipient transfer / broadcaster fee / change
+ * when the author recovers its own send history (`tryDecryptSentCommitment`).
  */
 export function createTransferNote(params: {
   receiverAddressData: AddressData;
@@ -61,6 +64,7 @@ export function createTransferNote(params: {
   tokenData: TokenData;
   memoText?: string;
   showSenderAddressToRecipient?: boolean;
+  outputType?: OutputType;
 }): TransactNote {
   // annotation data (created inside encryptV2) requires a wallet source to be set.
   WalletInfo.setWalletSource('armada');
@@ -70,7 +74,7 @@ export function createTransferNote(params: {
     params.value,
     params.tokenData,
     params.showSenderAddressToRecipient ?? false,
-    OutputType.Transfer,
+    params.outputType ?? OutputType.Transfer,
     params.memoText,
   );
 }
