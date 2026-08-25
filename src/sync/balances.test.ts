@@ -3,7 +3,7 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initPoseidonPromise, TransactNote } from '../core/index';
-import { computeBalances, txoFromNote, type TXO, type SpentNullifier } from './balances';
+import { computeBalances, txoFromNote, tokenHashKey, withTokenAddresses, type TXO, type SpentNullifier } from './balances';
 
 // Two arbitrary 32-byte token hashes (no 0x).
 const TOKEN_A = 'aa'.repeat(32);
@@ -127,5 +127,37 @@ describe('balance aggregation (§4.4)', () => {
     // random + npk are the fields the balance summary discards but the spend witness needs.
     expect(built.random).toBe(note.random);
     expect(built.notePublicKey).toBe(note.notePublicKey);
+  });
+});
+
+describe('tokenHashKey (registry-key normalization)', () => {
+  it('strips a leading 0x to the canonical registry-key form', () => {
+    expect(tokenHashKey(`0x${TOKEN_A}`)).toBe(TOKEN_A);
+  });
+
+  it('passes an already-bare hash through unchanged', () => {
+    expect(tokenHashKey(TOKEN_A)).toBe(TOKEN_A);
+  });
+});
+
+describe('withTokenAddresses (hash → address enrichment)', () => {
+  const ADDR_A = `0x${'a1'.repeat(20)}` as const;
+  // Only TOKEN_A is registered; resolution is via the same 0x-stripping key normalization.
+  const resolve = (hash: string): `0x${string}` | undefined => (tokenHashKey(hash) === TOKEN_A ? ADDR_A : undefined);
+
+  it('attaches the registered address to each balance, keyed by hash', () => {
+    const enriched = withTokenAddresses([{ tokenHash: TOKEN_A, spendable: 5n, pending: 1n }], resolve);
+    expect(enriched).toEqual([{ tokenHash: TOKEN_A, tokenAddress: ADDR_A, spendable: 5n, pending: 1n }]);
+  });
+
+  it('leaves tokenAddress undefined for an unregistered hash but keeps the row (never hide a balance)', () => {
+    const enriched = withTokenAddresses([{ tokenHash: TOKEN_B, spendable: 9n, pending: 0n }], resolve);
+    expect(enriched).toEqual([{ tokenHash: TOKEN_B, spendable: 9n, pending: 0n }]);
+    expect(enriched[0]?.tokenAddress).toBeUndefined();
+  });
+
+  it('resolves a 0x-prefixed hash through the same key normalization', () => {
+    const enriched = withTokenAddresses([{ tokenHash: `0x${TOKEN_A}`, spendable: 2n, pending: 0n }], resolve);
+    expect(enriched[0]?.tokenAddress).toBe(ADDR_A);
   });
 });

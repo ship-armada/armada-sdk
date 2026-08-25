@@ -11,6 +11,8 @@ import {
   resolveWalletStorage,
   effectiveScanHead,
   shouldRecoverFromReorg,
+  buildBalanceUpdate,
+  buildReceivedNote,
 } from './sdk';
 import { RootMismatchError } from './errors';
 import { deriveKeyset, LocalSigner } from './wallet/index';
@@ -365,5 +367,81 @@ describe('resolveWalletStorage — at-rest encryption is on by default (SPEC §4
     const b = resolveWalletStorage(raw, new Uint8Array(32).fill(2), false);
     await a.put('chain/scan-state/shared-key', enc('A private notes'));
     await expect(b.get('chain/scan-state/shared-key')).rejects.toThrow();
+  });
+});
+
+// The `balance:updated` / `note:received` payloads carry BOTH the canonical `tokenHash` (joins
+// `balances()`) and the resolved `tokenAddress`. An unregistered hash yields no address, so the
+// builder returns undefined and the emit site skips it.
+describe('event payload builders (token identifier resolution)', () => {
+  const HASH = 'cd'.repeat(32);
+  const ADDR = `0x${'ab'.repeat(20)}` as const;
+  const UNREGISTERED = 'ff'.repeat(32);
+  // Registered iff the (0x-normalized) hash is HASH.
+  const resolve = (hash: string): `0x${string}` | undefined =>
+    hash === HASH || hash === `0x${HASH}` ? ADDR : undefined;
+
+  it('buildBalanceUpdate carries both tokenHash and tokenAddress', () => {
+    expect(buildBalanceUpdate(HASH, 100n, 5n, resolve)).toEqual({
+      tokenHash: HASH,
+      tokenAddress: ADDR,
+      spendable: 100n,
+      pending: 5n,
+    });
+  });
+
+  it('buildBalanceUpdate normalizes a 0x-prefixed hash to the balances() join key', () => {
+    expect(buildBalanceUpdate(`0x${HASH}`, 1n, 0n, resolve)).toEqual({
+      tokenHash: HASH,
+      tokenAddress: ADDR,
+      spendable: 1n,
+      pending: 0n,
+    });
+  });
+
+  it('buildBalanceUpdate returns undefined for an unregistered token (caller skips the emit)', () => {
+    expect(buildBalanceUpdate(UNREGISTERED, 1n, 0n, resolve)).toBeUndefined();
+  });
+
+  it('buildReceivedNote carries both ids plus disclosed memo/sender', () => {
+    const txo = {
+      tree: 0,
+      position: 0,
+      tokenHash: HASH,
+      value: 250n,
+      blockNumber: 10,
+      txid: `0x${'ee'.repeat(32)}`,
+      origin: 'transact' as const,
+      random: '00'.repeat(16),
+      notePublicKey: 0n,
+      memo: 'gm',
+      senderShieldedAddress: '0zk_alice',
+    };
+    expect(buildReceivedNote(txo, resolve)).toEqual({
+      tokenHash: HASH,
+      tokenAddress: ADDR,
+      value: 250n,
+      memo: 'gm',
+      senderShieldedAddress: '0zk_alice',
+    });
+  });
+
+  it('buildReceivedNote omits absent memo/sender and skips an unregistered token', () => {
+    const base = {
+      tree: 0,
+      position: 1,
+      value: 7n,
+      blockNumber: 10,
+      txid: `0x${'ee'.repeat(32)}`,
+      origin: 'transact' as const,
+      random: '00'.repeat(16),
+      notePublicKey: 0n,
+    };
+    expect(buildReceivedNote({ ...base, tokenHash: HASH }, resolve)).toEqual({
+      tokenHash: HASH,
+      tokenAddress: ADDR,
+      value: 7n,
+    });
+    expect(buildReceivedNote({ ...base, tokenHash: UNREGISTERED }, resolve)).toBeUndefined();
   });
 });

@@ -88,8 +88,8 @@ const sdk = await createArmadaSdk({
 unsubscribes:
 
 ```ts
-const unsubscribe = wallet.on('balance:updated', ({ tokenAddress, spendable, pending }) => {
-  console.log(tokenAddress, spendable, pending);
+const unsubscribe = wallet.on('balance:updated', ({ tokenHash, tokenAddress, spendable, pending }) => {
+  console.log(tokenHash, tokenAddress, spendable, pending);
 });
 
 // later
@@ -104,8 +104,12 @@ The events and their payloads:
 | `scan:progress` | `{ syncedThrough, fraction }` |
 | `scan:complete` | `{ syncedThrough }` |
 | `scan:error` | `{ error }` |
-| `note:received` | `{ tokenAddress, value, memo?, senderShieldedAddress? }` |
-| `balance:updated` | `{ tokenAddress, spendable, pending }` |
+| `note:received` | `{ tokenHash, tokenAddress, value, memo?, senderShieldedAddress? }` |
+| `balance:updated` | `{ tokenHash, tokenAddress, spendable, pending }` |
+
+Both token events carry the same pair of identifiers `balances()` returns: `tokenHash` — the
+canonical 32-byte hash, without a `0x` prefix — and `tokenAddress`, its ERC-20 address. Join a live
+event back to a `balances()` snapshot on `tokenHash`, or key your UI on `tokenAddress`.
 
 On a `sync()` that does work, `scan:started` fires first and `scan:complete` last. In between,
 `balance:updated` fires for each token whose balance changed — a token that is fully spent emits a

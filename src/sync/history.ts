@@ -2,6 +2,7 @@
 // ABOUTME: scan state (owned notes + spent nullifiers), NOT a port of Railgun's getWalletTransactionHistory.
 
 import { TransactNote, OutputType } from '../core/index';
+import { tokenHashKey } from './balances';
 import type { TXO, SpentNullifier } from './balances';
 import type { DecodedUnshield } from './event-decoder';
 import type { SentOutput } from './scan-engine';
@@ -30,6 +31,8 @@ export interface HistoryEntry {
   readonly txid: string;
   readonly blockNumber: number;
   readonly category: HistoryCategory;
+  /** Canonical 32-byte token hash (no `0x`) — the identifier `balances()` and the token events join on. */
+  readonly tokenHash: string;
   readonly tokenAddress: `0x${string}`;
   readonly value: bigint;
   /** Relayer fee paid (sends/unshields) — the in-band broadcaster fee. Populated in H3. */
@@ -128,6 +131,7 @@ export function reconstructReceiveHistory(
         txid: txo.txid,
         blockNumber: txo.blockNumber,
         category: 'shield',
+        tokenHash: tokenHashKey(txo.tokenHash),
         tokenAddress,
         value: txo.value,
         ...(txo.shieldFee !== undefined ? { shieldFee: txo.shieldFee } : {}),
@@ -140,6 +144,7 @@ export function reconstructReceiveHistory(
       txid: txo.txid,
       blockNumber: txo.blockNumber,
       category: 'transfer-received',
+      tokenHash: tokenHashKey(txo.tokenHash),
       tokenAddress,
       value: txo.value,
       ...(txo.memo !== undefined ? { memo: txo.memo } : {}),
@@ -259,21 +264,21 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
       const sentField = recipients.length > 0 ? { sentOutputs: recipients } : {};
 
       if (toAdapter) {
-        entries.push({ txid, blockNumber: a.blockNumber, category: 'yield-deposit', tokenAddress: usdcAddress, value: net, ...feeField });
+        entries.push({ txid, blockNumber: a.blockNumber, category: 'yield-deposit', tokenHash: usdcHash, tokenAddress: usdcAddress, value: net, ...feeField });
       } else if (external.length > 0) {
         const u = external[0]!;
         entries.push({
           txid,
           blockNumber: a.blockNumber,
           category: 'unshield',
-          tokenAddress: usdcAddress,
+          tokenHash: usdcHash, tokenAddress: usdcAddress,
           value: net,
           unshieldFee: u.fee,
           recipient: u.to,
           ...feeField,
         });
       } else {
-        entries.push({ txid, blockNumber: a.blockNumber, category: 'transfer-sent', tokenAddress: usdcAddress, value: net, ...feeField, ...sentField });
+        entries.push({ txid, blockNumber: a.blockNumber, category: 'transfer-sent', tokenHash: usdcHash, tokenAddress: usdcAddress, value: net, ...feeField, ...sentField });
       }
       continue;
     }
@@ -281,7 +286,7 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
     // Receive side: yield-withdraw if the tx also carries the adapter Unshield (the USDC return leg).
     if (toAdapter && a.receives.length > 0) {
       const sum = a.receives.reduce((acc, r) => acc + r.value, 0n);
-      entries.push({ txid, blockNumber: a.blockNumber, category: 'yield-withdraw', tokenAddress: usdcAddress, value: sum });
+      entries.push({ txid, blockNumber: a.blockNumber, category: 'yield-withdraw', tokenHash: usdcHash, tokenAddress: usdcAddress, value: sum });
       continue;
     }
     for (const r of a.receives) {
@@ -289,7 +294,7 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
         txid,
         blockNumber: r.blockNumber,
         category: r.origin === 'shield' ? 'shield' : 'transfer-received',
-        tokenAddress: usdcAddress,
+        tokenHash: usdcHash, tokenAddress: usdcAddress,
         value: r.value,
         ...(r.shieldFee !== undefined ? { shieldFee: r.shieldFee } : {}),
         ...(r.memo !== undefined ? { memo: r.memo } : {}),

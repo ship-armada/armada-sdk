@@ -101,13 +101,14 @@ Once synced, `balances()` returns one entry per token the wallet holds, each spl
 `spendable` and a `pending` amount:
 
 ```ts
-for (const { tokenHash, spendable, pending } of await wallet.balances()) {
-  console.log(tokenHash, spendable, pending);
+for (const { tokenHash, tokenAddress, spendable, pending } of await wallet.balances()) {
+  console.log(tokenHash, tokenAddress, spendable, pending);
 }
 ```
 
-`spendable` and `pending` are `bigint` values in the token's base units. `tokenHash` is the pool's
-hash of the token, not its address — resolving it back to an address is covered in [Adapters](./adapters).
+`spendable` and `pending` are `bigint` values in the token's base units. Each entry carries both
+`tokenAddress` (the ERC-20 address) and `tokenHash` (the pool's canonical hash of the token, the key
+the balance and token events join on) — see [Adapters](./adapters) for how the two relate.
 
 ## Next steps
 
