@@ -30,9 +30,8 @@ export default withMermaid({
   ],
 
   themeConfig: {
-    // The Armada mark, next to the "@armada/sdk" site title. Theme-aware: dark mark in light mode,
-    // white mark in dark mode.
-    logo: { light: '/favicon-light.png', dark: '/favicon-dark.png' },
+    // The full-color Armada mark, next to the "@armada/sdk" site title.
+    logo: '/armada-mark-color.png',
 
     nav: [
       { text: 'Guide', link: '/guide/', activeMatch: '/guide/' },

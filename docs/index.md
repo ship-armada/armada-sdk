@@ -7,8 +7,7 @@ hero:
   text: "The Armada shielded-pool SDK"
   tagline: Derive wallets, sync from chain, and prove shielded transfers — a small, per-instance TypeScript API.
   image:
-    light: /favicon-light.png
-    dark: /favicon-dark.png
+    src: /armada-mark-color.png
     alt: Armada
   actions:
     - theme: brand
