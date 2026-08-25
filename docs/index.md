@@ -19,8 +19,6 @@ features:
     details: Derive spend-capable, view-only, or ephemeral wallets and read balances and history.
   - title: Plan → preflight → prove
     details: Build transfers and unshields, run cheap pre-proof checks, then generate proofs.
-  - title: Yours to host
-    details: Docs-as-code, encrypted at rest by default, no singletons or global engine state.
+  - title: Per-instance by design
+    details: Self-contained instances with no global state, and note data encrypted at rest by default.
 ---
-
-<!-- TODO(content): refine hero copy and feature cards during the content pass. -->
