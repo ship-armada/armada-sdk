@@ -19,6 +19,8 @@ export default defineConfig({
   lang: 'en-US',
   cleanUrls: true,
   lastUpdated: true,
+  // This directory's README.md documents the docs workflow for contributors; it is not a site page.
+  srcExclude: ['README.md'],
 
   themeConfig: {
     nav: [
