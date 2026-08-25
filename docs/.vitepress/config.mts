@@ -30,8 +30,8 @@ export default withMermaid({
   ],
 
   themeConfig: {
-    // The full-color Armada mark, next to the "@armada/sdk" site title.
-    logo: '/armada-mark-color.png',
+    // The full-color Armada mark (vector), next to the "@armada/sdk" site title.
+    logo: '/armada-mark-color.svg',
 
     nav: [
       { text: 'Guide', link: '/guide/', activeMatch: '/guide/' },
