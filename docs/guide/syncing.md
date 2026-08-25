@@ -53,6 +53,22 @@ pool: {
   needs before `balances()` counts it as `spendable` rather than `pending`. With the default `0`, a
   commitment counts as spendable as soon as it is scanned.
 
+Both gate on a commitment's **confirmations** — how many blocks behind the chain head it is:
+`confirmationDepth` decides whether it is scanned at all, and `finalityThreshold` decides whether a
+scanned commitment is spendable or pending.
+
+```mermaid
+flowchart LR
+  A[commitment] --> B{"confirmations ≥<br/>confirmationDepth?"}
+  B -->|no| N[not yet scanned]
+  B -->|yes| C{"confirmations ≥<br/>finalityThreshold?"}
+  C -->|no| P[pending]
+  C -->|yes| S[spendable]
+```
+
+With both at their default of `0`, a commitment is scanned and spendable as soon as its block is
+reached.
+
 ## Event sources
 
 By default, syncing reads pool events from the RPC endpoints in `rpc.urls`. You can optionally
