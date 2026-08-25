@@ -22,7 +22,7 @@ export default defineConfig({
 
   themeConfig: {
     nav: [
-      { text: 'Guide', link: '/guide/getting-started' },
+      { text: 'Guide', link: '/guide/', activeMatch: '/guide/' },
       { text: 'API', link: '/api/' },
     ],
 
