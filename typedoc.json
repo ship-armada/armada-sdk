@@ -1,0 +1,22 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "plugin": ["typedoc-plugin-markdown", "typedoc-vitepress-theme"],
+  "entryPoints": [
+    "src/index.ts",
+    "src/core/index.ts",
+    "src/wallet/index.ts",
+    "src/prover/index.ts",
+    "src/tx/index.ts",
+    "src/sync/index.ts",
+    "src/storage/index.ts"
+  ],
+  "tsconfig": "tsconfig.docs.json",
+  "out": "docs/api",
+  "entryFileName": "index",
+  "readme": "none",
+  "githubPages": false,
+  "excludeInternal": true,
+  "excludeExternals": true,
+  "sort": ["source-order"],
+  "docsRoot": "docs"
+}

@@ -1,6 +1,11 @@
 node_modules/
 dist/
 coverage/
+
+# Docs: VitePress build output/cache + TypeDoc-generated API reference (built in CI)
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+docs/api/
 *.tsbuildinfo
 .DS_Store
 ._*
