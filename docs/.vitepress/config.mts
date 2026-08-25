@@ -69,4 +69,12 @@ export default withMermaid({
       text: 'Edit this page on GitHub',
     },
   },
+
+  vite: {
+    // Mermaid pulls in CommonJS-only transitive deps (fastdom via cytoscape); force Vite to
+    // pre-bundle them so the dev server resolves their default exports (production build is unaffected).
+    optimizeDeps: {
+      include: ['mermaid', 'fastdom', 'cytoscape', 'cytoscape-cose-bilkent'],
+    },
+  },
 });
