@@ -33,7 +33,21 @@ const wallet = await sdk.wallet.fromRootSecret(rootSecret, { creationBlock });
 
 ## How the pieces fit
 
-A typical flow moves through the guide in order:
+An instance hands out a wallet; the wallet scans the pool, and from that scanned state you read
+balances and history or build a transaction to submit:
+
+```mermaid
+flowchart TD
+  A[createArmadaSdk] --> B["sdk.wallet.*"]
+  B --> C["wallet.sync()"]
+  C --> D["balances() / history()"]
+  C --> E["planTransfer()"]
+  E --> F["preflight()"]
+  F --> G["prove()"]
+  G --> H[submit on-chain]
+```
+
+The guide follows that flow in order:
 
 1. **[Getting started](./getting-started)** — create an instance and load a wallet.
 2. **[Wallets](./wallets)** — spend-capable, view-only, and ephemeral wallets, and signers.

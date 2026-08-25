@@ -9,6 +9,17 @@ Moving shielded funds is a three-step flow:
 A **transfer** sends funds to another shielded (`0zk`) address. An **unshield** withdraws funds to a
 public address. A single plan can do both at once.
 
+```mermaid
+flowchart TD
+  A["planTransfer()"] --> B[Plan]
+  B -.->|optional| C["preflight()"]
+  B --> D["prove()"]
+  D <-->|signBatch| E[SpendSigner]
+  D --> F[ProofHandle]
+  F --> G["toTransactCalldata() → submit on-chain"]
+  F --> H["toTransactionData() → embed in wrapper call"]
+```
+
 ## Fees
 
 Planning requires a fee quote. A quote is issued by the broadcaster that will submit your

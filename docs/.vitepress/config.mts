@@ -1,6 +1,6 @@
-// ABOUTME: VitePress site config for the @armada/sdk developer docs — nav, sidebar, and the
-// ABOUTME: TypeDoc-generated API reference sidebar (built by `npm run docs:api` before build).
-import { defineConfig } from 'vitepress';
+// ABOUTME: VitePress site config for the @armada/sdk developer docs — nav, sidebar, the
+// ABOUTME: TypeDoc-generated API reference sidebar, and Mermaid diagram rendering.
+import { withMermaid } from 'vitepress-plugin-mermaid';
 
 // The API reference sidebar is emitted by typedoc-vitepress-theme into docs/api/ during `docs:api`.
 // It won't exist on a fresh `docs:dev` before that runs, so fall back to an empty section.
@@ -13,7 +13,7 @@ try {
   // API reference not generated yet — run `npm run docs:api`.
 }
 
-export default defineConfig({
+export default withMermaid({
   title: '@armada/sdk',
   description: 'Developer documentation for the Armada shielded-pool SDK.',
   lang: 'en-US',
