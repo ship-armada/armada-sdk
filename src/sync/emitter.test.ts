@@ -31,7 +31,7 @@ describe('SyncEmitter', () => {
     const off = e.on('balance:updated', a);
     e.on('balance:updated', b);
     off();
-    e.emit('balance:updated', { tokenAddress: `0x${'ab'.repeat(20)}`, spendable: 1n, pending: 0n });
+    e.emit('balance:updated', { tokenHash: 'ab'.repeat(32), tokenAddress: `0x${'ab'.repeat(20)}`, spendable: 1n, pending: 0n });
     expect(a).not.toHaveBeenCalled();
     expect(b).toHaveBeenCalledOnce();
   });

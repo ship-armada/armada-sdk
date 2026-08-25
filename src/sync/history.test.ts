@@ -45,9 +45,11 @@ describe('reconstructReceiveHistory (H1)', () => {
     // in a tx where we spent → it's an earlier receive). The change note (0x33) is excluded.
     const byTxid = new Map(entries.map((e) => [e.txid, e]));
     expect(byTxid.get(tx('33'))).toBeUndefined(); // change excluded
-    expect(byTxid.get(tx('11'))).toMatchObject({ category: 'shield', value: 1_000_000n, shieldFee: 5_000n, tokenAddress: USDC });
-    expect(byTxid.get(tx('22'))).toMatchObject({ category: 'transfer-received', value: 250_000n, memo: 'gm', senderShieldedAddress: '0zk_alice' });
+    expect(byTxid.get(tx('11'))).toMatchObject({ category: 'shield', value: 1_000_000n, shieldFee: 5_000n, tokenHash: USDC_HASH, tokenAddress: USDC });
+    expect(byTxid.get(tx('22'))).toMatchObject({ category: 'transfer-received', value: 250_000n, tokenHash: USDC_HASH, tokenAddress: USDC, memo: 'gm', senderShieldedAddress: '0zk_alice' });
     expect(entries).toHaveLength(3); // shield + received + the pre-spend input receive
+    // Every entry carries BOTH identifiers — the hash joins `balances()`/events, the address is the ERC-20.
+    for (const e of entries) expect(e).toMatchObject({ tokenHash: USDC_HASH, tokenAddress: USDC });
   });
 
   it('skips notes in non-USDC tokens', () => {
@@ -127,9 +129,11 @@ describe('reconstructHistory (H2 — sends / unshields / yield)', () => {
   it('transfer-sent: net outflow (inputs − change), no unshield event', () => {
     const entries = reconstructHistory({ ...base, ownedTxos: [inputNote, changeNote], unshields: [] });
     const sent = entries.find((e) => e.txid === SPEND);
-    expect(sent).toMatchObject({ category: 'transfer-sent', value: -500_000n, tokenAddress: USDC });
+    expect(sent).toMatchObject({ category: 'transfer-sent', value: -500_000n, tokenHash: USDC_HASH, tokenAddress: USDC });
     // The earlier receipt of the input note still surfaces.
     expect(entries.find((e) => e.txid === tx('aa'))).toMatchObject({ category: 'transfer-received', value: 900_000n });
+    // The USDC-scoped reconstruction stamps every entry with the canonical hash + address pair.
+    for (const e of entries) expect(e).toMatchObject({ tokenHash: USDC_HASH, tokenAddress: USDC });
   });
 
   it('unshield: spend + Unshield to an external recipient → recipient + protocol fee', () => {

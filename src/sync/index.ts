@@ -36,9 +36,10 @@ export interface SyncEventMap {
   'scan:progress': { syncedThrough: number; fraction: number };
   'scan:complete': { syncedThrough: number };
   'scan:error': { error: Error };
-  'balance:updated': { tokenAddress: `0x${string}`; spendable: bigint; pending: bigint };
+  'balance:updated': { tokenHash: string; tokenAddress: `0x${string}`; spendable: bigint; pending: bigint };
   /** A new TXO registered for a loaded wallet — SPEC §5.2 (amount, token, memo, sender if disclosed). */
   'note:received': {
+    tokenHash: string;
     tokenAddress: `0x${string}`;
     value: bigint;
     memo?: string;
@@ -92,7 +93,7 @@ export type {
 } from './note-crypto';
 
 // Balance aggregation — per-token spendable/pending from the TXO set + spent nullifiers.
-export { computeBalances, txoFromNote } from './balances';
+export { computeBalances, txoFromNote, tokenHashKey, withTokenAddresses } from './balances';
 export type { TXO, SpentNullifier, TokenBalance, BalanceOptions } from './balances';
 
 // Pool event decoder — Shield/Transact/Nullified args → typed commitments/ciphertexts/nullifiers.

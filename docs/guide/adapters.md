@@ -68,26 +68,23 @@ there is no unverified default. The manifest is a build-time trust anchor pinned
 should not be fetched from the same origin as the artifacts, or the integrity check is
 self-referential.
 
-## Resolving token balances to addresses
+## Token identifiers on balances and events
 
-`balances()` returns entries keyed by `tokenHash` — the canonical 32-byte token hash, without a `0x`
-prefix — not by address. To map those back to addresses, build a lookup from the tokens you already
-know about: the pool's USDC and any `additionalTokens` on the pool config.
+Every token-bearing surface carries the same pair of identifiers, so a live event joins a
+`balances()` snapshot without a lookup of your own:
+
+- **`tokenHash`** — the canonical 32-byte token hash, without a `0x` prefix. This is the identifier
+  the pool stores inside a commitment, and the key `balances()` and the token events agree on.
+- **`tokenAddress`** — the token's ERC-20 address, resolved from the SDK's token registry (the
+  pool's USDC plus any `additionalTokens` you configure).
 
 ```ts
-import { getTokenDataERC20, getTokenDataHash } from '@armada/sdk';
-
-const known = [usdcAddress, ...additionalTokens];
-const addressByHash = new Map(
-  known.map((address) => [getTokenDataHash(getTokenDataERC20(address)), address]),
-);
-
-for (const { tokenHash, spendable, pending } of await wallet.balances()) {
-  const address = addressByHash.get(tokenHash); // undefined for a token not in `known`
-  console.log(address, spendable, pending);
+for (const { tokenHash, tokenAddress, spendable, pending } of await wallet.balances()) {
+  console.log(tokenHash, tokenAddress, spendable, pending);
 }
 ```
 
-The wallet only scans balances for the pool's USDC and the `additionalTokens` you list — a note in
-any other token is skipped during the scan, so every `tokenHash` returned resolves to a token you
-configured.
+`tokenAddress` is present for every registered token. The wallet only scans balances for the pool's
+USDC and the `additionalTokens` you list — a note in any other token is skipped during the scan — so
+in practice every balance resolves to an address. `tokenAddress` is typed optional only to guard the
+degenerate case of a hash with no registered token, which never returns a hidden balance.

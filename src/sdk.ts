@@ -17,9 +17,13 @@ import {
   saveScanState,
   loadScanState,
   scanStateKey,
+  tokenHashKey,
+  withTokenAddresses,
   POOL_V2_EVENT_ABI,
   type EventSource,
   type SyncEventMap,
+  type TXO,
+  type TokenAddressResolver,
   type Unsubscribe,
   type WalletDecryptors,
   type HistoryEntry,
@@ -188,6 +192,40 @@ export function effectiveScanHead(rawHead: number, confirmationDepth: number): n
  */
 export function shouldRecoverFromReorg(error: unknown, persistedRootsInvalid: boolean, recovering: boolean): boolean {
   return error instanceof RootMismatchError && persistedRootsInvalid && !recovering;
+}
+
+/**
+ * Build a `balance:updated` payload for a token, resolving its address via `resolve`. The payload
+ * carries BOTH the canonical `tokenHash` (normalized to the `balances()` join key) and the resolved
+ * `tokenAddress`. Returns `undefined` for a hash with no registered token — an address can't be
+ * recovered, so the caller skips the emit. Pure so the payload shape is unit-testable without a wallet.
+ */
+export function buildBalanceUpdate(
+  tokenHash: string,
+  spendable: bigint,
+  pending: bigint,
+  resolve: TokenAddressResolver,
+): SyncEventMap['balance:updated'] | undefined {
+  const tokenAddress = resolve(tokenHash);
+  if (tokenAddress === undefined) return undefined; // unregistered token — no address to report
+  return { tokenHash: tokenHashKey(tokenHash), tokenAddress, spendable, pending };
+}
+
+/**
+ * Build a `note:received` payload from a freshly discovered owned TXO, resolving its token address
+ * via `resolve`. Carries both `tokenHash` and `tokenAddress`, plus memo/sender when the sender
+ * disclosed them. Returns `undefined` for an unregistered token (skipped — no address to report).
+ */
+export function buildReceivedNote(txo: TXO, resolve: TokenAddressResolver): SyncEventMap['note:received'] | undefined {
+  const tokenAddress = resolve(txo.tokenHash);
+  if (tokenAddress === undefined) return undefined; // unregistered token — no address to report
+  return {
+    tokenHash: tokenHashKey(txo.tokenHash),
+    tokenAddress,
+    value: txo.value,
+    ...(txo.memo !== undefined ? { memo: txo.memo } : {}),
+    ...(txo.senderShieldedAddress !== undefined ? { senderShieldedAddress: txo.senderShieldedAddress } : {}),
+  };
 }
 
 /**
@@ -527,15 +565,9 @@ class ArmadaWallet implements Wallet {
       return; // baseline: `seenReceiveKeys` is now seeded; don't emit historical receives on first load
     }
     for (const txo of fresh) {
-      const hashKey = txo.tokenHash.startsWith('0x') ? txo.tokenHash.slice(2) : txo.tokenHash;
-      const tokenData = this.ctx.tokenByHash.get(hashKey);
-      if (tokenData === undefined) continue; // unregistered token — can't resolve an address
-      this.emitter.emit('note:received', {
-        tokenAddress: tokenData.tokenAddress as `0x${string}`,
-        value: txo.value,
-        ...(txo.memo !== undefined ? { memo: txo.memo } : {}),
-        ...(txo.senderShieldedAddress !== undefined ? { senderShieldedAddress: txo.senderShieldedAddress } : {}),
-      });
+      const payload = buildReceivedNote(txo, (h) => this.resolveTokenAddress(h));
+      if (payload === undefined) continue; // unregistered token — can't resolve an address
+      this.emitter.emit('note:received', payload);
     }
   }
 
@@ -560,15 +592,22 @@ class ArmadaWallet implements Wallet {
   }
 
   private emitTokenBalance(tokenHash: string, spendable: bigint, pending: bigint): void {
-    const key = tokenHash.startsWith('0x') ? tokenHash.slice(2) : tokenHash;
-    const tokenData = this.ctx.tokenByHash.get(key);
-    if (tokenData === undefined) return; // unregistered token — can't resolve an address to emit
-    this.emitter.emit('balance:updated', { tokenAddress: tokenData.tokenAddress as `0x${string}`, spendable, pending });
+    const payload = buildBalanceUpdate(tokenHash, spendable, pending, (h) => this.resolveTokenAddress(h));
+    if (payload === undefined) return; // unregistered token — can't resolve an address to emit
+    this.emitter.emit('balance:updated', payload);
+  }
+
+  // Resolve an owned-note token hash to its registered ERC-20 address, or undefined when the hash
+  // isn't in the SDK's token registry. Shared by `balances()` and the `balance:updated`/`note:received`
+  // emit paths so all three surfaces speak the same hash↔address mapping.
+  private resolveTokenAddress(tokenHash: string): `0x${string}` | undefined {
+    return this.ctx.tokenByHash.get(tokenHashKey(tokenHash))?.tokenAddress as `0x${string}` | undefined;
   }
 
   async balances(): Promise<TokenBalance[]> {
     const head = await this.ctx.provider.getBlockNumber();
-    return this.scanState.balances(this.keyset.nullifyingKey, { currentBlock: head, finalityThreshold: this.ctx.finalityThreshold });
+    const raw = this.scanState.balances(this.keyset.nullifyingKey, { currentBlock: head, finalityThreshold: this.ctx.finalityThreshold });
+    return withTokenAddresses(raw, (h) => this.resolveTokenAddress(h));
   }
 
   spendableNullifiers(): readonly { readonly tree: number; readonly nullifier: bigint }[] {
@@ -804,7 +843,7 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
   }
   const tokenDataGetter: TokenDataGetter = {
     getTokenDataFromHash: async (_v: unknown, _c: unknown, tokenHash: string): Promise<TokenData> => {
-      const tokenData = tokenByHash.get(tokenHash.startsWith('0x') ? tokenHash.slice(2) : tokenHash);
+      const tokenData = tokenByHash.get(tokenHashKey(tokenHash));
       if (tokenData !== undefined) return tokenData;
       throw new Error(`createArmadaSdk: unknown token hash ${tokenHash}`);
     },

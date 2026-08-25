@@ -47,9 +47,16 @@ export interface SpentNullifier {
   readonly blockNumber: number;
 }
 
-/** Per-token aggregated balance. `tokenHash` is the canonical 32-byte hash (no `0x`). */
+/**
+ * Per-token aggregated balance. `tokenHash` is the canonical 32-byte hash (no `0x`); `tokenAddress`
+ * is its registered ERC-20 address, present for every registered token and `undefined` only for a
+ * hash absent from the SDK's token registry (see `withTokenAddresses`). `computeBalances` leaves
+ * `tokenAddress` unset — the aggregation is pure over hashes; the address is attached at a layer
+ * that holds the registry.
+ */
 export interface TokenBalance {
   readonly tokenHash: string;
+  readonly tokenAddress?: `0x${string}`;
   readonly spendable: bigint;
   readonly pending: bigint;
 }
@@ -103,6 +110,30 @@ export function computeBalances(
   return [...perToken.entries()]
     .map(([tokenHash, b]) => ({ tokenHash, spendable: b.spendable, pending: b.pending }))
     .sort((a, b) => (a.tokenHash < b.tokenHash ? -1 : a.tokenHash > b.tokenHash ? 1 : 0));
+}
+
+/**
+ * Canonical registry-key form of a token hash: the 32-byte hex with any leading `0x` removed.
+ * Owned-note hashes surface both with and without the prefix depending on their source, so the
+ * token registry is always keyed and queried through this normalizer.
+ */
+export function tokenHashKey(tokenHash: string): string {
+  return tokenHash.startsWith('0x') ? tokenHash.slice(2) : tokenHash;
+}
+
+/**
+ * Attach each balance's registered ERC-20 address via `resolve`. A hash with no registered token
+ * keeps `tokenAddress` unset and its row is retained — a real balance is never hidden just because
+ * its address can't be resolved. Pure: the address lookup is the caller's registry.
+ */
+export function withTokenAddresses(
+  balances: readonly TokenBalance[],
+  resolve: (tokenHash: string) => `0x${string}` | undefined,
+): TokenBalance[] {
+  return balances.map((b) => {
+    const tokenAddress = resolve(b.tokenHash);
+    return { ...b, ...(tokenAddress !== undefined ? { tokenAddress } : {}) };
+  });
 }
 
 /** Build a TXO from a decrypted note plus its merkletree location, commitment block, and event context. */
