@@ -17,7 +17,7 @@ import type {
   DecodedTransactCommitment,
   DecodedUnshield,
 } from './event-decoder';
-import { RootMismatchError } from '../errors';
+import { RootMismatchError, PositionGapError } from '../errors';
 
 /** The wallet-relevant fields a decryptor recovers from a commitment it owns. */
 export interface OwnedNote {
@@ -217,7 +217,7 @@ export class WalletScanState {
     }
     const expected = this.nextPosition.get(tree)!;
     if (position !== expected) {
-      throw new Error(`scan: merkle position gap in tree ${tree}: expected ${expected}, got ${position}`);
+      throw new PositionGapError(`scan: merkle position gap in tree ${tree}: expected ${expected}, got ${position}`);
     }
     merkletree.insert(hash);
     this.nextPosition.set(tree, expected + 1);

@@ -63,7 +63,11 @@ export interface ArmadaSdkConfig {
    * wire contract. When set it is the primary event source, with RPC getLogs covering the tail and
    * verifying results against the on-chain root. Omit to sync purely from RPC.
    */
-  readonly indexer?: { readonly url: string };
+  readonly indexer?: {
+    readonly url: string;
+    /** Inject a custom fetch (proxy, instrumentation, tests). Defaults to the global fetch. */
+    readonly fetchFn?: typeof fetch;
+  };
   /**
    * Escape hatch that disables the SDK's at-rest encryption (SPEC §4.3). Decrypted note data, TXO
    * records, balances, and history are AEAD-encrypted at rest by default under a per-wallet key the
@@ -89,6 +93,9 @@ export interface ArmadaSdk {
  * patching. Multiple instances per process are supported; state is instance-scoped.
  */
 export { createArmadaSdk } from './sdk';
+// Quick-sync telemetry payload shape (SPEC §8) — exported so a sink author can type their handler
+// and switch on `reason`.
+export type { QuickSyncTelemetry, QuickSyncReason } from './sdk';
 
 export const VERSION = '0.0.0';
 

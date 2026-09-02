@@ -8,7 +8,7 @@ import { UTXOMerkletree } from './merkletree';
 import { WalletScanState, ownedNoteFromTransactNote, type WalletDecryptors, type OwnedNote } from './scan-engine';
 import type { DecodedPoolEvents, DecodedTransactCommitment, DecodedShieldCommitment } from './event-decoder';
 import { createTransferNote, encryptNoteToReceiver, tryDecryptCommitment, type CommitmentCiphertextV2 } from './note-crypto';
-import { RootMismatchError } from '../errors';
+import { RootMismatchError, PositionGapError } from '../errors';
 
 // Fake owned-note result for the synthetic decryptor tests (random/npk unused by balances/tree logic).
 const owned = (tokenHash: string, value: bigint): OwnedNote => ({ tokenHash, value, random: '00'.repeat(16), notePublicKey: 0n });
@@ -101,11 +101,15 @@ describe('wallet scan orchestrator (§4.4)', () => {
     expect(state.treeRoot(0)).not.toBe(state.treeRoot(1));
   });
 
-  it('throws on a merkle position gap (leaf position must equal current tree length)', async () => {
-    const state = new WalletScanState();
+  it('throws a typed PositionGapError on a merkle position gap (leaf position must equal current tree length)', async () => {
+    // WHY: the quick-sync fallback classifier keys on `code` — a position gap must surface as a typed
+    // POSITION_GAP so it is reported distinctly, not swallowed into a misleading `root-mismatch`.
     const decryptors: WalletDecryptors = { transact: async () => undefined };
     await expect(
-      state.apply({ ...noEvents(), transacts: [mkTransact(0, 1, leafHex(31))] }, decryptors),
+      new WalletScanState().apply({ ...noEvents(), transacts: [mkTransact(0, 1, leafHex(31))] }, decryptors),
+    ).rejects.toThrowError(PositionGapError);
+    await expect(
+      new WalletScanState().apply({ ...noEvents(), transacts: [mkTransact(0, 1, leafHex(31))] }, decryptors),
     ).rejects.toThrow(/position gap/);
   });
 

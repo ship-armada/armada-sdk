@@ -61,7 +61,10 @@ import {
   type Chain,
 } from './core/index';
 import type { ProveOptions, ProverAdapter, ArtifactSource } from './prover/index';
-import { NoSpendCapabilityError, RootMismatchError } from './errors';
+import {
+  NoSpendCapabilityError,
+  RootMismatchError,
+} from './errors';
 import type { ArmadaSdk, ArmadaSdkConfig, TelemetrySink } from './index';
 
 // Per-instance shared context handed to each wallet.
@@ -107,6 +110,14 @@ interface SdkContext {
   readonly telemetry?: TelemetrySink;
 }
 
+/**
+ * Why an untrusted-indexer quick-sync attempt was discarded for an RPC re-scan. The `outcome` field
+ * keeps its two historical values (back-compat); `reason` disambiguates the ≥4 distinct causes that
+ * `root-mismatch-fallback` used to conflate (#83). `unknown` is the honest bucket for an unexpected
+ * cause — never silently folded into `root-mismatch`.
+ */
+export type QuickSyncReason = 'indexer-http-error' | 'schema-mismatch' | 'root-mismatch' | 'position-gap' | 'unknown';
+
 /** Quick-sync observability payload emitted through the telemetry sink (SPEC §8-safe: block numbers + booleans only). */
 export interface QuickSyncTelemetry {
   /** `served` = the indexer batch verified against the on-chain root; `root-mismatch-fallback` = it
@@ -116,13 +127,43 @@ export interface QuickSyncTelemetry {
   readonly head: number;
   /** On the `served` path: the indexer lagged the chain head and RPC covered the tail. Always false on fallback. */
   readonly tailCovered: boolean;
+  /** Set only on fallback: the classified cause of the discard (SPEC §8-safe — an enum, no PII). */
+  readonly reason?: QuickSyncReason;
+  /** Set only for an `indexer-http-error` fallback: the non-OK HTTP status the indexer returned. */
+  readonly status?: number;
+}
+
+/**
+ * Map a caught quick-sync fallback cause to its telemetry reason (+ HTTP status when applicable). Pure
+ * and keyed on the typed-error `code` (never message text), so a 404 from a legacy endpoint is reported
+ * as `indexer-http-error`, not a misleading `root-mismatch`. An unrecognized cause is `unknown` — the
+ * classifier never asserts a cause it doesn't actually know (SPEC §8, #83).
+ */
+export function classifyQuickSyncReason(cause: unknown): { reason: QuickSyncReason; status?: number } {
+  // Match on the stable `code`, not `instanceof`: identity checks break under the dual-package hazard
+  // (an error thrown by one SDK copy fails `instanceof` in another) and contradict the errors.ts rule.
+  const code = typeof cause === 'object' && cause !== null && 'code' in cause ? (cause as { code: unknown }).code : undefined;
+  switch (code) {
+    case 'INDEXER_HTTP': {
+      const status = (cause as { status?: unknown }).status;
+      return typeof status === 'number' ? { reason: 'indexer-http-error', status } : { reason: 'indexer-http-error' };
+    }
+    case 'QUICK_SYNC_SCHEMA':
+      return { reason: 'schema-mismatch' };
+    case 'ROOT_MISMATCH':
+      return { reason: 'root-mismatch' };
+    case 'POSITION_GAP':
+      return { reason: 'position-gap' };
+    default:
+      return { reason: 'unknown' };
+  }
 }
 
 /**
  * Decide the quick-sync observability event for a completed sync. Pure so the outcome taxonomy is
  * unit-testable without a provider. Returns null when no indexer is in play — a pure RPC sync has
- * nothing quick-sync to report. SPEC §8: the payload carries only block numbers + booleans, never
- * keys, addresses, or note plaintext.
+ * nothing quick-sync to report. SPEC §8: the payload carries only block numbers + booleans + a
+ * classified `reason` enum, never keys, addresses, or note plaintext.
  */
 export function quickSyncTelemetry(input: {
   usingIndexer: boolean;
@@ -130,17 +171,23 @@ export function quickSyncTelemetry(input: {
   fellBack: boolean;
   fromBlock: number;
   head: number;
+  /** The caught fallback cause (only meaningful when `fellBack`); classified into `reason`/`status`. */
+  cause?: unknown;
 }): { event: 'sync.quicksync'; data: QuickSyncTelemetry } | null {
   if (!input.usingIndexer) return null;
+  // Only fallbacks carry a cause to classify; the served path emits neither reason nor status.
+  const { reason, status } = input.fellBack ? classifyQuickSyncReason(input.cause) : { reason: undefined, status: undefined };
   return {
     event: 'sync.quicksync',
     data: {
       outcome: input.fellBack ? 'root-mismatch-fallback' : 'served',
       fromBlock: input.fromBlock,
       head: input.head,
-      // On a root-mismatch fallback the indexer batch was discarded and the whole range RPC-rescanned,
-      // so tail-cover is only meaningful on the served path.
+      // On a fallback the indexer batch was discarded and the whole range RPC-rescanned, so tail-cover
+      // is only meaningful on the served path.
       tailCovered: input.fellBack ? false : input.tailCovered,
+      ...(reason !== undefined ? { reason } : {}),
+      ...(status !== undefined ? { status } : {}),
     },
   };
 }
@@ -468,6 +515,9 @@ class ArmadaWallet implements Wallet {
     try {
       let tailCovered = false;
       let fellBack = false;
+      // Preserved so telemetry can classify WHY the indexer batch was discarded (#83) — an HTTP 404, a
+      // wire-schema skew, a position gap, or a genuine root mismatch, not one mislabel for all four.
+      let fallbackCause: unknown;
 
       if (usingIndexer) {
         try {
@@ -477,8 +527,9 @@ class ArmadaWallet implements Wallet {
           // failing the whole sync on a degraded indexer (SPEC §4.4).
           ({ tailCovered } = await this.applyToHead(from, head, decryptors, emitProgress));
           await this.verifyRoots(head);
-        } catch {
+        } catch (err) {
           fellBack = true;
+          fallbackCause = err;
           this.scanState = WalletScanState.restore(rollback);
           await this.applyBatch(this.ctx.rpcEventSource, from, head, decryptors, emitProgress);
         }
@@ -495,9 +546,10 @@ class ArmadaWallet implements Wallet {
       }
 
       // Quick-sync observability (SPEC §8): report whether the configured indexer served a
-      // root-verified batch, lagged into an RPC tail, or was rejected for an RPC re-scan. No-op
-      // when no indexer is configured. Never carries key material / addresses.
-      const qs = quickSyncTelemetry({ usingIndexer, tailCovered, fellBack, fromBlock: from, head });
+      // root-verified batch, lagged into an RPC tail, or was rejected for an RPC re-scan — and, on a
+      // rejection, the classified `reason` (+ HTTP status) for it. No-op when no indexer is configured.
+      // Never carries key material / addresses.
+      const qs = quickSyncTelemetry({ usingIndexer, tailCovered, fellBack, fromBlock: from, head, cause: fallbackCause });
       // Cast bridges the precise payload type to the sink's untyped `Record<string, unknown>` contract
       // (the interface has no index signature, so the double-cast is the sanctioned boundary widening).
       if (qs !== null) this.ctx.telemetry?.emit(qs.event, qs.data as unknown as Readonly<Record<string, unknown>>);
@@ -853,7 +905,11 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
   // configured, becomes the primary fast path serving the native `/v2/quick-sync` wire contract.
   const rpcEventSource = new RpcEventSource(getLogs);
   const eventSource: EventSource = config.indexer
-    ? new IndexerEventSource({ baseUrl: config.indexer.url, chainId: config.pool.chainId })
+    ? new IndexerEventSource({
+        baseUrl: config.indexer.url,
+        chainId: config.pool.chainId,
+        ...(config.indexer.fetchFn !== undefined ? { fetchFn: config.indexer.fetchFn } : {}),
+      })
     : rpcEventSource;
 
   // Pool view getters for sync root-verification + preflight (per-tree accepted roots + spent nullifiers).

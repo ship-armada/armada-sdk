@@ -1,7 +1,7 @@
 // ABOUTME: EventSource tests — RpcEventSource (getLogs → decode) + IndexerEventSource (native
 // ABOUTME: quick-sync fetch/parse), incl. the differential that indexer events == getLogs-decoded events.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import type { DecodedPoolEvents, ParsedPoolLog } from './event-decoder';
 import { serializeQuickSync } from './quick-sync-wire';
 import { RpcEventSource, IndexerEventSource } from './event-source';
@@ -98,9 +98,53 @@ describe('IndexerEventSource', () => {
     expect(batch.syncedThroughBlock).toBe(100);
   });
 
-  it('throws on a non-OK indexer response (→ SDK falls back to RPC)', async () => {
+  it('throws a typed IndexerHttpError carrying the status on a non-OK response (→ SDK falls back to RPC)', async () => {
+    // WHY: the fallback classifier keys on `code`, not message — a 404 (legacy/wrong endpoint) must be
+    // distinguishable from a schema or root failure so telemetry reports `indexer-http-error`, not a
+    // misleading `root-mismatch`. The typed error carries `status` for the operator.
     const fetchFn = (async () => jsonResponse({}, false, 503)) as unknown as typeof fetch;
     const src = new IndexerEventSource({ baseUrl: 'https://watcher.example', chainId: 1, fetchFn });
-    await expect(src.getEvents(1, 100)).rejects.toThrow(/503/);
+    // The `code` check subsumes the class check per the codebase convention (match on code, not identity).
+    await expect(src.getEvents(1, 100)).rejects.toMatchObject({ code: 'INDEXER_HTTP', status: 503 });
+  });
+});
+
+describe('IndexerEventSource — default fetch `this` binding', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('does not throw Illegal invocation when the global fetch is receiver-checked (browser)', async () => {
+    // WHY: native browser `fetch` is a Web IDL operation that brand-checks its receiver and throws
+    // `Illegal invocation` unless `this` is the global. Node/undici does not, so the injected-fetch
+    // tests above pass even with an unbound `this.fetchFn(url)`. This exercises the DEFAULT branch
+    // (`options.fetchFn ?? fetch`) against a browser-faithful guarded fetch — the only test that
+    // catches the method-call rebinding.
+    const guarded = function (this: unknown): Promise<Response> {
+      if (this !== undefined && this !== globalThis) {
+        throw new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation");
+      }
+      return Promise.resolve(jsonResponse(serializeQuickSync(EVENTS, 10)));
+    };
+    vi.stubGlobal('fetch', guarded);
+
+    // No injected fetchFn → the source falls back to the global fetch it must call receiver-safely.
+    const src = new IndexerEventSource({ baseUrl: 'https://watcher.example', chainId: 1 });
+    await expect(src.getEvents(1, 10)).resolves.toMatchObject({ syncedThroughBlock: 10 });
+  });
+
+  it('does not throw Illegal invocation when a bare receiver-checked fetch is INJECTED (e.g. window.fetch)', async () => {
+    // WHY: wrapping only the default branch would let a browser consumer reintroduce the bug with the
+    // most natural call — `fetchFn: window.fetch` — since an injected bare native fetch is still stored
+    // on the instance and invoked as a method. The source must wrap the injected fetch too.
+    const guarded = function (this: unknown): Promise<Response> {
+      if (this !== undefined && this !== globalThis) {
+        throw new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation");
+      }
+      return Promise.resolve(jsonResponse(serializeQuickSync(EVENTS, 10)));
+    };
+
+    const src = new IndexerEventSource({ baseUrl: 'https://watcher.example', chainId: 1, fetchFn: guarded as typeof fetch });
+    await expect(src.getEvents(1, 10)).resolves.toMatchObject({ syncedThroughBlock: 10 });
   });
 });
