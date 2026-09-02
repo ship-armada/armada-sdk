@@ -292,6 +292,21 @@ describe('classifyQuickSyncReason — map a fallback cause to a telemetry reason
     // error must NOT be bucketed as `root-mismatch`; it gets the honest `unknown` label.
     expect(classifyQuickSyncReason(new Error('some other failure'))).toEqual({ reason: 'unknown' });
   });
+
+  it('keys on `code`, not identity — an error-shaped object with the code still buckets correctly', () => {
+    // WHY: the codebase's frozen rule is "match on code, never message/identity" (errors.ts). instanceof
+    // also breaks under the dual-package hazard — an error thrown by one SDK copy fails instanceof in
+    // another and would fall to `unknown`. A plain object carrying the stable `code` must classify the
+    // same as the real typed error.
+    expect(classifyQuickSyncReason({ code: 'INDEXER_HTTP', status: 404 })).toEqual({
+      reason: 'indexer-http-error',
+      status: 404,
+    });
+    expect(classifyQuickSyncReason({ code: 'QUICK_SYNC_SCHEMA' })).toEqual({ reason: 'schema-mismatch' });
+    expect(classifyQuickSyncReason({ code: 'ROOT_MISMATCH' })).toEqual({ reason: 'root-mismatch' });
+    expect(classifyQuickSyncReason({ code: 'POSITION_GAP' })).toEqual({ reason: 'position-gap' });
+    expect(classifyQuickSyncReason({ code: 'SOME_UNKNOWN_CODE' })).toEqual({ reason: 'unknown' });
+  });
 });
 
 describe('feeScheduleKey — bind the fee tier matching the plan op (SPEC §4.6.1)', () => {

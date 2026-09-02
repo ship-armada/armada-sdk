@@ -118,5 +118,25 @@ describe('ArtifactSource impls (§4.5)', () => {
       const set = await source.resolve(SHAPE);
       expect(Array.from(set.wasm)).toEqual(Array.from(WASM));
     });
+
+    it('does not throw Illegal invocation when a bare receiver-checked fetch is INJECTED (e.g. window.fetch)', async () => {
+      // WHY: wrapping only the default branch would let a browser consumer reintroduce the bug with the
+      // most natural call — `fetchFn: window.fetch`. The source must wrap the injected fetch too.
+      const guarded = function (this: unknown, url: string): Promise<Response> {
+        if (this !== undefined && this !== globalThis) {
+          throw new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation");
+        }
+        if (url.endsWith('main_1x1.wasm')) return Promise.resolve(bytesResponse(WASM));
+        if (url.endsWith('final.zkey')) return Promise.resolve(bytesResponse(ZKEY));
+        return Promise.resolve(bytesResponse(VKEY_BYTES));
+      };
+
+      const source = new HttpArtifactSource('https://cdn.example/artifacts', {
+        dangerouslySkipIntegrity: true,
+        fetchFn: guarded as typeof fetch,
+      });
+      const set = await source.resolve(SHAPE);
+      expect(Array.from(set.wasm)).toEqual(Array.from(WASM));
+    });
   });
 });

@@ -5,7 +5,6 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import type { DecodedPoolEvents, ParsedPoolLog } from './event-decoder';
 import { serializeQuickSync } from './quick-sync-wire';
 import { RpcEventSource, IndexerEventSource } from './event-source';
-import { IndexerHttpError } from '../errors';
 
 const h = (b: string): string => b.repeat(32);
 
@@ -105,7 +104,7 @@ describe('IndexerEventSource', () => {
     // misleading `root-mismatch`. The typed error carries `status` for the operator.
     const fetchFn = (async () => jsonResponse({}, false, 503)) as unknown as typeof fetch;
     const src = new IndexerEventSource({ baseUrl: 'https://watcher.example', chainId: 1, fetchFn });
-    await expect(src.getEvents(1, 100)).rejects.toThrowError(IndexerHttpError);
+    // The `code` check subsumes the class check per the codebase convention (match on code, not identity).
     await expect(src.getEvents(1, 100)).rejects.toMatchObject({ code: 'INDEXER_HTTP', status: 503 });
   });
 });
@@ -131,6 +130,21 @@ describe('IndexerEventSource — default fetch `this` binding', () => {
 
     // No injected fetchFn → the source falls back to the global fetch it must call receiver-safely.
     const src = new IndexerEventSource({ baseUrl: 'https://watcher.example', chainId: 1 });
+    await expect(src.getEvents(1, 10)).resolves.toMatchObject({ syncedThroughBlock: 10 });
+  });
+
+  it('does not throw Illegal invocation when a bare receiver-checked fetch is INJECTED (e.g. window.fetch)', async () => {
+    // WHY: wrapping only the default branch would let a browser consumer reintroduce the bug with the
+    // most natural call — `fetchFn: window.fetch` — since an injected bare native fetch is still stored
+    // on the instance and invoked as a method. The source must wrap the injected fetch too.
+    const guarded = function (this: unknown): Promise<Response> {
+      if (this !== undefined && this !== globalThis) {
+        throw new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation");
+      }
+      return Promise.resolve(jsonResponse(serializeQuickSync(EVENTS, 10)));
+    };
+
+    const src = new IndexerEventSource({ baseUrl: 'https://watcher.example', chainId: 1, fetchFn: guarded as typeof fetch });
     await expect(src.getEvents(1, 10)).resolves.toMatchObject({ syncedThroughBlock: 10 });
   });
 });

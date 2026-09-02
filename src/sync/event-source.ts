@@ -57,11 +57,15 @@ export class IndexerEventSource implements EventSource {
   constructor(options: IndexerEventSourceOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
     this.chainId = options.chainId;
-    // Wrap (don't store bare) the global fetch: `this.fetchFn(url)` is a method call, so an unbound
-    // native `fetch` would run with `this === this instance`. Browser `fetch` is a Web IDL operation
-    // that brand-checks its receiver and throws `Illegal invocation` for a non-global `this`. The
-    // receiver-agnostic wrapper also survives a later reassignment of the global fetch.
-    this.fetchFn = options.fetchFn ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
+    // Wrap the fetch — default OR injected — so `this.fetchFn(url)` (a method call) never runs the
+    // underlying fetch with `this === this instance`. Browser `fetch` is a Web IDL operation that
+    // brand-checks its receiver and throws `Illegal invocation` for a non-global `this`; wrapping the
+    // injected fn too keeps a consumer passing a bare `window.fetch` from reintroducing the bug. The
+    // default branch resolves the global at call time, so it survives a later reassignment of fetch.
+    const injected = options.fetchFn;
+    this.fetchFn = injected
+      ? (...args: Parameters<typeof fetch>) => injected(...args)
+      : (...args: Parameters<typeof fetch>) => fetch(...args);
   }
 
   async getEvents(

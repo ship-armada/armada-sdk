@@ -93,6 +93,9 @@ export interface ArmadaSdk {
  * patching. Multiple instances per process are supported; state is instance-scoped.
  */
 export { createArmadaSdk } from './sdk';
+// Quick-sync telemetry payload shape (SPEC §8) — exported so a sink author can type their handler
+// and switch on `reason`.
+export type { QuickSyncTelemetry, QuickSyncReason } from './sdk';
 
 export const VERSION = '0.0.0';
 

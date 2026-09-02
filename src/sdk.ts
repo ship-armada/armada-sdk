@@ -64,9 +64,6 @@ import type { ProveOptions, ProverAdapter, ArtifactSource } from './prover/index
 import {
   NoSpendCapabilityError,
   RootMismatchError,
-  QuickSyncSchemaError,
-  IndexerHttpError,
-  PositionGapError,
 } from './errors';
 import type { ArmadaSdk, ArmadaSdkConfig, TelemetrySink } from './index';
 
@@ -143,11 +140,23 @@ export interface QuickSyncTelemetry {
  * classifier never asserts a cause it doesn't actually know (SPEC §8, #83).
  */
 export function classifyQuickSyncReason(cause: unknown): { reason: QuickSyncReason; status?: number } {
-  if (cause instanceof IndexerHttpError) return { reason: 'indexer-http-error', status: cause.status };
-  if (cause instanceof QuickSyncSchemaError) return { reason: 'schema-mismatch' };
-  if (cause instanceof RootMismatchError) return { reason: 'root-mismatch' };
-  if (cause instanceof PositionGapError) return { reason: 'position-gap' };
-  return { reason: 'unknown' };
+  // Match on the stable `code`, not `instanceof`: identity checks break under the dual-package hazard
+  // (an error thrown by one SDK copy fails `instanceof` in another) and contradict the errors.ts rule.
+  const code = typeof cause === 'object' && cause !== null && 'code' in cause ? (cause as { code: unknown }).code : undefined;
+  switch (code) {
+    case 'INDEXER_HTTP': {
+      const status = (cause as { status?: unknown }).status;
+      return typeof status === 'number' ? { reason: 'indexer-http-error', status } : { reason: 'indexer-http-error' };
+    }
+    case 'QUICK_SYNC_SCHEMA':
+      return { reason: 'schema-mismatch' };
+    case 'ROOT_MISMATCH':
+      return { reason: 'root-mismatch' };
+    case 'POSITION_GAP':
+      return { reason: 'position-gap' };
+    default:
+      return { reason: 'unknown' };
+  }
 }
 
 /**
