@@ -750,11 +750,16 @@ implement it against the same spec later.
   addresses — telemetry payload review is part of code review for this module.
   - Emitted events (grows as instrumentation lands):
     - `sync.quicksync` — one per sync **when an indexer is configured**, reporting the quick-sync
-      outcome. Payload: `{ outcome: 'served' | 'root-mismatch-fallback', fromBlock, head, tailCovered }`
-      (block numbers + booleans only). `served` = the indexer batch verified against the on-chain
-      root (`tailCovered` = the indexer lagged head and RPC covered the remainder); `root-mismatch-fallback`
-      = the indexer batch was rejected and the range re-scanned from RPC. Lets an operator confirm the
-      indexer is actually serving rather than silently degrading. A pure RPC sync emits nothing.
+      outcome. Payload: `{ outcome: 'served' | 'root-mismatch-fallback', fromBlock, head, tailCovered,
+      reason?, status? }` (block numbers + booleans + enums only — no PII). `served` = the indexer
+      batch verified against the on-chain root (`tailCovered` = the indexer lagged head and RPC covered
+      the remainder); `root-mismatch-fallback` = the indexer batch was rejected and the range re-scanned
+      from RPC. On a fallback, `reason` disambiguates the cause the single `outcome` value conflated —
+      `'indexer-http-error' | 'schema-mismatch' | 'root-mismatch' | 'position-gap' | 'unknown'` — and
+      `status` carries the non-OK HTTP status for an `indexer-http-error`. `outcome` retains its two
+      historical values for back-compat; `reason`/`status` are additive and absent on the served path.
+      Lets an operator confirm the indexer is actually serving rather than silently degrading, and see
+      *why* a fallback fired. A pure RPC sync emits nothing.
 
 ---
 

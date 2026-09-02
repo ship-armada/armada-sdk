@@ -61,7 +61,11 @@ export class HttpArtifactSource implements ArtifactSource {
 
   constructor(baseUrl: string, options: HttpArtifactSourceOptions) {
     this.baseUrl = baseUrl;
-    this.fetchFn = options.fetchFn ?? fetch;
+    // Wrap (don't store bare) the global fetch: `this.fetchFn(url)` is a method call, so an unbound
+    // native `fetch` would run with `this === this instance`. Browser `fetch` brand-checks its
+    // receiver and throws `Illegal invocation` for a non-global `this`. The receiver-agnostic wrapper
+    // also survives a later reassignment of the global fetch.
+    this.fetchFn = options.fetchFn ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
     this.manifest = 'manifest' in options ? options.manifest : undefined;
   }
 

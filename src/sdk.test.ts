@@ -6,6 +6,7 @@ import {
   createArmadaSdk,
   planSyncWindow,
   quickSyncTelemetry,
+  classifyQuickSyncReason,
   feeScheduleKey,
   finalRootCheckRequired,
   resolveWalletStorage,
@@ -14,7 +15,7 @@ import {
   buildBalanceUpdate,
   buildReceivedNote,
 } from './sdk';
-import { RootMismatchError } from './errors';
+import { RootMismatchError, QuickSyncSchemaError, IndexerHttpError, PositionGapError } from './errors';
 import { deriveKeyset, LocalSigner } from './wallet/index';
 import { saveScanState, WalletScanState } from './sync/index';
 import { MemoryStorageAdapter } from './storage/index';
@@ -239,6 +240,57 @@ describe('quickSyncTelemetry — quick-sync observability outcome (SPEC §8)', (
     const ev = quickSyncTelemetry({ usingIndexer: true, tailCovered: true, fellBack: true, fromBlock: 5, head: 9 });
     expect(ev?.data.outcome).toBe('root-mismatch-fallback');
     expect(ev?.data.tailCovered).toBe(false);
+  });
+
+  it('adds a `reason` (and HTTP `status`) discriminant on fallback without changing `outcome`', () => {
+    // WHY: #83 — the single `root-mismatch-fallback` outcome mislabeled ≥4 distinct causes and sent a
+    // debugging session down a merkle-root rabbit hole when the real failure was a 404 from a legacy
+    // endpoint. `outcome` stays (back-compat, documented in SPEC §8); `reason` is added beside it.
+    const ev = quickSyncTelemetry({
+      usingIndexer: true,
+      tailCovered: false,
+      fellBack: true,
+      fromBlock: 5,
+      head: 9,
+      cause: new IndexerHttpError('quick-sync: indexer responded 404', { status: 404 }),
+    });
+    expect(ev?.data.outcome).toBe('root-mismatch-fallback'); // unchanged contract
+    expect(ev?.data.reason).toBe('indexer-http-error');
+    expect(ev?.data.status).toBe(404);
+  });
+
+  it('omits `reason`/`status` on the served path (no fallback → nothing to classify)', () => {
+    const ev = quickSyncTelemetry({ usingIndexer: true, tailCovered: false, fellBack: false, fromBlock: 5, head: 9 });
+    expect(ev?.data.outcome).toBe('served');
+    expect(ev?.data.reason).toBeUndefined();
+    expect(ev?.data.status).toBeUndefined();
+  });
+});
+
+describe('classifyQuickSyncReason — map a fallback cause to a telemetry reason (SPEC §8, #83)', () => {
+  it('classifies an IndexerHttpError as `indexer-http-error` and surfaces its status', () => {
+    expect(classifyQuickSyncReason(new IndexerHttpError('boom', { status: 503 }))).toEqual({
+      reason: 'indexer-http-error',
+      status: 503,
+    });
+  });
+
+  it('classifies a QuickSyncSchemaError as `schema-mismatch`', () => {
+    expect(classifyQuickSyncReason(new QuickSyncSchemaError('bad wire shape'))).toEqual({ reason: 'schema-mismatch' });
+  });
+
+  it('classifies a RootMismatchError as `root-mismatch` (the genuine case, not the catch-all)', () => {
+    expect(classifyQuickSyncReason(new RootMismatchError('root differs'))).toEqual({ reason: 'root-mismatch' });
+  });
+
+  it('classifies a PositionGapError as `position-gap`', () => {
+    expect(classifyQuickSyncReason(new PositionGapError('gap in tree 0'))).toEqual({ reason: 'position-gap' });
+  });
+
+  it('classifies an unrecognized cause as `unknown` — never mislabels an unexpected error', () => {
+    // WHY: the whole point of #83 is to stop asserting a cause you do not actually know. An unexpected
+    // error must NOT be bucketed as `root-mismatch`; it gets the honest `unknown` label.
+    expect(classifyQuickSyncReason(new Error('some other failure'))).toEqual({ reason: 'unknown' });
   });
 });
 

@@ -63,7 +63,11 @@ export interface ArmadaSdkConfig {
    * wire contract. When set it is the primary event source, with RPC getLogs covering the tail and
    * verifying results against the on-chain root. Omit to sync purely from RPC.
    */
-  readonly indexer?: { readonly url: string };
+  readonly indexer?: {
+    readonly url: string;
+    /** Inject a custom fetch (proxy, instrumentation, tests). Defaults to the global fetch. */
+    readonly fetchFn?: typeof fetch;
+  };
   /**
    * Escape hatch that disables the SDK's at-rest encryption (SPEC §4.3). Decrypted note data, TXO
    * records, balances, and history are AEAD-encrypted at rest by default under a per-wallet key the

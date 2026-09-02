@@ -4,6 +4,7 @@
 import { fetchLogsRanged, type GetLogsFn } from './ranged-fetch';
 import { decodePoolEvents, type ParsedPoolLog } from './event-decoder';
 import { parseQuickSync } from './quick-sync-wire';
+import { IndexerHttpError } from '../errors';
 import type { EventBatch, EventSource } from './index';
 
 /**
@@ -56,7 +57,11 @@ export class IndexerEventSource implements EventSource {
   constructor(options: IndexerEventSourceOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
     this.chainId = options.chainId;
-    this.fetchFn = options.fetchFn ?? fetch;
+    // Wrap (don't store bare) the global fetch: `this.fetchFn(url)` is a method call, so an unbound
+    // native `fetch` would run with `this === this instance`. Browser `fetch` is a Web IDL operation
+    // that brand-checks its receiver and throws `Illegal invocation` for a non-global `this`. The
+    // receiver-agnostic wrapper also survives a later reassignment of the global fetch.
+    this.fetchFn = options.fetchFn ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
   }
 
   async getEvents(
@@ -66,7 +71,7 @@ export class IndexerEventSource implements EventSource {
   ): Promise<EventBatch> {
     const url = `${this.baseUrl}/v2/quick-sync/${this.chainId}?fromBlock=${fromBlock}&toBlock=${toBlock}`;
     const res = await this.fetchFn(url);
-    if (!res.ok) throw new Error(`quick-sync: indexer responded ${res.status} for ${url}`);
+    if (!res.ok) throw new IndexerHttpError(`quick-sync: indexer responded ${res.status} for ${url}`, { status: res.status });
     const { events, syncedThroughBlock } = parseQuickSync(await res.json());
     // Never claim past the requested window even if the indexer over-reports its head.
     const covered = Math.min(syncedThroughBlock, toBlock);

@@ -45,6 +45,29 @@ export class QuickSyncSchemaError extends ArmadaError {
 }
 
 /**
+ * A quick-sync request to the indexer returned a non-OK HTTP status (e.g. a 404 from a legacy/wrong
+ * endpoint). Typed distinctly from the schema/root errors so the untrusted-indexer fallback can report
+ * the true cause (`indexer-http-error`, carrying `status`) instead of a misleading `root-mismatch`.
+ */
+export class IndexerHttpError extends ArmadaError {
+  readonly code = 'INDEXER_HTTP';
+  readonly status: number;
+  constructor(message: string, options: { status: number; cause?: unknown }) {
+    super(message, options.cause !== undefined ? { cause: options.cause } : undefined);
+    this.status = options.status;
+  }
+}
+
+/**
+ * An append-only merkletree received a leaf whose position isn't the tree's next slot (SPEC §4.3) — a
+ * gap that would corrupt every later proof. Typed so the quick-sync fallback classifier reports it as
+ * `position-gap` by `code`, not by matching message text.
+ */
+export class PositionGapError extends ArmadaError {
+  readonly code = 'POSITION_GAP';
+}
+
+/**
  * Imported or derived key material failed validation (SPEC §4.2): malformed hex, wrong length, a
  * zero scalar, or a Baby Jubjub point that is off-curve / outside the prime-order subgroup / the
  * identity. Rejected, never silently clamped — a clamped key yields a wrong wallet that scans nothing.

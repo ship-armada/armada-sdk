@@ -1,7 +1,7 @@
 // ABOUTME: Tests for the concrete ArtifactSource impls (§4.5) — filesystem reads the armada-circuits
 // ABOUTME: build layout from disk; HTTP fetches the same layout (injected fetch), with 404 handling.
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { readFileSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -91,5 +91,32 @@ describe('ArtifactSource impls (§4.5)', () => {
       fetchFn: (async (): Promise<Response> => ({ ok: false, status: 404 } as unknown as Response)) as unknown as typeof fetch,
     });
     await expect(source.resolve(SHAPE)).rejects.toThrow(/fetch failed \(404\)/);
+  });
+
+  describe('default fetch `this` binding', () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('does not throw Illegal invocation when the global fetch is receiver-checked (browser)', async () => {
+      // WHY: same Web IDL receiver-check as IndexerEventSource — native browser `fetch` throws
+      // `Illegal invocation` when called as a method (`this.fetchFn(url)`). This exercises the DEFAULT
+      // branch (`options.fetchFn ?? fetch`) with a browser-faithful guarded fetch. The injected-fetch
+      // tests above miss it because Node/undici does not brand-check the receiver.
+      const guarded = function (this: unknown, url: string): Promise<Response> {
+        if (this !== undefined && this !== globalThis) {
+          throw new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation");
+        }
+        if (url.endsWith('main_1x1.wasm')) return Promise.resolve(bytesResponse(WASM));
+        if (url.endsWith('final.zkey')) return Promise.resolve(bytesResponse(ZKEY));
+        return Promise.resolve(bytesResponse(VKEY_BYTES));
+      };
+      vi.stubGlobal('fetch', guarded);
+
+      // No injected fetchFn → the source falls back to the global fetch it must call receiver-safely.
+      const source = new HttpArtifactSource('https://cdn.example/artifacts', { dangerouslySkipIntegrity: true });
+      const set = await source.resolve(SHAPE);
+      expect(Array.from(set.wasm)).toEqual(Array.from(WASM));
+    });
   });
 });
