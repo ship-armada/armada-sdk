@@ -96,6 +96,17 @@ export interface Wallet {
    * (a token fully spent emits a zero). `scan:error` fires if the scan throws.
    */
   on<K extends keyof SyncEventMap>(event: K, listener: (payload: SyncEventMap[K]) => void): Unsubscribe;
+  /**
+   * Keep the wallet synced automatically (SPEC §4.4, issue #59): runs `sync()` immediately, then every
+   * `intervalMs` (default `pool.autoSyncIntervalMs`, 10s) with exponential backoff on error, until the
+   * returned function is called (or the SDK is closed). A watcher only *schedules* the verified pull
+   * `sync()` — it adds no trust surface — and coalesces with manual `sync()`/post-tx refreshes. Errors
+   * surface through the `scan:error` event and the optional `onError`; the loop keeps running.
+   *
+   * Runs `sync()` once immediately by default; pass `immediate: false` to wait one interval (e.g. when
+   * you've just synced explicitly). Works view-only. Throws `InvalidRequestError` if already watching.
+   */
+  watch(options?: { intervalMs?: number; immediate?: boolean; onError?: (err: Error) => void }): Unsubscribe;
 }
 
 export interface PlanTransferRequest {

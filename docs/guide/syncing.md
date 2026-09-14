@@ -34,6 +34,34 @@ const { syncedThrough, syncing } = await wallet.syncStatus();
 Ephemeral wallets are the exception: they are in-memory only and do not persist a checkpoint (see
 [Wallets](./wallets)).
 
+## Staying synced automatically
+
+Rather than call `sync()` on your own timer, `watch()` keeps the wallet current for you. It runs
+`sync()` immediately, then every `intervalMs` (default 10s), and returns a function that stops it:
+
+```ts
+const unwatch = wallet.watch();
+// …later
+unwatch();
+```
+
+Pass options to tune it:
+
+```ts
+const unwatch = wallet.watch({
+  intervalMs: 5_000,        // override the default cadence
+  immediate: false,         // wait one interval before the first sync (e.g. you just synced)
+  onError: (err) => console.warn('auto-sync', err),
+});
+```
+
+`watch()` only *schedules* the same verified `sync()` — it adds no trust surface. A failed sync does
+not stop the loop: it is reported through `onError` and the `scan:error` event, and the next attempt
+backs off exponentially (capped at 30s) until one succeeds. Auto-sync coalesces with any manual
+`sync()` or post-transaction refresh, so overlapping calls are safe. A wallet can only have one
+watcher at a time — calling `watch()` again while watching throws; stop the current one first. The
+default cadence is `pool.autoSyncIntervalMs`. Watchers are also stopped when the SDK is closed.
+
 ## Reorg safety
 
 Two optional fields on the pool config guard against chain reorganizations. Both default to `0`:

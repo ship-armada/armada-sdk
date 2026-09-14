@@ -92,6 +92,10 @@ export type {
   ReceiverNoteKeys,
 } from './note-crypto';
 
+// Auto-sync loop — self-scheduling sync() driver with error backoff (issue #59).
+export { startAutoSync } from './auto-sync';
+export type { AutoSyncOptions } from './auto-sync';
+
 // Balance aggregation — per-token spendable/pending from the TXO set + spent nullifiers.
 export { computeBalances, txoFromNote, tokenHashKey, withTokenAddresses } from './balances';
 export type { TXO, SpentNullifier, PendingSpend, TokenBalance, BalanceOptions } from './balances';
