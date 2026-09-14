@@ -39,6 +39,15 @@ export interface PoolConfig {
    * of failing late at artifact resolution / on-chain. Omit to skip the check.
    */
   readonly supportedShapes?: readonly string[];
+  /**
+   * How long (ms) an optimistic in-flight spend hold survives before it's auto-released (issue #55). When
+   * a spend's transaction is submitted, `wallet.markSpendPending` holds its input notes out of selection
+   * so a rapid follow-up spend can't reselect them before the on-chain `Nullified` event is scanned. A
+   * confirmed spend clears its hold automatically; this TTL is the safety net so a dropped/never-mined
+   * (or app-crash-before-`clearSpendPending`) submission can't lock its inputs forever, including across a
+   * reload. Set it comfortably above the submit→confirm→scan latency (default 300000 = 5 min).
+   */
+  readonly pendingSpendTtlMs?: number;
 }
 
 export interface RpcConfig {

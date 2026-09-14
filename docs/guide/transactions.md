@@ -138,3 +138,36 @@ proved transaction struct to embed in the wrapper call instead of the bare `tran
 
 A handle can be invalidated once used: `invalidate()` marks it spent, `isValid` reflects its state,
 and `expiresAt` is set when the proof has a validity window.
+
+## Tracking in-flight spends
+
+A note is only removed from the wallet's spendable set once its on-chain `Nullified` event has been
+scanned. Between submitting a spend and that event arriving, the input notes still look spendable — so
+two spends issued in quick succession can select the same note, and the second reverts on-chain with
+`Note already spent`.
+
+After you submit, call `markSpendPending` with the plan and the transaction hash. The wallet holds
+that plan's input notes out of selection and out of the `spendable` balance until the spend confirms:
+
+```ts
+const proof = await wallet.prove(plan);
+const { to, data, value } = proof.toTransactCalldata();
+const txid = await submit({ to, data, value }); // your provider / broadcaster
+
+wallet.markSpendPending(plan, txid); // a rapid follow-up planTransfer now skips these notes
+```
+
+The hold is released automatically when the spend's `Nullified` event is scanned. If the transaction
+is dropped or reverts, release the notes immediately so they can be respent:
+
+```ts
+wallet.clearSpendPending(txid);
+```
+
+As a safety net, holds also expire after `pool.pendingSpendTtlMs` (default 5 minutes), so a submission
+that never confirms — even across a reload — can't lock its inputs forever. While held, a note's value
+is reported under `pendingSpent` (rather than `spendable`) in the `balances()` entry for its token.
+
+`markSpendPending` requires a spend-capable wallet; `clearSpendPending` is always safe to call. This
+matters for apps that issue spends back-to-back; a serialized one-at-a-time flow that refreshes
+balances between transactions is unaffected.

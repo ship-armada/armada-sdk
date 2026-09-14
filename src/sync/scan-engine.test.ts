@@ -245,4 +245,94 @@ describe('wallet scan orchestrator (§4.4)', () => {
       { tree: 0, nullifier: TransactNote.getNullifier(NK, 1) },
     ]);
   });
+
+  describe('optimistic in-flight spend tracking (issue #55)', () => {
+    const nf = (position: number, tree = 0) => ({ tree, nullifier: TransactNote.getNullifier(NK, position) });
+    const BAL = { currentBlock: 200, finalityThreshold: 10 };
+
+    async function twoNoteState(): Promise<WalletScanState> {
+      const state = new WalletScanState();
+      await state.apply(
+        { ...noEvents(), transacts: [mkTransact(0, 0, leafHex(80)), mkTransact(0, 1, leafHex(81))] },
+        { transact: async () => owned(TOKEN, 100n) },
+      );
+      return state;
+    }
+
+    it('excludes a pending-spent note from spendableTxos so it is not reselected', async () => {
+      const state = await twoNoteState();
+      state.markSpendPending([nf(0)], TXID, 1000);
+      const spendable = state.spendableTxos(NK);
+      expect(spendable).toHaveLength(1);
+      expect(spendable[0]!.position).toBe(1);
+    });
+
+    it('reflects the pending spend in balances (out of spendable, into pendingSpent)', async () => {
+      const state = await twoNoteState();
+      state.markSpendPending([nf(0)], TXID, 1000);
+      expect(state.balances(NK, BAL)).toEqual([{ tokenHash: TOKEN, spendable: 100n, pending: 0n, pendingSpent: 100n }]);
+    });
+
+    it('a confirmed Nullified event supersedes the optimistic hold (no double bookkeeping)', async () => {
+      const state = await twoNoteState();
+      state.markSpendPending([nf(0)], TXID, 1000);
+      expect(state.pendingSpends()).toHaveLength(1);
+      // The real spend confirms on-chain — the same nullifier arrives in a scan batch.
+      await state.apply(
+        { ...noEvents(), nullifiers: [{ ...nf(0), blockNumber: 1, txid: TXID }] },
+        { transact: async () => undefined },
+      );
+      expect(state.pendingSpends()).toHaveLength(0); // optimistic entry dropped — confirmed set is authoritative
+      const spendable = state.spendableTxos(NK);
+      expect(spendable).toHaveLength(1);
+      expect(spendable[0]!.position).toBe(1);
+      // Position 0 is now genuinely spent → out of balances entirely (not lingering as pendingSpent).
+      expect(state.balances(NK, BAL)).toEqual([{ tokenHash: TOKEN, spendable: 100n, pending: 0n }]);
+    });
+
+    it('markSpendPending ignores a note already confirmed-spent (confirmed set wins)', async () => {
+      const state = await twoNoteState();
+      await state.apply(
+        { ...noEvents(), nullifiers: [{ ...nf(0), blockNumber: 1, txid: TXID }] },
+        { transact: async () => undefined },
+      );
+      state.markSpendPending([nf(0)], '0xother', 1000);
+      expect(state.pendingSpends()).toHaveLength(0);
+    });
+
+    it('clearSpendPending releases a submission by txid (dropped/reverted tx)', async () => {
+      const state = await twoNoteState();
+      state.markSpendPending([nf(0)], TXID, 1000);
+      state.markSpendPending([nf(1)], '0xother', 1000);
+      state.clearSpendPending(TXID);
+      // Only the other submission's hold remains.
+      expect(state.pendingSpends().map((p) => p.txid)).toEqual(['0xother']);
+      expect(state.spendableTxos(NK).map((t) => t.position)).toEqual([0]);
+    });
+
+    it('prunePendingSpends drops holds older than the cutoff, keeps newer ones', async () => {
+      const state = await twoNoteState();
+      state.markSpendPending([nf(0)], '0xstale', 1000);
+      state.markSpendPending([nf(1)], '0xfresh', 5000);
+      state.prunePendingSpends(3000); // cutoff between the two addedAt timestamps
+      expect(state.pendingSpends().map((p) => p.txid)).toEqual(['0xfresh']);
+      expect(state.spendableTxos(NK).map((t) => t.position)).toEqual([0]);
+    });
+
+    it('persists pending holds across a snapshot/restore round-trip', async () => {
+      const state = await twoNoteState();
+      state.markSpendPending([nf(0)], TXID, 1000);
+      const restored = WalletScanState.restore(state.snapshot());
+      expect(restored.spendableTxos(NK).map((t) => t.position)).toEqual([1]);
+      expect(restored.pendingSpends()).toEqual(state.pendingSpends());
+    });
+
+    it('is tree-scoped: a hold in tree 0 does not touch the same position in tree 1', async () => {
+      const state = new WalletScanState();
+      await state.apply({ ...noEvents(), transacts: [mkTransact(0, 0, leafHex(80))] }, { transact: async () => owned(TOKEN, 100n) });
+      await state.apply({ ...noEvents(), transacts: [mkTransact(1, 0, leafHex(81))] }, { transact: async () => owned(TOKEN, 200n) });
+      state.markSpendPending([nf(0, 0)], TXID, 1000); // hold tree-0 position-0 only
+      expect(state.spendableTxos(NK).map((t) => ({ tree: t.tree, position: t.position }))).toEqual([{ tree: 1, position: 0 }]);
+    });
+  });
 });
