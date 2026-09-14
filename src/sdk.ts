@@ -64,7 +64,9 @@ import type { ProveOptions, ProverAdapter, ArtifactSource } from './prover/index
 import {
   NoSpendCapabilityError,
   RootMismatchError,
+  InvalidRequestError,
 } from './errors';
+import { startAutoSync } from './sync/auto-sync';
 import type { ArmadaSdk, ArmadaSdkConfig, TelemetrySink } from './index';
 
 // Per-instance shared context handed to each wallet.
@@ -90,6 +92,10 @@ interface SdkContext {
   readonly confirmationDepth: number;
   /** TTL (ms) for optimistic in-flight spend holds before auto-release (issue #55; default 300000). */
   readonly pendingSpendTtlMs: number;
+  /** Default cadence (ms) for `wallet.watch()` auto-sync (issue #59; default 10000, matching stock). */
+  readonly autoSyncIntervalMs: number;
+  /** Active `wallet.watch()` stop functions for this SDK instance — stopped on `close()`. */
+  readonly watchers: Set<() => void>;
   /** Circuit shapes the deployment can prove — plan-time fail-fast set, or undefined to skip the check. */
   readonly supportedShapes: ReadonlySet<string> | undefined;
   /** Canonical 32-byte hash (no 0x) of USDC — maps owned-note token hashes back to the address. */
@@ -332,6 +338,8 @@ class ArmadaWallet implements Wallet {
   // The in-flight sync run, if any — concurrent sync() calls coalesce onto it instead of both mutating
   // the shared append-only scan state (which would double-apply a range and throw a position gap).
   private syncInFlight: Promise<{ fromBlock: number; syncedThrough: number; scanned: boolean }> | undefined;
+  // The active auto-sync unsubscribe (issue #59), if this wallet is watching — one loop per wallet.
+  private watchStop: Unsubscribe | undefined;
 
   constructor(
     private readonly keyset: Keyset,
@@ -468,6 +476,28 @@ class ArmadaWallet implements Wallet {
 
   on<K extends keyof SyncEventMap>(event: K, listener: (payload: SyncEventMap[K]) => void): Unsubscribe {
     return this.emitter.on(event, listener);
+  }
+
+  watch(options?: { intervalMs?: number; immediate?: boolean; onError?: (err: Error) => void }): Unsubscribe {
+    if (this.watchStop !== undefined) {
+      throw new InvalidRequestError('watch: this wallet is already watching (stop the existing watcher first)');
+    }
+    const intervalMs = options?.intervalMs ?? this.ctx.autoSyncIntervalMs;
+    const stop = startAutoSync(() => this.sync(), {
+      intervalMs,
+      ...(options?.immediate !== undefined ? { immediate: options.immediate } : {}),
+      ...(options?.onError !== undefined ? { onError: options.onError } : {}),
+    });
+    // Wrap stop so it also deregisters from the instance + SDK-close registry, and is idempotent.
+    const unsubscribe = (): void => {
+      if (this.watchStop !== unsubscribe) return;
+      stop();
+      this.ctx.watchers.delete(unsubscribe);
+      this.watchStop = undefined;
+    };
+    this.watchStop = unsubscribe;
+    this.ctx.watchers.add(unsubscribe); // so close() halts a still-running watcher (§ leaked-timer safety)
+    return unsubscribe;
   }
 
   async syncStatus(): Promise<{ syncedThrough: number; syncing: boolean }> {
@@ -967,6 +997,8 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
     finalityThreshold: config.pool.finalityThreshold ?? 0,
     confirmationDepth: config.pool.confirmationDepth ?? 0,
     pendingSpendTtlMs: config.pool.pendingSpendTtlMs ?? 300_000,
+    autoSyncIntervalMs: config.pool.autoSyncIntervalMs ?? 10_000,
+    watchers: new Set<() => void>(),
     supportedShapes: config.pool.supportedShapes !== undefined ? new Set(config.pool.supportedShapes) : undefined,
     usdcHash,
     tokenByHash,
@@ -1027,6 +1059,9 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
   return {
     wallet,
     async close() {
+      // Stop any active wallet.watch() loops first (issue #59) so a watcher can't fire sync() against a
+      // torn-down provider. Copy to an array: each stop() mutates the set it's iterating.
+      for (const stop of [...ctx.watchers]) stop();
       // Release every resource even if an earlier close throws: the ethers provider holds polling
       // timers/sockets that keep a Node process alive (a leak in the relayer/tests) if never destroyed.
       try {

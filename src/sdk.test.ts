@@ -19,7 +19,7 @@ import { RootMismatchError, QuickSyncSchemaError, IndexerHttpError, PositionGapE
 import { deriveKeyset, LocalSigner } from './wallet/index';
 import { saveScanState, WalletScanState } from './sync/index';
 import { MemoryStorageAdapter } from './storage/index';
-import { NoSpendCapabilityError, InvalidKeyMaterialError } from './errors';
+import { NoSpendCapabilityError, InvalidKeyMaterialError, InvalidRequestError } from './errors';
 import { initPoseidonPromise, Mnemonic } from './core/index';
 import type { ProverAdapter, ArtifactSource, ArtifactSet, Groth16Proof } from './prover/index';
 import type { ArmadaSdkConfig } from './index';
@@ -55,6 +55,34 @@ describe('createArmadaSdk (§4.1)', () => {
     const sdk = await createArmadaSdk(makeConfig());
     const wallet = await sdk.wallet.fromRootSecret(seed(0x11), { creationBlock: 1 });
     expect(wallet.shieldedAddress).toBe((await deriveKeyset(seed(0x11))).shieldedAddress);
+  });
+
+  it('watch() returns an unsubscribe, rejects a double-watch, and re-enables after stop (issue #59)', async () => {
+    const sdk = await createArmadaSdk(makeConfig());
+    const wallet = await sdk.wallet.fromRootSecret(seed(0x55), { creationBlock: 1 });
+    // immediate:false + a long interval so the offline suite never dials the RPC (no network).
+    const opts = { intervalMs: 3_600_000, immediate: false as const };
+
+    const unsubscribe = wallet.watch(opts);
+    expect(typeof unsubscribe).toBe('function');
+    // A second watch while already watching is a programming error.
+    expect(() => wallet.watch(opts)).toThrow(InvalidRequestError);
+
+    unsubscribe();
+    // After stopping, watching again is allowed (state was released); idempotent unsubscribe is safe.
+    const again = wallet.watch(opts);
+    expect(() => again()).not.toThrow();
+    expect(() => again()).not.toThrow();
+  });
+
+  it('close() stops active watchers (issue #59)', async () => {
+    const sdk = await createArmadaSdk(makeConfig());
+    const wallet = await sdk.wallet.fromRootSecret(seed(0x56), { creationBlock: 1 });
+    wallet.watch({ intervalMs: 3_600_000, immediate: false });
+    // close() halts the watcher; after it, a fresh watch() on the same wallet must not throw
+    // (i.e. the watcher registry released it), proving close() ran the stop.
+    await sdk.close();
+    expect(() => wallet.watch({ intervalMs: 3_600_000, immediate: false })).not.toThrow();
   });
 
   it('fromRootSecret is spend-capable by default; viewOnly opts out; explicit signer wins', async () => {

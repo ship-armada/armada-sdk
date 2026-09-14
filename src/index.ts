@@ -48,6 +48,12 @@ export interface PoolConfig {
    * reload. Set it comfortably above the submit→confirm→scan latency (default 300000 = 5 min).
    */
   readonly pendingSpendTtlMs?: number;
+  /**
+   * Default interval (ms) for `wallet.watch()` auto-sync (issue #59). `watch()` runs `sync()` on this
+   * cadence so a wallet stays current without the consumer writing a poll loop; a per-call `intervalMs`
+   * overrides it. Default `10000` (10s), matching the stock railgun engine's polling cadence.
+   */
+  readonly autoSyncIntervalMs?: number;
 }
 
 export interface RpcConfig {
