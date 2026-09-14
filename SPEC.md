@@ -832,8 +832,8 @@ importable in a browser bundle without polyfills beyond snarkjs's own needs; no
 sub-packages `circomlibjs` / `poseidon-hash-wasm` / `curve25519-scalarmult-wasm` remain external
 per §3.4); `rg "POI" src/ vendor/` returns nothing (§3.5). The **keyset** and **note-ciphertext**
 vectors are wallet-layer — full seed→keyset derivation and ECIES decrypt need the viewing *private*
-key — so they verify in Phase 2 (see Phase 2 acceptance). They are **tracked, not dropped** (issue +
-`it.todo` markers in the differential runner + this note).
+key — so they verify in Phase 2 (see Phase 2 acceptance). They are **tracked, not dropped** (issue #4
++ this note).
 
 ### Phase 2 — Wallet layer replacement (the bulk)
 
@@ -863,9 +863,13 @@ cross-chain unshield binding works end-to-end on local Anvil (extend
 interface with live progress; kill-the-tab-mid-scan leaves no plaintext note data at rest;
 **headless integrator profile** — a Node-only e2e (no browser APIs) covering shield → transfer
 → unshield through an `ExternalSigner` test double, plus balance reconciliation through a
-view-only wallet; the **Phase 1-deferred differential vectors — keyset (full seed→keyset
-derivation) and note-ciphertext (ECIES decrypt with the viewing private key) — now pass** through
-the wallet layer; `rg -i "salt|paros" src/` in the armada-sdk repo returns nothing. POC-side
+view-only wallet; the **Phase 1-deferred differential vectors now pass** through the wallet layer —
+keyset via full seed→keyset byte-parity (`src/wallet/keys.test.ts` reproduces `keyset-vectors.json`),
+and note-ciphertext via an encrypt→decrypt round-trip through the vendored engine ECIES codec plus
+structural envelope parity against `note-ciphertext-vectors.json` (`src/sync/note-crypto.test.ts`). A
+literal differential decrypt of the captured ciphertext is not possible: the fixture recorded only the
+receiver's viewing *public* key, not the *private* key needed to decrypt. `rg -i "salt|paros" src/` in
+the armada-sdk repo returns nothing. POC-side
 integration consumes a pinned prerelease build of the SDK (§3.1), with the consumed version
 recorded in each integration PR.
 
