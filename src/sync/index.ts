@@ -94,7 +94,7 @@ export type {
 
 // Balance aggregation — per-token spendable/pending from the TXO set + spent nullifiers.
 export { computeBalances, txoFromNote, tokenHashKey, withTokenAddresses } from './balances';
-export type { TXO, SpentNullifier, TokenBalance, BalanceOptions } from './balances';
+export type { TXO, SpentNullifier, PendingSpend, TokenBalance, BalanceOptions } from './balances';
 
 // Pool event decoder — Shield/Transact/Nullified args → typed commitments/ciphertexts/nullifiers.
 export {

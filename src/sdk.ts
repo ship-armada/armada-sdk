@@ -88,6 +88,8 @@ interface SdkContext {
   readonly finalityThreshold: number;
   /** Blocks to stay behind head when scanning — reorg safety (default 0). */
   readonly confirmationDepth: number;
+  /** TTL (ms) for optimistic in-flight spend holds before auto-release (issue #55; default 300000). */
+  readonly pendingSpendTtlMs: number;
   /** Circuit shapes the deployment can prove — plan-time fail-fast set, or undefined to skip the check. */
   readonly supportedShapes: ReadonlySet<string> | undefined;
   /** Canonical 32-byte hash (no 0x) of USDC — maps owned-note token hashes back to the address. */
@@ -627,6 +629,7 @@ class ArmadaWallet implements Wallet {
   // including a token fully spent (drops out of `balances()`, so we emit a zero). Unregistered tokens
   // (unknown hash → no address) are skipped. First sync after load emits the baseline for held tokens.
   private emitBalanceUpdates(head: number): void {
+    this.prunePendingSpends();
     const balances = this.scanState.balances(this.keyset.nullifyingKey, { currentBlock: head, finalityThreshold: this.ctx.finalityThreshold });
     const seen = new Set<string>();
     for (const b of balances) {
@@ -657,6 +660,7 @@ class ArmadaWallet implements Wallet {
   }
 
   async balances(): Promise<TokenBalance[]> {
+    this.prunePendingSpends();
     const head = await this.ctx.provider.getBlockNumber();
     const raw = this.scanState.balances(this.keyset.nullifyingKey, { currentBlock: head, finalityThreshold: this.ctx.finalityThreshold });
     return withTokenAddresses(raw, (h) => this.resolveTokenAddress(h));
@@ -730,6 +734,7 @@ class ArmadaWallet implements Wallet {
 
   async planTransfer(request: PlanTransferRequest): Promise<Plan> {
     if (!this.canSpend) throw new NoSpendCapabilityError('planTransfer: wallet has no SpendSigner');
+    this.prunePendingSpends();
     const txos = this.scanState.spendableTxos(this.keyset.nullifyingKey);
     const roots = new Map<number, bigint>();
     for (const txo of txos) {
@@ -829,6 +834,25 @@ class ArmadaWallet implements Wallet {
       },
       options,
     );
+  }
+
+  markSpendPending(plan: Plan, txid: string): void {
+    if (!this.canSpend) throw new NoSpendCapabilityError('markSpendPending: wallet has no SpendSigner');
+    const entries = plan.selectedInputs.map((txo) => ({
+      tree: txo.tree,
+      nullifier: TransactNote.getNullifier(this.keyset.nullifyingKey, txo.position),
+    }));
+    this.scanState.markSpendPending(entries, txid, Date.now());
+  }
+
+  clearSpendPending(txid: string): void {
+    this.scanState.clearSpendPending(txid);
+  }
+
+  // Release optimistic in-flight spend holds past their TTL (issue #55) before any read that depends on
+  // spendability — the safety net for a submission that never confirmed (dropped/reverted/app crash).
+  private prunePendingSpends(): void {
+    this.scanState.prunePendingSpends(Date.now() - this.ctx.pendingSpendTtlMs);
   }
 
   async exportDisclosure(): Promise<Uint8Array> {
@@ -942,6 +966,7 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
     deployBlock: config.pool.deployBlock,
     finalityThreshold: config.pool.finalityThreshold ?? 0,
     confirmationDepth: config.pool.confirmationDepth ?? 0,
+    pendingSpendTtlMs: config.pool.pendingSpendTtlMs ?? 300_000,
     supportedShapes: config.pool.supportedShapes !== undefined ? new Set(config.pool.supportedShapes) : undefined,
     usdcHash,
     tokenByHash,

@@ -139,6 +139,26 @@ describe('createArmadaSdk (§4.1)', () => {
     await expect(viewOnly.planTransfer({ outputs: [{ to0zk: '0zk', amount: 1n }], fee })).rejects.toThrow(NoSpendCapabilityError);
   });
 
+  it('markSpendPending requires spend capability; clearSpendPending is always safe (issue #55)', async () => {
+    const sdk = await createArmadaSdk(makeConfig());
+    const full = await sdk.wallet.fromRootSecret(seed(0x11), {
+      creationBlock: 1,
+      signer: await LocalSigner.fromRootSecret(seed(0x11)),
+    });
+    const viewOnly = await sdk.wallet.viewOnlyFromViewingKey(full.shareViewingKey(), { creationBlock: 1 });
+
+    // A plan only needs its selected inputs' (tree, position) to derive the nullifiers to hold.
+    const plan = { selectedInputs: [{ tree: 0, position: 0 }] } as unknown as Parameters<typeof full.markSpendPending>[0];
+
+    // View-only wallets can't spend, so they can't have an in-flight spend to track.
+    expect(() => viewOnly.markSpendPending(plan, '0xabc')).toThrow(NoSpendCapabilityError);
+    // Spend-capable: marking + clearing are synchronous and don't throw.
+    expect(() => full.markSpendPending(plan, '0xabc')).not.toThrow();
+    expect(() => full.clearSpendPending('0xabc')).not.toThrow();
+    // clearSpendPending is a no-op safe call even with nothing pending / on a view-only wallet.
+    expect(() => viewOnly.clearSpendPending('0xdef')).not.toThrow();
+  });
+
   it('syncStatus reports the checkpoint (creationBlock-1 fresh) and syncing=false without a sync (P4.6)', async () => {
     const sdk = await createArmadaSdk(makeConfig());
     const wallet = await sdk.wallet.fromRootSecret(seed(0x66), { creationBlock: 5 });

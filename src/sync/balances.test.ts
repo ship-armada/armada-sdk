@@ -3,7 +3,7 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initPoseidonPromise, TransactNote } from '../core/index';
-import { computeBalances, txoFromNote, tokenHashKey, withTokenAddresses, type TXO, type SpentNullifier } from './balances';
+import { computeBalances, txoFromNote, tokenHashKey, withTokenAddresses, type TXO, type SpentNullifier, type PendingSpend } from './balances';
 
 // Two arbitrary 32-byte token hashes (no 0x).
 const TOKEN_A = 'aa'.repeat(32);
@@ -16,6 +16,14 @@ const spentFor = (tree: number, position: number): SpentNullifier => ({
   nullifier: TransactNote.getNullifier(NULLIFYING_KEY, position),
   txid: `0x${'ff'.repeat(32)}`,
   blockNumber: 100,
+});
+
+// Helper: an optimistic in-flight spend marker for a TXO, using the real nullifier function.
+const pendingFor = (tree: number, position: number, txid = `0x${'cc'.repeat(32)}`): PendingSpend => ({
+  tree,
+  nullifier: TransactNote.getNullifier(NULLIFYING_KEY, position),
+  txid,
+  addedAt: 1_000,
 });
 
 const txo = (over: Partial<TXO> & Pick<TXO, 'tree' | 'position' | 'value'>): TXO => ({
@@ -60,6 +68,47 @@ describe('balance aggregation (§4.4)', () => {
     });
     // Position 1 in tree 0 is spent → only position 0 remains.
     expect(balances).toEqual([{ tokenHash: TOKEN_A, spendable: 100n, pending: 0n }]);
+  });
+
+  it('holds an in-flight (pending-spent) TXO out of spendable and into pendingSpent', () => {
+    const txos: TXO[] = [
+      txo({ tree: 0, position: 0, value: 100n }),
+      txo({ tree: 0, position: 1, value: 50n }),
+    ];
+    // Position 1 has a submitted-but-unconfirmed spend.
+    const balances = computeBalances(txos, [], NULLIFYING_KEY, { currentBlock: 1000, finalityThreshold: 10 }, [
+      pendingFor(0, 1),
+    ]);
+    expect(balances).toEqual([{ tokenHash: TOKEN_A, spendable: 100n, pending: 0n, pendingSpent: 50n }]);
+  });
+
+  it('omits pendingSpent entirely when there are no in-flight spends', () => {
+    const txos: TXO[] = [txo({ tree: 0, position: 0, value: 100n })];
+    const balances = computeBalances(txos, [], NULLIFYING_KEY, { currentBlock: 1000, finalityThreshold: 10 }, []);
+    // No pendingSpent key at all — absent means 0n (matches the tokenAddress-when-defined convention).
+    expect(balances).toEqual([{ tokenHash: TOKEN_A, spendable: 100n, pending: 0n }]);
+  });
+
+  it('a confirmed nullifier takes precedence over an optimistic pending mark on the same note', () => {
+    const txos: TXO[] = [txo({ tree: 0, position: 0, value: 100n })];
+    // Same note is BOTH confirmed-spent and (stale) pending — confirmed wins: it leaves the balance entirely.
+    const balances = computeBalances(txos, [spentFor(0, 0)], NULLIFYING_KEY, { currentBlock: 1000, finalityThreshold: 10 }, [
+      pendingFor(0, 0),
+    ]);
+    expect(balances).toEqual([]);
+  });
+
+  it('does NOT cross-match a pending spend across trees (tree-scoped, 9.5.4 discipline)', () => {
+    // Same position (5) in two trees ⇒ identical nullifier value. A pending spend in tree 0 must not
+    // hold the tree-1 note.
+    const txos: TXO[] = [
+      txo({ tree: 0, position: 5, value: 100n }),
+      txo({ tree: 1, position: 5, value: 200n }),
+    ];
+    const balances = computeBalances(txos, [], NULLIFYING_KEY, { currentBlock: 1000, finalityThreshold: 10 }, [
+      pendingFor(0, 5),
+    ]);
+    expect(balances).toEqual([{ tokenHash: TOKEN_A, spendable: 200n, pending: 0n, pendingSpent: 100n }]);
   });
 
   it('does NOT cross-match nullifiers across trees (9.5.4 regression guard)', () => {

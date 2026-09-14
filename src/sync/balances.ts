@@ -48,6 +48,20 @@ export interface SpentNullifier {
 }
 
 /**
+ * An optimistic in-flight spend: a note the wallet has submitted a spend transaction for but has not
+ * yet seen nullified on-chain. Keyed by `(tree, nullifier)` exactly like {@link SpentNullifier}, so the
+ * real `Nullified` event supersedes it idempotently once scanned. `txid` groups the notes of one
+ * submission (for release on a dropped/reverted tx); `addedAt` (epoch ms) drives TTL expiry so an
+ * abandoned submission can't lock its inputs forever, including across a reload.
+ */
+export interface PendingSpend {
+  readonly tree: number;
+  readonly nullifier: bigint;
+  readonly txid: string;
+  readonly addedAt: number;
+}
+
+/**
  * Per-token aggregated balance. `tokenHash` is the canonical 32-byte hash (no `0x`); `tokenAddress`
  * is its registered ERC-20 address, present for every registered token and `undefined` only for a
  * hash absent from the SDK's token registry (see `withTokenAddresses`). `computeBalances` leaves
@@ -59,6 +73,13 @@ export interface TokenBalance {
   readonly tokenAddress?: `0x${string}`;
   readonly spendable: bigint;
   readonly pending: bigint;
+  /**
+   * Value of otherwise-spendable notes with an optimistic in-flight spend (a submitted, unconfirmed
+   * transaction). Kept OUT of `spendable` so a note is never offered for selection while a spend of it
+   * is already in flight, and surfaced here until the spend's `Nullified` event confirms (or the mark is
+   * cleared/expires). Present only when non-zero; treat absent as `0n`.
+   */
+  readonly pendingSpent?: bigint;
 }
 
 export interface BalanceOptions {
@@ -76,9 +97,11 @@ function spentKey(tree: number, nullifier: bigint): string {
 /**
  * Aggregate a wallet's TXOs into per-token spendable/pending balances.
  *
- * - A TXO is **spent** (contributes to neither) iff its tree-scoped nullifier
+ * - A TXO is **spent** (contributes to nothing) iff its tree-scoped nullifier
  *   `(txo.tree, getNullifier(nullifyingKey, txo.position))` appears in `spentNullifiers`.
- * - An unspent TXO is **spendable** once it has at least `finalityThreshold` confirmations
+ * - A TXO with an optimistic in-flight spend (its nullifier in `pendingSpends`, but NOT yet
+ *   confirmed-spent) contributes to **pendingSpent** — kept out of `spendable`/`pending`.
+ * - An otherwise-unspent TXO is **spendable** once it has at least `finalityThreshold` confirmations
  *   (`blockNumber <= currentBlock - finalityThreshold`), otherwise **pending**.
  *
  * Pure and deterministic: output is sorted by `tokenHash`.
@@ -88,18 +111,22 @@ export function computeBalances(
   spentNullifiers: readonly SpentNullifier[],
   nullifyingKey: bigint,
   options: BalanceOptions,
+  pendingSpends: readonly PendingSpend[] = [],
 ): TokenBalance[] {
   const spentSet = new Set(spentNullifiers.map((s) => spentKey(s.tree, s.nullifier)));
+  const pendingSet = new Set(pendingSpends.map((p) => spentKey(p.tree, p.nullifier)));
   const finalityCutoff = options.currentBlock - options.finalityThreshold;
 
-  const perToken = new Map<string, { spendable: bigint; pending: bigint }>();
+  const perToken = new Map<string, { spendable: bigint; pending: bigint; pendingSpent: bigint }>();
   for (const txo of txos) {
-    const nullifier = TransactNote.getNullifier(nullifyingKey, txo.position);
-    if (spentSet.has(spentKey(txo.tree, nullifier))) {
-      continue; // spent — no longer part of the balance
+    const key = spentKey(txo.tree, TransactNote.getNullifier(nullifyingKey, txo.position));
+    if (spentSet.has(key)) {
+      continue; // confirmed spent — no longer part of the balance
     }
-    const bucket = perToken.get(txo.tokenHash) ?? { spendable: 0n, pending: 0n };
-    if (txo.blockNumber <= finalityCutoff) {
+    const bucket = perToken.get(txo.tokenHash) ?? { spendable: 0n, pending: 0n, pendingSpent: 0n };
+    if (pendingSet.has(key)) {
+      bucket.pendingSpent += txo.value; // in-flight out — held aside, not spendable
+    } else if (txo.blockNumber <= finalityCutoff) {
       bucket.spendable += txo.value;
     } else {
       bucket.pending += txo.value;
@@ -108,7 +135,12 @@ export function computeBalances(
   }
 
   return [...perToken.entries()]
-    .map(([tokenHash, b]) => ({ tokenHash, spendable: b.spendable, pending: b.pending }))
+    .map(([tokenHash, b]) => ({
+      tokenHash,
+      spendable: b.spendable,
+      pending: b.pending,
+      ...(b.pendingSpent > 0n ? { pendingSpent: b.pendingSpent } : {}),
+    }))
     .sort((a, b) => (a.tokenHash < b.tokenHash ? -1 : a.tokenHash > b.tokenHash ? 1 : 0));
 }
 

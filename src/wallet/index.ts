@@ -66,6 +66,18 @@ export interface Wallet {
   preflight(plan: Plan, options?: { feeQuote?: FeeQuote }): Promise<PreflightResult>;
   /** Requests signatures from the attached SpendSigner during witness assembly, then proves. */
   prove(plan: Plan, options?: ProveOptions): Promise<ProofHandle>;
+  /**
+   * Optimistically mark a plan's input notes as spent when its transaction is submitted (issue #55), so a
+   * rapid follow-up `planTransfer` won't reselect them before the on-chain `Nullified` event is scanned —
+   * turning the "second tx reverts with Note already spent" race into a clean second selection. Call it
+   * right after broadcasting; the `txid` identifies the submission. Idempotent per note. The hold is
+   * released automatically when the spend confirms (its `Nullified` event supersedes it), by
+   * `clearSpendPending(txid)` on a known drop/revert, or by the `pendingSpendTtlMs` safety-net TTL.
+   * Requires spend capability.
+   */
+  markSpendPending(plan: Plan, txid: string): void;
+  /** Release the optimistic holds for a submission that will not confirm (dropped/reverted tx). */
+  clearSpendPending(txid: string): void;
   /** Verifiable single-note disclosure receipt (SPEC §5.3). Available on view-only wallets too. */
   exportDisclosure(txoRef: string): Promise<Uint8Array>;
   /** Export this wallet's shareable viewing key (Railgun wire format) — grants view-only capability. */
