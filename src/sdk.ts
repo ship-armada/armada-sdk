@@ -18,6 +18,7 @@ import {
   loadScanState,
   scanStateKey,
   tokenHashKey,
+  erc20AddressFromHash,
   withTokenAddresses,
   encodeSelfMetadata,
   POOL_V2_EVENT_ABI,
@@ -101,9 +102,6 @@ interface SdkContext {
   readonly supportedShapes: ReadonlySet<string> | undefined;
   /** Canonical 32-byte hash (no 0x) of USDC — maps owned-note token hashes back to the address. */
   readonly usdcHash: string;
-  /** hash (no 0x) → TokenData for every registered token (USDC + additionalTokens) — resolves a
-   *  balance's tokenHash back to its address for `balance:updated` emission. */
-  readonly tokenByHash: ReadonlyMap<string, TokenData>;
   /** Yield adapter address (lowercased), when configured — an unshield to it marks a yield op. */
   readonly yieldAdapterAddress?: string;
   /** CCTP messenger address, when configured — preflight checks its liveness for cross-chain plans. */
@@ -687,7 +685,9 @@ class ArmadaWallet implements Wallet {
   // isn't in the SDK's token registry. Shared by `balances()` and the `balance:updated`/`note:received`
   // emit paths so all three surfaces speak the same hash↔address mapping.
   private resolveTokenAddress(tokenHash: string): `0x${string}` | undefined {
-    return this.ctx.tokenByHash.get(tokenHashKey(tokenHash))?.tokenAddress as `0x${string}` | undefined;
+    // ERC20 token hashes are self-describing (the hash IS the padded address) — resolve any pool token
+    // directly, no registry (issue #90). Non-ERC20 (NFT) hashes are out of scope and return undefined.
+    return erc20AddressFromHash(tokenHash);
   }
 
   async balances(): Promise<TokenBalance[]> {
@@ -738,8 +738,8 @@ class ArmadaWallet implements Wallet {
       shieldRelayerFees: this.scanState.shieldRelayerFees(),
       nullifyingKey: this.keyset.nullifyingKey,
       shieldedAddress: this.keyset.shieldedAddress,
+      resolveToken: (h) => this.resolveTokenAddress(h),
       usdcHash: this.ctx.usdcHash,
-      usdcAddress: this.ctx.usdcAddress,
       ...(this.ctx.yieldAdapterAddress !== undefined ? { yieldAdapterAddress: this.ctx.yieldAdapterAddress } : {}),
     });
     if (options?.sinceBlock !== undefined) {
@@ -953,18 +953,14 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
 
   const usdcTokenData = getTokenDataERC20(config.pool.usdcAddress);
   const usdcHash = getTokenDataHash(usdcTokenData);
-  // Resolve a note's token hash → tokenData for USDC + any configured additional tokens (yield vault
-  // shares, etc.). A hash isn't reversible to an address, so only pre-registered tokens are scannable.
-  const tokenByHash = new Map<string, TokenData>();
-  for (const address of [config.pool.usdcAddress, ...(config.pool.additionalTokens ?? [])]) {
-    const tokenData = getTokenDataERC20(address);
-    tokenByHash.set(getTokenDataHash(tokenData), tokenData);
-  }
+  // Resolve a note's token hash → tokenData for ANY pool ERC20 (issue #90). An ERC20 hash IS the padded
+  // address (mirrors the stock engine's TokenDataGetter), so every ERC20 is self-describing — no registry
+  // and no pre-registration. Non-ERC20 (NFT) hashes are out of scope (SPEC §1.4) and rejected.
   const tokenDataGetter: TokenDataGetter = {
     getTokenDataFromHash: async (_v: unknown, _c: unknown, tokenHash: string): Promise<TokenData> => {
-      const tokenData = tokenByHash.get(tokenHashKey(tokenHash));
-      if (tokenData !== undefined) return tokenData;
-      throw new Error(`createArmadaSdk: unknown token hash ${tokenHash}`);
+      const address = erc20AddressFromHash(tokenHash);
+      if (address === undefined) throw new Error(`createArmadaSdk: unsupported non-ERC20 token hash ${tokenHash}`);
+      return getTokenDataERC20(address);
     },
   };
 
@@ -1014,7 +1010,6 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
     watchers: new Set<() => void>(),
     supportedShapes: config.pool.supportedShapes !== undefined ? new Set(config.pool.supportedShapes) : undefined,
     usdcHash,
-    tokenByHash,
     ...(config.pool.wrappers?.yieldAdapter !== undefined
       ? { yieldAdapterAddress: config.pool.wrappers.yieldAdapter.toLowerCase() }
       : {}),

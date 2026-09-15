@@ -11,9 +11,9 @@ export interface PoolConfig {
   readonly deployBlock: number;
   readonly usdcAddress: `0x${string}`;
   /**
-   * Extra ERC20s to scan + report balances for beyond USDC (e.g. the yield vault's share token).
-   * The token getter can only resolve a note's hash back to an address for a KNOWN token, so notes
-   * in a token not listed here (nor USDC) are skipped during scan. History stays USDC-scoped.
+   * @deprecated No longer required. ERC20 token hashes are self-describing (the hash is the padded
+   * address), so the SDK scans, reports, and reconstructs history for ANY pool ERC20 without
+   * pre-registration (issue #90). Retained for backward compatibility; currently ignored.
    */
   readonly additionalTokens?: readonly `0x${string}`[];
   readonly wrappers?: { gaslessShield?: `0x${string}`; yieldAdapter?: `0x${string}` };

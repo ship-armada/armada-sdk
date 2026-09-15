@@ -100,7 +100,7 @@ export type { AutoSyncOptions } from './auto-sync';
 export { encodeSelfMetadata, decodeSelfMetadata } from './self-metadata';
 
 // Balance aggregation — per-token spendable/pending from the TXO set + spent nullifiers.
-export { computeBalances, txoFromNote, tokenHashKey, withTokenAddresses } from './balances';
+export { computeBalances, txoFromNote, tokenHashKey, erc20AddressFromHash, withTokenAddresses } from './balances';
 export type { TXO, SpentNullifier, PendingSpend, TokenBalance, BalanceOptions } from './balances';
 
 // Pool event decoder — Shield/Transact/Nullified args → typed commitments/ciphertexts/nullifiers.

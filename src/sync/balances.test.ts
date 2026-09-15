@@ -3,7 +3,7 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initPoseidonPromise, TransactNote } from '../core/index';
-import { computeBalances, txoFromNote, tokenHashKey, withTokenAddresses, type TXO, type SpentNullifier, type PendingSpend } from './balances';
+import { computeBalances, txoFromNote, tokenHashKey, erc20AddressFromHash, withTokenAddresses, type TXO, type SpentNullifier, type PendingSpend } from './balances';
 
 // Two arbitrary 32-byte token hashes (no 0x).
 const TOKEN_A = 'aa'.repeat(32);
@@ -176,6 +176,34 @@ describe('balance aggregation (§4.4)', () => {
     // random + npk are the fields the balance summary discards but the spend witness needs.
     expect(built.random).toBe(note.random);
     expect(built.notePublicKey).toBe(note.notePublicKey);
+  });
+});
+
+describe('erc20AddressFromHash (self-describing ERC20 hashes, issue #90)', () => {
+  const ADDR = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
+  const HASH = `${'0'.repeat(24)}a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48`; // address padded to 32 bytes
+
+  it('recovers the address from a padded ERC20 token hash (bare and 0x-prefixed)', () => {
+    expect(erc20AddressFromHash(HASH)).toBe(ADDR);
+    expect(erc20AddressFromHash(`0x${HASH}`)).toBe(ADDR);
+  });
+
+  it('is case-insensitive and returns a lowercased address', () => {
+    expect(erc20AddressFromHash(HASH.toUpperCase())).toBe(ADDR);
+  });
+
+  it('pads a short (unpadded) hash before extracting', () => {
+    // A bare address with leading zeros stripped still resolves.
+    expect(erc20AddressFromHash('a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48')).toBe(ADDR);
+  });
+
+  it('returns undefined for a non-ERC20 (NFT-shaped) hash — nonzero high bytes', () => {
+    const nftHash = `ff${'0'.repeat(22)}a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48`;
+    expect(erc20AddressFromHash(nftHash)).toBeUndefined();
+  });
+
+  it('returns undefined for an over-long hash', () => {
+    expect(erc20AddressFromHash(`${HASH}00`)).toBeUndefined();
   });
 });
 

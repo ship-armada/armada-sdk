@@ -117,7 +117,12 @@ describe('reconstructHistory (H2 — sends / unshields / yield)', () => {
   const changeNote = txo({ tree: 0, position: 6, value: 400_000n, txid: SPEND, origin: 'transact', blockNumber: 30 });
   const spent: SpentNullifier[] = [{ tree: 0, nullifier: TransactNote.getNullifier(NK, 5), txid: SPEND, blockNumber: 30 }];
 
-  const base = { spentNullifiers: spent, sentOutputs: [], nullifyingKey: NK, shieldedAddress: SELF_0ZK, usdcHash: USDC_HASH, usdcAddress: USDC };
+  // Token resolver for the test's synthetic hashes: USDC + a yield-vault SHARE token.
+  const SHARE_HASH = 'cc'.repeat(32);
+  const SHARE = '0x5ba1e12693dc8f9c48aad8770482f4739beed696' as const;
+  const resolveToken = (h: string): `0x${string}` | undefined =>
+    h === USDC_HASH ? USDC : h === SHARE_HASH ? SHARE : undefined;
+  const base = { spentNullifiers: spent, sentOutputs: [], nullifyingKey: NK, shieldedAddress: SELF_0ZK, resolveToken, usdcHash: USDC_HASH };
   const unshield = (over: Partial<DecodedUnshield>): DecodedUnshield => ({
     to: RECIPIENT,
     tokenData: { tokenType: 0, tokenAddress: USDC, tokenSubID: '0' },
@@ -266,6 +271,38 @@ describe('reconstructHistory (H2 — sends / unshields / yield)', () => {
     const sent = entries.find((e) => e.txid === SPEND)!;
     expect(sent.category).toBe('transfer-sent');
     expect(sent.sentOutputs).toEqual([{ recipientShieldedAddress: '0zk_bob', value: 480_000n }]);
+  });
+
+  it('reconstructs history for a non-USDC ERC20 receive (token-agnostic, #90)', () => {
+    const shareReceive = txo({ tree: 0, position: 20, value: 5_000n, txid: tx('a1'), origin: 'transact', tokenHash: SHARE_HASH, blockNumber: 50 });
+    const entries = reconstructHistory({ ...base, spentNullifiers: [], ownedTxos: [shareReceive], unshields: [] });
+    const e = entries.find((x) => x.txid === tx('a1'))!;
+    expect(e).toMatchObject({ category: 'transfer-received', tokenHash: SHARE_HASH, tokenAddress: SHARE, value: 5_000n });
+  });
+
+  it('yield deposit: USDC spent + shares minted → a yield-deposit leg per token (#90)', () => {
+    const DEP = tx('d1');
+    const usdcIn = txo({ tree: 0, position: 5, value: 900_000n, txid: tx('aa'), origin: 'transact', blockNumber: 5 }); // spent in DEP
+    const usdcChange = txo({ tree: 0, position: 6, value: 400_000n, txid: DEP, origin: 'transact', blockNumber: 30 });
+    const shares = txo({ tree: 0, position: 7, value: 12_000n, txid: DEP, origin: 'transact', tokenHash: SHARE_HASH, blockNumber: 30 });
+    const spentDep: SpentNullifier[] = [{ tree: 0, nullifier: TransactNote.getNullifier(NK, 5), txid: DEP, blockNumber: 30 }];
+    const entries = reconstructHistory({ ...base, spentNullifiers: spentDep, ownedTxos: [usdcIn, usdcChange, shares], unshields: [unshield({ to: ADAPTER, txid: DEP })], yieldAdapterAddress: ADAPTER });
+    expect(entries.find((e) => e.txid === DEP && e.tokenHash === USDC_HASH)).toMatchObject({ category: 'yield-deposit', value: -500_000n });
+    expect(entries.find((e) => e.txid === DEP && e.tokenHash === SHARE_HASH)).toMatchObject({ category: 'yield-deposit', value: 12_000n, tokenAddress: SHARE });
+  });
+
+  it('yield withdraw: shares spent + USDC returned → the USDC return is not misclassified (#90 regression)', () => {
+    // Regression guard: once shares are scanned (issue #90 commit 1), the withdraw txid becomes an
+    // own-spend txid. With token-blind change detection the USDC return would be counted as change and
+    // flipped to a positive yield-DEPOSIT. Per-token classification keeps it a yield-withdraw return.
+    const WD = tx('e1');
+    const sharesIn = txo({ tree: 0, position: 8, value: 12_000n, txid: tx('bb'), origin: 'transact', tokenHash: SHARE_HASH, blockNumber: 6 }); // spent in WD
+    const usdcOut = txo({ tree: 0, position: 9, value: 950_000n, txid: WD, origin: 'transact', blockNumber: 40 }); // USDC returned to us
+    const spentWd: SpentNullifier[] = [{ tree: 0, nullifier: TransactNote.getNullifier(NK, 8), txid: WD, blockNumber: 40 }];
+    const shareUnshield = unshield({ to: ADAPTER, txid: WD, tokenData: { tokenType: 0, tokenAddress: SHARE, tokenSubID: '0' } });
+    const entries = reconstructHistory({ ...base, spentNullifiers: spentWd, ownedTxos: [sharesIn, usdcOut], unshields: [shareUnshield], yieldAdapterAddress: ADAPTER });
+    expect(entries.find((e) => e.txid === WD && e.tokenHash === USDC_HASH)).toMatchObject({ category: 'yield-withdraw', value: 950_000n });
+    expect(entries.find((e) => e.txid === WD && e.tokenHash === SHARE_HASH)).toMatchObject({ category: 'yield-withdraw', value: -12_000n });
   });
 
   it('transfer-sent is dated by the spend block, not the spent input\'s origin block', () => {
