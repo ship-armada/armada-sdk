@@ -5,6 +5,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { initPoseidonPromise, TransactNote } from '../core/index';
 import type { TXO, SpentNullifier } from './balances';
 import { reconstructReceiveHistory, reconstructHistory, newReceivedNotes } from './history';
+import { encodeSelfMetadata } from './self-metadata';
 import type { DecodedUnshield } from './event-decoder';
 import type { SentOutput } from './scan-engine';
 
@@ -233,6 +234,26 @@ describe('reconstructHistory (H2 — sends / unshields / yield)', () => {
     expect(shield.value).toBe(990_000n);
     expect(shield.shieldFee).toBe(1_000n); // protocol fee, distinct from the relayer fee
     expect(shield.broadcasterFee).toBe(10_000n); // gasless relayer fee note
+  });
+
+  it('recovers self-metadata stashed in the change-note memo (lever 3)', () => {
+    // The change note (owned, in the spend txid) carries a tagged metadata blob written at prove time.
+    // A fresh scan recovers it onto the spend entry even though local storage is gone.
+    const blob = 'fee=20000;mode=gasless';
+    const changeWithMeta = txo({ tree: 0, position: 6, value: 400_000n, txid: SPEND, origin: 'transact', blockNumber: 30, memo: encodeSelfMetadata(blob) });
+    const entries = reconstructHistory({ ...base, ownedTxos: [inputNote, changeWithMeta], unshields: [] });
+    const sent = entries.find((e) => e.txid === SPEND)!;
+    expect(sent.category).toBe('transfer-sent');
+    expect(sent.selfMetadata).toBe(blob);
+  });
+
+  it('does not mistake a user memo on a received note for self-metadata (lever 3)', () => {
+    // A plain incoming transfer with a user memo must not surface selfMetadata.
+    const received = txo({ tree: 0, position: 9, value: 100_000n, txid: tx('99'), origin: 'transact', blockNumber: 40, memo: 'thanks' });
+    const entries = reconstructHistory({ ...base, spentNullifiers: [], ownedTxos: [received], unshields: [] });
+    const entry = entries.find((e) => e.txid === tx('99'))!;
+    expect(entry.category).toBe('transfer-received');
+    expect(entry.selfMetadata).toBeUndefined();
   });
 
   it('a mixed send (self + external recipient) stays transfer-sent, self leg excluded from sentOutputs', () => {

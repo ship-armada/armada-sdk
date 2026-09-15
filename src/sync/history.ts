@@ -3,6 +3,7 @@
 
 import { TransactNote, OutputType } from '../core/index';
 import { tokenHashKey } from './balances';
+import { decodeSelfMetadata } from './self-metadata';
 import type { TXO, SpentNullifier } from './balances';
 import type { DecodedUnshield } from './event-decoder';
 import type { SentOutput } from './scan-engine';
@@ -49,6 +50,9 @@ export interface HistoryEntry {
   readonly recipient?: string;
   /** Sender's 0zk, if they disclosed it (transfer receives). */
   readonly senderShieldedAddress?: string;
+  /** Caller metadata recovered from the spend's change-note memo (issue #88 lever 3) — the opaque blob
+   *  passed to `prove({ selfMetadata })`, reproduced on a fresh scan even after local storage is cleared. */
+  readonly selfMetadata?: string;
   /** Recipient outputs of a send (transfer-sent), recovered sender-side — recipient 0zk + amount + memo. */
   readonly sentOutputs?: readonly SentRecipient[];
   readonly memo?: string;
@@ -228,6 +232,7 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
     inputs: bigint;
     change: bigint;
     receives: TXO[];
+    selfMetadata?: string;
   }
   const byTxid = new Map<string, Agg>();
   const agg = (txid: string, blockNumber: number): Agg => {
@@ -245,7 +250,12 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
     const spentIn = spendOf.get(txo);
     if (spentIn !== undefined) agg(spentIn.txid, spentIn.blockNumber).inputs += txo.value;
     if (ownSpendTxids.has(txo.txid) && txo.origin === 'transact') {
-      agg(txo.txid, txo.blockNumber).change += txo.value;
+      const a = agg(txo.txid, txo.blockNumber);
+      a.change += txo.value;
+      // Recover caller metadata stashed in the change note's memo (issue #88 lever 3). Only the change
+      // note carries the tagged blob; a user's self-transfer memo won't match the marker.
+      const meta = decodeSelfMetadata(txo.memo);
+      if (meta !== undefined) a.selfMetadata = meta;
     } else {
       agg(txo.txid, txo.blockNumber).receives.push(txo);
     }
@@ -272,6 +282,7 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
       const feeField = {
         ...(broadcasterFee > 0n ? { broadcasterFee } : {}),
         ...(feeOutputs[0] !== undefined ? { broadcasterShieldedAddress: feeOutputs[0].recipientShieldedAddress } : {}),
+        ...(a.selfMetadata !== undefined ? { selfMetadata: a.selfMetadata } : {}),
       };
       const recipients: SentRecipient[] = externalTransfers.map((o) => ({
         recipientShieldedAddress: o.recipientShieldedAddress,

@@ -42,6 +42,14 @@ export interface Groth16Proof {
 export interface ProveOptions {
   readonly signal?: AbortSignal;
   readonly onProgress?: (p: ProofProgress) => void;
+  /**
+   * Opaque metadata to persist on-chain in the spend's change-note memo (issue #88 lever 3). The change
+   * note is owned by the wallet, so a fresh chain scan recovers this blob on `history()` even after local
+   * storage is cleared — use it for details not otherwise recoverable (fee breakdown, submission mode).
+   * Ignored when the spend has no change note (`changeValue === 0`). Keep it compact: it costs calldata
+   * gas (~16 gas/byte) and a non-empty change memo is a faint metadata-presence signal to observers.
+   */
+  readonly selfMetadata?: string;
 }
 
 /**

@@ -123,6 +123,22 @@ const proof = await wallet.prove(plan, {
 
 Cancelling through the signal throws `AbortedError`.
 
+### Persisting recoverable metadata
+
+Pass `selfMetadata` to stash an opaque string in the spend's change-note memo. The change note is owned
+by the wallet, so a fresh chain scan reproduces the blob on `history()` even after local storage is
+cleared — use it for details that aren't otherwise recoverable (a fee breakdown, submission mode, a
+quote id):
+
+```ts
+const proof = await wallet.prove(plan, { selfMetadata: 'fee=20000;mode=gasless' });
+```
+
+It rides in the change note, so it's ignored when the spend has no change (`changeValue === 0`). On
+recovery it surfaces as `selfMetadata` on the transaction's history entry. Keep it compact — it costs
+calldata gas, and a non-empty change memo is a faint metadata-presence signal to observers (the content
+stays encrypted).
+
 ## Submitting on-chain
 
 A `ProofHandle` owns the calldata for the transaction it proved. `toTransactCalldata()` returns what
