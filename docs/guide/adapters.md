@@ -75,8 +75,8 @@ Every token-bearing surface carries the same pair of identifiers, so a live even
 
 - **`tokenHash`** — the canonical 32-byte token hash, without a `0x` prefix. This is the identifier
   the pool stores inside a commitment, and the key `balances()` and the token events agree on.
-- **`tokenAddress`** — the token's ERC-20 address, resolved from the SDK's token registry (the
-  pool's USDC plus any `additionalTokens` you configure).
+- **`tokenAddress`** — the token's ERC-20 address, derived directly from `tokenHash` (an ERC20 token
+  hash is the address, zero-padded to 32 bytes — so no registry or pre-configuration is needed).
 
 ```ts
 for (const { tokenHash, tokenAddress, spendable, pending } of await wallet.balances()) {
@@ -84,7 +84,7 @@ for (const { tokenHash, tokenAddress, spendable, pending } of await wallet.balan
 }
 ```
 
-`tokenAddress` is present for every registered token. The wallet only scans balances for the pool's
-USDC and the `additionalTokens` you list — a note in any other token is skipped during the scan — so
-in practice every balance resolves to an address. `tokenAddress` is typed optional only to guard the
-degenerate case of a hash with no registered token, which never returns a hidden balance.
+The wallet scans, reports, and reconstructs history for **any pool ERC20** — you don't pre-register
+tokens (the `additionalTokens` config is deprecated and ignored). `tokenAddress` resolves for every
+ERC20 balance; it is typed optional only to guard a non-ERC20 (e.g. NFT) hash, which is out of scope
+and never returns a hidden balance.

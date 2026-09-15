@@ -175,9 +175,12 @@ export interface ReconstructHistoryInput {
   /** The wallet's own 0zk address — used to recognize sends addressed to self (a self-transfer, not an
    *  outgoing payment) so they aren't misreported as money leaving the wallet. */
   readonly shieldedAddress: string;
-  /** Canonical 32-byte hash (no 0x) of the tracked token (USDC). */
+  /** Resolve a token hash → ERC20 address for each entry (issue #90). Notes in an unresolvable token
+   *  (non-ERC20 / NFT — out of scope) are skipped. Token-agnostic: every held ERC20 gets history. */
+  readonly resolveToken: TokenAddressResolver;
+  /** Canonical 32-byte hash (no 0x) of USDC — the yield vault's asset; distinguishes a yield deposit
+   *  (asset in / shares out) from a withdrawal (shares in / asset out). Not a scoping filter. */
   readonly usdcHash: string;
-  readonly usdcAddress: `0x${string}`;
   /** Yield adapter address (lowercased-compared); an unshield to it marks a yield op. */
   readonly yieldAdapterAddress?: string;
 }
@@ -193,13 +196,13 @@ export interface ReconstructHistoryInput {
  *    none → `transfer-sent`.
  *
  * The broadcaster (relayer) fee inside a send is a non-owned output not recoverable here — H3 adds it
- * via sender-side decryption. `value` is the signed wallet delta for the token. USDC-scoped like the
- * rest of the SDK: aUSDC legs of yield ops aren't tracked, so a withdrawal is seen via its USDC return.
+ * via sender-side decryption. `value` is the signed wallet delta for the token. Token-agnostic (issue
+ * #90): every held ERC20 gets history, classified per `(txid, token)`; a yield op emits one entry per
+ * leg (asset + vault share), distinguished by `usdcHash` (the vault asset) and value sign.
  */
 export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry[] {
-  const { ownedTxos, spentNullifiers, unshields, sentOutputs, nullifyingKey, shieldedAddress, usdcHash, usdcAddress } = input;
+  const { ownedTxos, spentNullifiers, unshields, sentOutputs, nullifyingKey, shieldedAddress, resolveToken, usdcHash } = input;
   const yieldAdapter = input.yieldAdapterAddress?.toLowerCase();
-  const isUsdc = (tokenHash: string): boolean => tokenHash === usdcHash;
 
   const spendByKey = new Map(spentNullifiers.map((s) => [nullifierKey(s.tree, s.nullifier), s]));
   const unshieldsByTxid = new Map<string, DecodedUnshield[]>();
@@ -208,10 +211,9 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
     if (list === undefined) unshieldsByTxid.set(u.txid, [u]);
     else list.push(u);
   }
-  // Our authored outputs per txid (USDC only) — recipient transfers + broadcaster fee.
+  // Our authored outputs per txid — recipient transfers + broadcaster fee, across ALL tokens.
   const sentByTxid = new Map<string, SentOutput[]>();
   for (const s of sentOutputs) {
-    if (!isUsdc(s.tokenHash)) continue;
     const list = sentByTxid.get(s.txid);
     if (list === undefined) sentByTxid.set(s.txid, [s]);
     else list.push(s);
@@ -220,63 +222,79 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
   // Which owned notes we spent, and in which spend. The whole Nullify marker is kept (not just its
   // txid) because the spend's own block — not the input note's origin block — dates the send entry.
   const spendOf = new Map<TXO, SpentNullifier>();
+  // (txid, tokenHash) pairs where we spent an input of that token — token-scoped so a note received in a
+  // tx where we only spent a DIFFERENT token (e.g. the USDC returned by a yield withdrawal that spent
+  // shares) is correctly a receive, not our change.
+  const spentTokenInTxid = new Set<string>();
   for (const txo of ownedTxos) {
     const spend = spendByKey.get(nullifierKey(txo.tree, TransactNote.getNullifier(nullifyingKey, txo.position)));
-    if (spend !== undefined) spendOf.set(txo, spend);
+    if (spend !== undefined) {
+      spendOf.set(txo, spend);
+      spentTokenInTxid.add(`${spend.txid}::${txo.tokenHash}`);
+    }
   }
-  const ownSpendTxids = new Set([...spendOf.values()].map((s) => s.txid));
 
-  // Per-txid USDC aggregation.
+  // Per-(txid, token) aggregation — a single tx can move multiple tokens (a yield op moves the asset AND
+  // the vault share), so each token is classified independently.
   interface Agg {
+    txid: string;
+    tokenHash: string;
     blockNumber: number;
     inputs: bigint;
     change: bigint;
     receives: TXO[];
     selfMetadata?: string;
   }
-  const byTxid = new Map<string, Agg>();
-  const agg = (txid: string, blockNumber: number): Agg => {
-    let a = byTxid.get(txid);
+  const byKey = new Map<string, Agg>();
+  const keyOf = (txid: string, tokenHash: string): string => `${txid}::${tokenHash}`;
+  const agg = (txid: string, tokenHash: string, blockNumber: number): Agg => {
+    const key = keyOf(txid, tokenHash);
+    let a = byKey.get(key);
     if (a === undefined) {
-      a = { blockNumber, inputs: 0n, change: 0n, receives: [] };
-      byTxid.set(txid, a);
+      a = { txid, tokenHash, blockNumber, inputs: 0n, change: 0n, receives: [] };
+      byKey.set(key, a);
     } else {
       a.blockNumber = Math.min(a.blockNumber, blockNumber);
     }
     return a;
   };
   for (const txo of ownedTxos) {
-    if (!isUsdc(txo.tokenHash)) continue;
+    const token = txo.tokenHash;
     const spentIn = spendOf.get(txo);
-    if (spentIn !== undefined) agg(spentIn.txid, spentIn.blockNumber).inputs += txo.value;
-    if (ownSpendTxids.has(txo.txid) && txo.origin === 'transact') {
-      const a = agg(txo.txid, txo.blockNumber);
+    if (spentIn !== undefined) agg(spentIn.txid, token, spentIn.blockNumber).inputs += txo.value;
+    // A transact note is our change only if we spent the SAME token in that tx; otherwise it's a receive.
+    if (spentTokenInTxid.has(keyOf(txo.txid, token)) && txo.origin === 'transact') {
+      const a = agg(txo.txid, token, txo.blockNumber);
       a.change += txo.value;
       // Recover caller metadata stashed in the change note's memo (issue #88 lever 3). Only the change
       // note carries the tagged blob; a user's self-transfer memo won't match the marker.
       const meta = decodeSelfMetadata(txo.memo);
       if (meta !== undefined) a.selfMetadata = meta;
     } else {
-      agg(txo.txid, txo.blockNumber).receives.push(txo);
+      agg(txo.txid, token, txo.blockNumber).receives.push(txo);
     }
   }
 
   const entries: HistoryEntry[] = [];
-  for (const [txid, a] of byTxid) {
+  for (const a of byKey.values()) {
+    const { txid, tokenHash } = a;
+    const tokenAddress = resolveToken(tokenHash);
+    if (tokenAddress === undefined) continue; // unresolvable (non-ERC20 / NFT — out of scope): can't represent
+    const isUsdc = tokenHash === usdcHash;
     const txUnshields = unshieldsByTxid.get(txid) ?? [];
     const toAdapter = yieldAdapter !== undefined && txUnshields.some((u) => u.to.toLowerCase() === yieldAdapter);
     const external = txUnshields.filter((u) => yieldAdapter === undefined || u.to.toLowerCase() !== yieldAdapter);
+    const weSpentThisToken = spentTokenInTxid.has(keyOf(txid, tokenHash));
 
-    if (ownSpendTxids.has(txid)) {
-      const net = a.change - a.inputs; // negative: shielded balance decreased
-      // Sender-side detail: split our authored outputs into recipient transfers vs the broadcaster fee.
-      const outs = sentByTxid.get(txid) ?? [];
+    if (weSpentThisToken) {
+      const net = a.change - a.inputs; // negative: this token's shielded balance decreased
+      // Sender-side detail for THIS token: split authored outputs into recipient transfers vs broadcaster fee.
+      const outs = (sentByTxid.get(txid) ?? []).filter((o) => o.tokenHash === tokenHash);
       const transfers = outs.filter((o) => (o.outputType ?? OutputType.Transfer) === OutputType.Transfer);
       const feeOutputs = outs.filter((o) => o.outputType === OutputType.BroadcasterFee);
       const broadcasterFee = feeOutputs.reduce((acc, o) => acc + o.value, 0n);
-      // A Transfer output addressed to OUR OWN 0zk is a self-transfer leg — the value comes straight
-      // back to us (it's already netted into `a.change`), so it is NOT an outgoing payment and must be
-      // kept out of `sentOutputs`. Otherwise a send-to-self surfaces as a phantom outgoing amount.
+      // A Transfer output addressed to OUR OWN 0zk is a self-transfer leg — the value comes straight back
+      // (already netted into `change`), so it is NOT an outgoing payment and is kept out of `sentOutputs`.
       const externalTransfers = transfers.filter((o) => o.recipientShieldedAddress !== shieldedAddress);
       const selfTransfers = transfers.filter((o) => o.recipientShieldedAddress === shieldedAddress);
       const feeField = {
@@ -292,35 +310,27 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
       const sentField = recipients.length > 0 ? { sentOutputs: recipients } : {};
 
       if (toAdapter) {
-        entries.push({ txid, blockNumber: a.blockNumber, category: 'yield-deposit', tokenHash: usdcHash, tokenAddress: usdcAddress, value: net, ...feeField });
+        // We spent this token into the yield adapter: the asset (USDC) → deposit, the vault share → withdraw.
+        entries.push({ txid, blockNumber: a.blockNumber, category: isUsdc ? 'yield-deposit' : 'yield-withdraw', tokenHash, tokenAddress, value: net, ...feeField });
       } else if (external.length > 0) {
         const u = external[0]!;
-        entries.push({
-          txid,
-          blockNumber: a.blockNumber,
-          category: 'unshield',
-          tokenHash: usdcHash, tokenAddress: usdcAddress,
-          value: net,
-          unshieldFee: u.fee,
-          recipient: u.to,
-          ...feeField,
-        });
+        entries.push({ txid, blockNumber: a.blockNumber, category: 'unshield', tokenHash, tokenAddress, value: net, unshieldFee: u.fee, recipient: u.to, ...feeField });
       } else if (externalTransfers.length === 0 && selfTransfers.length > 0) {
-        // We positively recovered recipient outputs and ALL of them are addressed to ourselves: a
-        // self-transfer (consolidation / move-to-self). `value` is just the fee. Distinct category so
-        // the UI never renders it as money leaving the wallet. (When NO recipients were recovered we
-        // can't tell self from external, so that falls through to `transfer-sent` below.)
-        entries.push({ txid, blockNumber: a.blockNumber, category: 'self-transfer', tokenHash: usdcHash, tokenAddress: usdcAddress, value: net, ...feeField });
+        // Positively recovered outputs, all addressed to ourselves: a self-transfer (consolidation).
+        // `value` is just the fee. (When NO recipients were recovered we can't tell self from external,
+        // so that falls through to `transfer-sent`.)
+        entries.push({ txid, blockNumber: a.blockNumber, category: 'self-transfer', tokenHash, tokenAddress, value: net, ...feeField });
       } else {
-        entries.push({ txid, blockNumber: a.blockNumber, category: 'transfer-sent', tokenHash: usdcHash, tokenAddress: usdcAddress, value: net, ...feeField, ...sentField });
+        entries.push({ txid, blockNumber: a.blockNumber, category: 'transfer-sent', tokenHash, tokenAddress, value: net, ...feeField, ...sentField });
       }
       continue;
     }
 
-    // Receive side: yield-withdraw if the tx also carries the adapter Unshield (the USDC return leg).
+    // Receive side for this token. In a yield op the returned/minted token comes back here: the asset
+    // (USDC) returned → withdraw, the vault share minted → deposit.
     if (toAdapter && a.receives.length > 0) {
       const sum = a.receives.reduce((acc, r) => acc + r.value, 0n);
-      entries.push({ txid, blockNumber: a.blockNumber, category: 'yield-withdraw', tokenHash: usdcHash, tokenAddress: usdcAddress, value: sum });
+      entries.push({ txid, blockNumber: a.blockNumber, category: isUsdc ? 'yield-withdraw' : 'yield-deposit', tokenHash, tokenAddress, value: sum });
       continue;
     }
     for (const r of a.receives) {
@@ -332,7 +342,7 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
         txid,
         blockNumber: r.blockNumber,
         category: isShield ? 'shield' : 'transfer-received',
-        tokenHash: usdcHash, tokenAddress: usdcAddress,
+        tokenHash, tokenAddress,
         value: r.value,
         ...(r.shieldFee !== undefined ? { shieldFee: r.shieldFee } : {}),
         ...(shieldRelayerFee !== undefined && shieldRelayerFee > 0n ? { broadcasterFee: shieldRelayerFee } : {}),

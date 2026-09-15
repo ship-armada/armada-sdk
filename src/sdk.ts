@@ -738,8 +738,8 @@ class ArmadaWallet implements Wallet {
       shieldRelayerFees: this.scanState.shieldRelayerFees(),
       nullifyingKey: this.keyset.nullifyingKey,
       shieldedAddress: this.keyset.shieldedAddress,
+      resolveToken: (h) => this.resolveTokenAddress(h),
       usdcHash: this.ctx.usdcHash,
-      usdcAddress: this.ctx.usdcAddress,
       ...(this.ctx.yieldAdapterAddress !== undefined ? { yieldAdapterAddress: this.ctx.yieldAdapterAddress } : {}),
     });
     if (options?.sinceBlock !== undefined) {
