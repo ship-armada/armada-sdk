@@ -218,6 +218,23 @@ describe('reconstructHistory (H2 — sends / unshields / yield)', () => {
     expect(self.broadcasterFee).toBe(20_000n);
   });
 
+  it('attaches the gasless relayer fee to a shield entry (lever 2)', () => {
+    const shieldTxid = tx('77');
+    const shieldNote = txo({ tree: 0, position: 8, value: 990_000n, txid: shieldTxid, origin: 'shield', shieldFee: 1_000n, blockNumber: 12 });
+    const entries = reconstructHistory({
+      ...base,
+      spentNullifiers: [],
+      ownedTxos: [shieldNote],
+      unshields: [],
+      shieldRelayerFees: new Map([[shieldTxid, 10_000n]]),
+    });
+    const shield = entries.find((e) => e.txid === shieldTxid)!;
+    expect(shield.category).toBe('shield');
+    expect(shield.value).toBe(990_000n);
+    expect(shield.shieldFee).toBe(1_000n); // protocol fee, distinct from the relayer fee
+    expect(shield.broadcasterFee).toBe(10_000n); // gasless relayer fee note
+  });
+
   it('a mixed send (self + external recipient) stays transfer-sent, self leg excluded from sentOutputs', () => {
     const sentOutputs: SentOutput[] = [
       { txid: SPEND, blockNumber: 30, tokenHash: USDC_HASH, value: 480_000n, recipientShieldedAddress: '0zk_bob', outputType: 0 },

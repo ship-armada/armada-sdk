@@ -734,6 +734,7 @@ class ArmadaWallet implements Wallet {
       spentNullifiers: this.scanState.spentNullifiers(),
       unshields: this.scanState.unshieldEvents(),
       sentOutputs: this.scanState.sentOutputs(),
+      shieldRelayerFees: this.scanState.shieldRelayerFees(),
       nullifyingKey: this.keyset.nullifyingKey,
       shieldedAddress: this.keyset.shieldedAddress,
       usdcHash: this.ctx.usdcHash,

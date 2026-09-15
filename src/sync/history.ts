@@ -36,7 +36,8 @@ export interface HistoryEntry {
   readonly tokenHash: string;
   readonly tokenAddress: `0x${string}`;
   readonly value: bigint;
-  /** Relayer fee paid (sends/unshields) — the in-band broadcaster fee. Populated in H3. */
+  /** Relayer fee paid — the in-band broadcaster fee on sends/unshields, or the fee note on a gasless
+   *  shield (issue #88 lever 2). Populated in H3 (sends) / from the Shield event (shields). */
   readonly broadcasterFee?: bigint;
   /** The broadcaster's shielded (0zk) address that the fee note paid — recovered sender-side. */
   readonly broadcasterShieldedAddress?: string;
@@ -163,6 +164,9 @@ export interface ReconstructHistoryInput {
   readonly unshields: readonly DecodedUnshield[];
   /** Notes the wallet authored (recovered sender-side) — recipient/fee detail of its own sends. */
   readonly sentOutputs: readonly SentOutput[];
+  /** Per-txid relayer fee paid in a gasless shield we co-authored (issue #88 lever 2) — recovered from
+   *  the Shield event's plaintext commitment values. Attached to the matching shield entry. */
+  readonly shieldRelayerFees?: ReadonlyMap<string, bigint>;
   readonly nullifyingKey: bigint;
   /** The wallet's own 0zk address — used to recognize sends addressed to self (a self-transfer, not an
    *  outgoing payment) so they aren't misreported as money leaving the wallet. */
@@ -309,13 +313,18 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
       continue;
     }
     for (const r of a.receives) {
+      const isShield = r.origin === 'shield';
+      // Gasless shields carry a relayer fee note in the same txid (issue #88); surface it as the entry's
+      // broadcaster fee so the recovered shield matches the local record's total (note + fee).
+      const shieldRelayerFee = isShield ? input.shieldRelayerFees?.get(txid) : undefined;
       entries.push({
         txid,
         blockNumber: r.blockNumber,
-        category: r.origin === 'shield' ? 'shield' : 'transfer-received',
+        category: isShield ? 'shield' : 'transfer-received',
         tokenHash: usdcHash, tokenAddress: usdcAddress,
         value: r.value,
         ...(r.shieldFee !== undefined ? { shieldFee: r.shieldFee } : {}),
+        ...(shieldRelayerFee !== undefined && shieldRelayerFee > 0n ? { broadcasterFee: shieldRelayerFee } : {}),
         ...(r.memo !== undefined ? { memo: r.memo } : {}),
         ...(r.senderShieldedAddress !== undefined ? { senderShieldedAddress: r.senderShieldedAddress } : {}),
       });
