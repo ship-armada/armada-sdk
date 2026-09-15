@@ -153,6 +153,23 @@ export function tokenHashKey(tokenHash: string): string {
   return tokenHash.startsWith('0x') ? tokenHash.slice(2) : tokenHash;
 }
 
+// An ERC20 token hash is the 20-byte address left-padded to 32 bytes, so the top 12 bytes are zero.
+const ERC20_TOKEN_HASH_PREFIX = '0'.repeat(24);
+
+/**
+ * Recover an ERC20 token address from its token hash. For ERC20 the hash IS the address, zero-padded to
+ * 32 bytes (matching the stock engine's `TokenDataGetter`), so no registry is needed — any pool ERC20 is
+ * self-describing. Returns `undefined` for a non-ERC20-shaped hash (e.g. an NFT hash, which is a
+ * non-invertible Poseidon hash); NFTs are out of scope (SPEC §1.4), so such notes are simply not resolved.
+ */
+export function erc20AddressFromHash(tokenHash: string): `0x${string}` | undefined {
+  const bare = tokenHashKey(tokenHash).toLowerCase();
+  if (bare.length > 64) return undefined;
+  const padded = bare.padStart(64, '0');
+  if (!padded.startsWith(ERC20_TOKEN_HASH_PREFIX)) return undefined;
+  return `0x${padded.slice(24)}`;
+}
+
 /**
  * Attach each balance's registered ERC-20 address via `resolve`. A hash with no registered token
  * keeps `tokenAddress` unset and its row is retained — a real balance is never hidden just because
