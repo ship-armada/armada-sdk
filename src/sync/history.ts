@@ -37,8 +37,9 @@ export interface HistoryEntry {
   readonly tokenHash: string;
   readonly tokenAddress: `0x${string}`;
   readonly value: bigint;
-  /** Relayer fee paid — the in-band broadcaster fee on sends/unshields, or the fee note on a gasless
-   *  shield (issue #88 lever 2). Populated in H3 (sends) / from the Shield event (shields). */
+  /** Relayer fee PAID (gross) — the in-band broadcaster fee on sends/unshields, or, on a gasless shield
+   *  (issue #88 lever 2), the relayer fee note's GROSS: its value + its own protocol shield fee, i.e.
+   *  what the user paid the relayer. Populated in H3 (sends) / from the Shield event (shields). */
   readonly broadcasterFee?: bigint;
   /** The broadcaster's shielded (0zk) address that the fee note paid — recovered sender-side. */
   readonly broadcasterShieldedAddress?: string;
@@ -335,8 +336,9 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
     }
     for (const r of a.receives) {
       const isShield = r.origin === 'shield';
-      // Gasless shields carry a relayer fee note in the same txid (issue #88); surface it as the entry's
-      // broadcaster fee so the recovered shield matches the local record's total (note + fee).
+      // Gasless shields carry a relayer fee note in the same txid (issue #88); surface its GROSS (note +
+      // its own shield fee) as the entry's broadcaster fee so the recovered shield matches the local
+      // record's total — user note + user shield fee + relayer gross reconstructs the full deposit.
       const shieldRelayerFee = isShield ? input.shieldRelayerFees?.get(txid) : undefined;
       entries.push({
         txid,
