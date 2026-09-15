@@ -221,7 +221,7 @@ interface PoolConfig {
   chainId: number;
   poolAddress: `0x${string}`;
   deployBlock: number;
-  usdcAddress: `0x${string}`;
+  usdcAddress: `0x${string}`; // default spend token + fee denomination only — NOT a scoping filter (any ERC20 is supported)
   wrappers?: { gaslessShield?: `0x${string}`; yieldAdapter?: `0x${string}` };
   cctp?: { domain: number; messenger: `0x${string}` };
 }
@@ -232,6 +232,17 @@ per-deployment addresses. `createArmadaSdk({ pool: PoolConfig, storage, prover, 
 `startRailgunEngine` + `loadProvider` + NETWORK_CONFIG patching. Multiple instances in one
 process are supported (kills the LevelDB-path juggling; the relayer, tests, and scripts each
 construct their own instance).
+
+**Token model — the SDK is ERC20-agnostic, NOT USDC-only.** The pool supports any ERC20, and so
+must the SDK: scanning, `balances()`, `note:received`/`balance:updated`, spending, and history
+reconstruction all operate over **every** pool ERC20 the wallet holds — never a fixed allow-list.
+`usdcAddress` is a *convenience* only: the default token for `planTransfer` when a caller omits one,
+and the fee denomination (fees are USDC by relayer convention). It is **not** a scoping constraint —
+do not add a "USDC-only" or "registered-tokens-only" filter to any scan/balance/history path. This is
+free because an **ERC20 token hash is self-describing**: the hash is the 20-byte address left-padded
+to 32 bytes (matching the stock engine's `TokenDataGetter`), so any token resolves hash→address with
+no registry and no pre-registration. (NFTs, whose hash is a non-invertible Poseidon hash, are out of
+scope per §1.4 and are simply not resolved.)
 
 ### 3.4 Vendoring and licensing
 
