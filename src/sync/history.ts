@@ -18,6 +18,7 @@ export type HistoryCategory =
   | 'shield'
   | 'transfer-received'
   | 'transfer-sent'
+  | 'self-transfer'
   | 'unshield'
   | 'yield-deposit'
   | 'yield-withdraw';
@@ -37,6 +38,8 @@ export interface HistoryEntry {
   readonly value: bigint;
   /** Relayer fee paid (sends/unshields) — the in-band broadcaster fee. Populated in H3. */
   readonly broadcasterFee?: bigint;
+  /** The broadcaster's shielded (0zk) address that the fee note paid — recovered sender-side. */
+  readonly broadcasterShieldedAddress?: string;
   /** Shield fee charged (shield receives). */
   readonly shieldFee?: bigint;
   /** Protocol unshield fee (unshield entries) — from the on-chain Unshield event. */
@@ -161,6 +164,9 @@ export interface ReconstructHistoryInput {
   /** Notes the wallet authored (recovered sender-side) — recipient/fee detail of its own sends. */
   readonly sentOutputs: readonly SentOutput[];
   readonly nullifyingKey: bigint;
+  /** The wallet's own 0zk address — used to recognize sends addressed to self (a self-transfer, not an
+   *  outgoing payment) so they aren't misreported as money leaving the wallet. */
+  readonly shieldedAddress: string;
   /** Canonical 32-byte hash (no 0x) of the tracked token (USDC). */
   readonly usdcHash: string;
   readonly usdcAddress: `0x${string}`;
@@ -183,7 +189,7 @@ export interface ReconstructHistoryInput {
  * rest of the SDK: aUSDC legs of yield ops aren't tracked, so a withdrawal is seen via its USDC return.
  */
 export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry[] {
-  const { ownedTxos, spentNullifiers, unshields, sentOutputs, nullifyingKey, usdcHash, usdcAddress } = input;
+  const { ownedTxos, spentNullifiers, unshields, sentOutputs, nullifyingKey, shieldedAddress, usdcHash, usdcAddress } = input;
   const yieldAdapter = input.yieldAdapterAddress?.toLowerCase();
   const isUsdc = (tokenHash: string): boolean => tokenHash === usdcHash;
 
@@ -252,11 +258,18 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
       // Sender-side detail: split our authored outputs into recipient transfers vs the broadcaster fee.
       const outs = sentByTxid.get(txid) ?? [];
       const transfers = outs.filter((o) => (o.outputType ?? OutputType.Transfer) === OutputType.Transfer);
-      const broadcasterFee = outs
-        .filter((o) => o.outputType === OutputType.BroadcasterFee)
-        .reduce((acc, o) => acc + o.value, 0n);
-      const feeField = broadcasterFee > 0n ? { broadcasterFee } : {};
-      const recipients: SentRecipient[] = transfers.map((o) => ({
+      const feeOutputs = outs.filter((o) => o.outputType === OutputType.BroadcasterFee);
+      const broadcasterFee = feeOutputs.reduce((acc, o) => acc + o.value, 0n);
+      // A Transfer output addressed to OUR OWN 0zk is a self-transfer leg — the value comes straight
+      // back to us (it's already netted into `a.change`), so it is NOT an outgoing payment and must be
+      // kept out of `sentOutputs`. Otherwise a send-to-self surfaces as a phantom outgoing amount.
+      const externalTransfers = transfers.filter((o) => o.recipientShieldedAddress !== shieldedAddress);
+      const selfTransfers = transfers.filter((o) => o.recipientShieldedAddress === shieldedAddress);
+      const feeField = {
+        ...(broadcasterFee > 0n ? { broadcasterFee } : {}),
+        ...(feeOutputs[0] !== undefined ? { broadcasterShieldedAddress: feeOutputs[0].recipientShieldedAddress } : {}),
+      };
+      const recipients: SentRecipient[] = externalTransfers.map((o) => ({
         recipientShieldedAddress: o.recipientShieldedAddress,
         value: o.value,
         ...(o.memo !== undefined ? { memo: o.memo } : {}),
@@ -277,6 +290,12 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
           recipient: u.to,
           ...feeField,
         });
+      } else if (externalTransfers.length === 0 && selfTransfers.length > 0) {
+        // We positively recovered recipient outputs and ALL of them are addressed to ourselves: a
+        // self-transfer (consolidation / move-to-self). `value` is just the fee. Distinct category so
+        // the UI never renders it as money leaving the wallet. (When NO recipients were recovered we
+        // can't tell self from external, so that falls through to `transfer-sent` below.)
+        entries.push({ txid, blockNumber: a.blockNumber, category: 'self-transfer', tokenHash: usdcHash, tokenAddress: usdcAddress, value: net, ...feeField });
       } else {
         entries.push({ txid, blockNumber: a.blockNumber, category: 'transfer-sent', tokenHash: usdcHash, tokenAddress: usdcAddress, value: net, ...feeField, ...sentField });
       }

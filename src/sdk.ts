@@ -735,6 +735,7 @@ class ArmadaWallet implements Wallet {
       unshields: this.scanState.unshieldEvents(),
       sentOutputs: this.scanState.sentOutputs(),
       nullifyingKey: this.keyset.nullifyingKey,
+      shieldedAddress: this.keyset.shieldedAddress,
       usdcHash: this.ctx.usdcHash,
       usdcAddress: this.ctx.usdcAddress,
       ...(this.ctx.yieldAdapterAddress !== undefined ? { yieldAdapterAddress: this.ctx.yieldAdapterAddress } : {}),
