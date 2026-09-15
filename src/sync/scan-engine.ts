@@ -129,6 +129,11 @@ export interface ScanStateSnapshot {
     readonly txid: string;
     readonly addedAt: number;
   }>;
+  /**
+   * Per-txid relayer fee for gasless shields we co-authored (issue #88). Optional so snapshots written
+   * before this field restore cleanly (treated as none). `[txid, feeString]` pairs.
+   */
+  readonly shieldRelayerFees?: ReadonlyArray<readonly [string, string]>;
 }
 
 // Compare two commitment roots regardless of 0x-prefix / leading-zero padding.
@@ -159,6 +164,9 @@ export class WalletScanState {
   // Optimistic in-flight spends (issue #55), keyed by tree-scoped nullifier so a confirmed `Nullified`
   // event supersedes the matching optimistic hold idempotently.
   private readonly pending = new Map<string, PendingSpend>();
+  // Relayer fee paid in a gasless shield WE co-authored, per txid (issue #88 lever 2) — the value of the
+  // fee note (a shield commitment to the relayer) that rides in the same Shield event as our own note.
+  private readonly shieldRelayerFeeByTxid = new Map<string, bigint>();
 
   /**
    * Fold a decoded event batch into wallet state. Batches MUST arrive in scan order (ascending
@@ -175,16 +183,30 @@ export class WalletScanState {
       ...events.transacts.map((c): Leaf => ({ kind: 'transact', c })),
     ].sort((a, b) => a.c.tree - b.c.tree || a.c.position - b.c.position);
 
+    // Per-txid shield-commitment value totals (issue #88 lever 2). A gasless shield emits both the
+    // user's note AND the relayer's fee note in one Shield event/txid, each with a PLAINTEXT value. The
+    // relayer fee (a note we don't own) is recoverable as (total shield value in the txid) − (our owned
+    // shield value), with no decryption of the relayer's note. Accumulated here, reconciled after the loop.
+    const shieldTotalByTxid = new Map<string, bigint>();
+    const shieldOwnedByTxid = new Map<string, bigint>();
+
     const ownedTxos: TXO[] = [];
     for (const leaf of leaves) {
       const { tree, position, hash, blockNumber, txid } = leaf.c;
       this.insertLeaf(tree, position, hash);
+
+      if (leaf.kind === 'shield') {
+        shieldTotalByTxid.set(txid, (shieldTotalByTxid.get(txid) ?? 0n) + leaf.c.value);
+      }
 
       const owned =
         leaf.kind === 'transact'
           ? await decryptors.transact(leaf.c)
           : await decryptors.shield?.(leaf.c);
       if (owned !== undefined) {
+        if (leaf.kind === 'shield') {
+          shieldOwnedByTxid.set(txid, (shieldOwnedByTxid.get(txid) ?? 0n) + owned.value);
+        }
         const shieldFee = leaf.kind === 'shield' ? leaf.c.fee : undefined;
         const txo: TXO = {
           tree,
@@ -212,6 +234,14 @@ export class WalletScanState {
         const sent = await decryptors.sentTransact(leaf.c);
         if (sent !== undefined) this.sent.push(sent);
       }
+    }
+
+    // Record the relayer fee for shields WE co-authored (issue #88 lever 2): for each txid where we own a
+    // shield note, any remaining (non-owned) shield value is the relayer's fee note. A shield tx is
+    // per-user, so a txid's commitments are our note(s) + the fee note only. Zero for a non-gasless shield.
+    for (const [txid, owned] of shieldOwnedByTxid) {
+      const fee = (shieldTotalByTxid.get(txid) ?? owned) - owned;
+      if (fee > 0n) this.shieldRelayerFeeByTxid.set(txid, fee);
     }
 
     const nullifiers: SpentNullifier[] = events.nullifiers.map((n) => ({
@@ -277,6 +307,11 @@ export class WalletScanState {
   /** Notes the wallet authored (recovered sender-side) — the recipient/fee detail of its own sends. */
   sentOutputs(): readonly SentOutput[] {
     return this.sent;
+  }
+
+  /** Per-txid relayer fee paid in a gasless shield we co-authored (issue #88) — feeds history recovery. */
+  shieldRelayerFees(): ReadonlyMap<string, bigint> {
+    return this.shieldRelayerFeeByTxid;
   }
 
   /**
@@ -420,6 +455,7 @@ export class WalletScanState {
         txid: p.txid,
         addedAt: p.addedAt,
       })),
+      shieldRelayerFees: [...this.shieldRelayerFeeByTxid.entries()].map(([txid, fee]) => [txid, fee.toString()]),
     };
   }
 
@@ -478,6 +514,10 @@ export class WalletScanState {
         txid: p.txid,
         addedAt: p.addedAt,
       });
+    }
+    // `shieldRelayerFees` is optional — pre-lever-2 snapshots restore as none (issue #88).
+    for (const [txid, fee] of snapshot.shieldRelayerFees ?? []) {
+      state.shieldRelayerFeeByTxid.set(txid, BigInt(fee));
     }
     return state;
   }

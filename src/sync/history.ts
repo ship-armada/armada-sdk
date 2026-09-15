@@ -3,6 +3,7 @@
 
 import { TransactNote, OutputType } from '../core/index';
 import { tokenHashKey } from './balances';
+import { decodeSelfMetadata } from './self-metadata';
 import type { TXO, SpentNullifier } from './balances';
 import type { DecodedUnshield } from './event-decoder';
 import type { SentOutput } from './scan-engine';
@@ -18,6 +19,7 @@ export type HistoryCategory =
   | 'shield'
   | 'transfer-received'
   | 'transfer-sent'
+  | 'self-transfer'
   | 'unshield'
   | 'yield-deposit'
   | 'yield-withdraw';
@@ -35,8 +37,11 @@ export interface HistoryEntry {
   readonly tokenHash: string;
   readonly tokenAddress: `0x${string}`;
   readonly value: bigint;
-  /** Relayer fee paid (sends/unshields) — the in-band broadcaster fee. Populated in H3. */
+  /** Relayer fee paid — the in-band broadcaster fee on sends/unshields, or the fee note on a gasless
+   *  shield (issue #88 lever 2). Populated in H3 (sends) / from the Shield event (shields). */
   readonly broadcasterFee?: bigint;
+  /** The broadcaster's shielded (0zk) address that the fee note paid — recovered sender-side. */
+  readonly broadcasterShieldedAddress?: string;
   /** Shield fee charged (shield receives). */
   readonly shieldFee?: bigint;
   /** Protocol unshield fee (unshield entries) — from the on-chain Unshield event. */
@@ -45,6 +50,9 @@ export interface HistoryEntry {
   readonly recipient?: string;
   /** Sender's 0zk, if they disclosed it (transfer receives). */
   readonly senderShieldedAddress?: string;
+  /** Caller metadata recovered from the spend's change-note memo (issue #88 lever 3) — the opaque blob
+   *  passed to `prove({ selfMetadata })`, reproduced on a fresh scan even after local storage is cleared. */
+  readonly selfMetadata?: string;
   /** Recipient outputs of a send (transfer-sent), recovered sender-side — recipient 0zk + amount + memo. */
   readonly sentOutputs?: readonly SentRecipient[];
   readonly memo?: string;
@@ -160,7 +168,13 @@ export interface ReconstructHistoryInput {
   readonly unshields: readonly DecodedUnshield[];
   /** Notes the wallet authored (recovered sender-side) — recipient/fee detail of its own sends. */
   readonly sentOutputs: readonly SentOutput[];
+  /** Per-txid relayer fee paid in a gasless shield we co-authored (issue #88 lever 2) — recovered from
+   *  the Shield event's plaintext commitment values. Attached to the matching shield entry. */
+  readonly shieldRelayerFees?: ReadonlyMap<string, bigint>;
   readonly nullifyingKey: bigint;
+  /** The wallet's own 0zk address — used to recognize sends addressed to self (a self-transfer, not an
+   *  outgoing payment) so they aren't misreported as money leaving the wallet. */
+  readonly shieldedAddress: string;
   /** Canonical 32-byte hash (no 0x) of the tracked token (USDC). */
   readonly usdcHash: string;
   readonly usdcAddress: `0x${string}`;
@@ -183,7 +197,7 @@ export interface ReconstructHistoryInput {
  * rest of the SDK: aUSDC legs of yield ops aren't tracked, so a withdrawal is seen via its USDC return.
  */
 export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry[] {
-  const { ownedTxos, spentNullifiers, unshields, sentOutputs, nullifyingKey, usdcHash, usdcAddress } = input;
+  const { ownedTxos, spentNullifiers, unshields, sentOutputs, nullifyingKey, shieldedAddress, usdcHash, usdcAddress } = input;
   const yieldAdapter = input.yieldAdapterAddress?.toLowerCase();
   const isUsdc = (tokenHash: string): boolean => tokenHash === usdcHash;
 
@@ -218,6 +232,7 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
     inputs: bigint;
     change: bigint;
     receives: TXO[];
+    selfMetadata?: string;
   }
   const byTxid = new Map<string, Agg>();
   const agg = (txid: string, blockNumber: number): Agg => {
@@ -235,7 +250,12 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
     const spentIn = spendOf.get(txo);
     if (spentIn !== undefined) agg(spentIn.txid, spentIn.blockNumber).inputs += txo.value;
     if (ownSpendTxids.has(txo.txid) && txo.origin === 'transact') {
-      agg(txo.txid, txo.blockNumber).change += txo.value;
+      const a = agg(txo.txid, txo.blockNumber);
+      a.change += txo.value;
+      // Recover caller metadata stashed in the change note's memo (issue #88 lever 3). Only the change
+      // note carries the tagged blob; a user's self-transfer memo won't match the marker.
+      const meta = decodeSelfMetadata(txo.memo);
+      if (meta !== undefined) a.selfMetadata = meta;
     } else {
       agg(txo.txid, txo.blockNumber).receives.push(txo);
     }
@@ -252,11 +272,19 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
       // Sender-side detail: split our authored outputs into recipient transfers vs the broadcaster fee.
       const outs = sentByTxid.get(txid) ?? [];
       const transfers = outs.filter((o) => (o.outputType ?? OutputType.Transfer) === OutputType.Transfer);
-      const broadcasterFee = outs
-        .filter((o) => o.outputType === OutputType.BroadcasterFee)
-        .reduce((acc, o) => acc + o.value, 0n);
-      const feeField = broadcasterFee > 0n ? { broadcasterFee } : {};
-      const recipients: SentRecipient[] = transfers.map((o) => ({
+      const feeOutputs = outs.filter((o) => o.outputType === OutputType.BroadcasterFee);
+      const broadcasterFee = feeOutputs.reduce((acc, o) => acc + o.value, 0n);
+      // A Transfer output addressed to OUR OWN 0zk is a self-transfer leg — the value comes straight
+      // back to us (it's already netted into `a.change`), so it is NOT an outgoing payment and must be
+      // kept out of `sentOutputs`. Otherwise a send-to-self surfaces as a phantom outgoing amount.
+      const externalTransfers = transfers.filter((o) => o.recipientShieldedAddress !== shieldedAddress);
+      const selfTransfers = transfers.filter((o) => o.recipientShieldedAddress === shieldedAddress);
+      const feeField = {
+        ...(broadcasterFee > 0n ? { broadcasterFee } : {}),
+        ...(feeOutputs[0] !== undefined ? { broadcasterShieldedAddress: feeOutputs[0].recipientShieldedAddress } : {}),
+        ...(a.selfMetadata !== undefined ? { selfMetadata: a.selfMetadata } : {}),
+      };
+      const recipients: SentRecipient[] = externalTransfers.map((o) => ({
         recipientShieldedAddress: o.recipientShieldedAddress,
         value: o.value,
         ...(o.memo !== undefined ? { memo: o.memo } : {}),
@@ -277,6 +305,12 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
           recipient: u.to,
           ...feeField,
         });
+      } else if (externalTransfers.length === 0 && selfTransfers.length > 0) {
+        // We positively recovered recipient outputs and ALL of them are addressed to ourselves: a
+        // self-transfer (consolidation / move-to-self). `value` is just the fee. Distinct category so
+        // the UI never renders it as money leaving the wallet. (When NO recipients were recovered we
+        // can't tell self from external, so that falls through to `transfer-sent` below.)
+        entries.push({ txid, blockNumber: a.blockNumber, category: 'self-transfer', tokenHash: usdcHash, tokenAddress: usdcAddress, value: net, ...feeField });
       } else {
         entries.push({ txid, blockNumber: a.blockNumber, category: 'transfer-sent', tokenHash: usdcHash, tokenAddress: usdcAddress, value: net, ...feeField, ...sentField });
       }
@@ -290,13 +324,18 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
       continue;
     }
     for (const r of a.receives) {
+      const isShield = r.origin === 'shield';
+      // Gasless shields carry a relayer fee note in the same txid (issue #88); surface it as the entry's
+      // broadcaster fee so the recovered shield matches the local record's total (note + fee).
+      const shieldRelayerFee = isShield ? input.shieldRelayerFees?.get(txid) : undefined;
       entries.push({
         txid,
         blockNumber: r.blockNumber,
-        category: r.origin === 'shield' ? 'shield' : 'transfer-received',
+        category: isShield ? 'shield' : 'transfer-received',
         tokenHash: usdcHash, tokenAddress: usdcAddress,
         value: r.value,
         ...(r.shieldFee !== undefined ? { shieldFee: r.shieldFee } : {}),
+        ...(shieldRelayerFee !== undefined && shieldRelayerFee > 0n ? { broadcasterFee: shieldRelayerFee } : {}),
         ...(r.memo !== undefined ? { memo: r.memo } : {}),
         ...(r.senderShieldedAddress !== undefined ? { senderShieldedAddress: r.senderShieldedAddress } : {}),
       });

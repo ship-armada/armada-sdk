@@ -246,6 +246,27 @@ describe('wallet scan orchestrator (§4.4)', () => {
     ]);
   });
 
+  it('records the gasless relayer fee for a co-authored shield (issue #88 lever 2)', async () => {
+    const state = new WalletScanState();
+    // One Shield event / txid with our note (owned, 990k) + the relayer fee note (not owned, 10k).
+    await state.apply(
+      { ...noEvents(), shields: [mkShield(0, 0, leafHex(90), 990_000n), mkShield(0, 1, leafHex(91), 10_000n)] },
+      { transact: async () => undefined, shield: async (c) => (c.hash === leafHex(90) ? owned(TOKEN, 990_000n) : undefined) },
+    );
+    expect(state.shieldRelayerFees().get(TXID)).toBe(10_000n);
+    // Survives snapshot/restore.
+    expect(WalletScanState.restore(state.snapshot()).shieldRelayerFees().get(TXID)).toBe(10_000n);
+  });
+
+  it('records no relayer fee for a non-gasless shield (single owned note, issue #88)', async () => {
+    const state = new WalletScanState();
+    await state.apply(
+      { ...noEvents(), shields: [mkShield(0, 0, leafHex(92), 500_000n)] },
+      { transact: async () => undefined, shield: async () => owned(TOKEN, 500_000n) },
+    );
+    expect(state.shieldRelayerFees().size).toBe(0);
+  });
+
   describe('optimistic in-flight spend tracking (issue #55)', () => {
     const nf = (position: number, tree = 0) => ({ tree, nullifier: TransactNote.getNullifier(NK, position) });
     const BAL = { currentBlock: 200, finalityThreshold: 10 };

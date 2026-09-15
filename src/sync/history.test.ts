@@ -5,6 +5,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { initPoseidonPromise, TransactNote } from '../core/index';
 import type { TXO, SpentNullifier } from './balances';
 import { reconstructReceiveHistory, reconstructHistory, newReceivedNotes } from './history';
+import { encodeSelfMetadata } from './self-metadata';
 import type { DecodedUnshield } from './event-decoder';
 import type { SentOutput } from './scan-engine';
 
@@ -108,6 +109,7 @@ describe('reconstructHistory (H2 — sends / unshields / yield)', () => {
 
   const ADAPTER = '0xada9700000000000000000000000000000000000';
   const RECIPIENT = '0xbeef000000000000000000000000000000000000';
+  const SELF_0ZK = '0zk_self_wallet';
   const SPEND = tx('55');
 
   // An input note we own (received earlier at 0xaa) and later spend in SPEND.
@@ -115,7 +117,7 @@ describe('reconstructHistory (H2 — sends / unshields / yield)', () => {
   const changeNote = txo({ tree: 0, position: 6, value: 400_000n, txid: SPEND, origin: 'transact', blockNumber: 30 });
   const spent: SpentNullifier[] = [{ tree: 0, nullifier: TransactNote.getNullifier(NK, 5), txid: SPEND, blockNumber: 30 }];
 
-  const base = { spentNullifiers: spent, sentOutputs: [], nullifyingKey: NK, usdcHash: USDC_HASH, usdcAddress: USDC };
+  const base = { spentNullifiers: spent, sentOutputs: [], nullifyingKey: NK, shieldedAddress: SELF_0ZK, usdcHash: USDC_HASH, usdcAddress: USDC };
   const unshield = (over: Partial<DecodedUnshield>): DecodedUnshield => ({
     to: RECIPIENT,
     tokenData: { tokenType: 0, tokenAddress: USDC, tokenSubID: '0' },
@@ -185,6 +187,85 @@ describe('reconstructHistory (H2 — sends / unshields / yield)', () => {
     const sent = entries.find((e) => e.txid === SPEND)!;
     expect(sent.sentOutputs).toEqual([{ recipientShieldedAddress: '0zk_bob', value: 480_000n }]);
     expect(sent.broadcasterFee).toBe(20_000n);
+  });
+
+  it('recovers the broadcaster shielded address from the fee output', () => {
+    const sentOutputs: SentOutput[] = [
+      { txid: SPEND, blockNumber: 30, tokenHash: USDC_HASH, value: 20_000n, recipientShieldedAddress: '0zk_relayer', outputType: 1 },
+      { txid: SPEND, blockNumber: 30, tokenHash: USDC_HASH, value: 480_000n, recipientShieldedAddress: '0zk_bob', outputType: 0 },
+    ];
+    const entries = reconstructHistory({ ...base, ownedTxos: [inputNote, changeNote], unshields: [], sentOutputs });
+    const sent = entries.find((e) => e.txid === SPEND)!;
+    expect(sent.broadcasterShieldedAddress).toBe('0zk_relayer');
+  });
+
+  it('classifies a send to our OWN address as self-transfer with value = −fee (issue #88, the "−194" bug)', () => {
+    // WHY: a transfer to our own 0zk comes straight back (netted into change), so the wallet only loses
+    // the fee. The self-recipient must NOT appear in sentOutputs (it's not an outgoing payment) and the
+    // entry must be a distinct `self-transfer`, so a UI never renders it as money leaving the wallet.
+    const sentOutputs: SentOutput[] = [
+      { txid: SPEND, blockNumber: 30, tokenHash: USDC_HASH, value: 20_000n, recipientShieldedAddress: '0zk_relayer', outputType: 1 },
+      { txid: SPEND, blockNumber: 30, tokenHash: USDC_HASH, value: 480_000n, recipientShieldedAddress: SELF_0ZK, outputType: 0 },
+    ];
+    // inputNote 900k spent; change note here must reflect the self-recipient coming back so net = −fee.
+    // Model both returned notes as owned change in SPEND: the 480k self-note + a 400k change note = 880k,
+    // inputs 900k → net = −20k (the fee).
+    const selfNote = txo({ tree: 0, position: 7, value: 480_000n, txid: SPEND, origin: 'transact', blockNumber: 30 });
+    const entries = reconstructHistory({ ...base, ownedTxos: [inputNote, changeNote, selfNote], unshields: [], sentOutputs });
+    const self = entries.find((e) => e.txid === SPEND)!;
+    expect(self.category).toBe('self-transfer');
+    expect(self.value).toBe(-20_000n); // only the fee left the wallet
+    expect(self.sentOutputs).toBeUndefined(); // no phantom outgoing amount
+    expect(self.broadcasterFee).toBe(20_000n);
+  });
+
+  it('attaches the gasless relayer fee to a shield entry (lever 2)', () => {
+    const shieldTxid = tx('77');
+    const shieldNote = txo({ tree: 0, position: 8, value: 990_000n, txid: shieldTxid, origin: 'shield', shieldFee: 1_000n, blockNumber: 12 });
+    const entries = reconstructHistory({
+      ...base,
+      spentNullifiers: [],
+      ownedTxos: [shieldNote],
+      unshields: [],
+      shieldRelayerFees: new Map([[shieldTxid, 10_000n]]),
+    });
+    const shield = entries.find((e) => e.txid === shieldTxid)!;
+    expect(shield.category).toBe('shield');
+    expect(shield.value).toBe(990_000n);
+    expect(shield.shieldFee).toBe(1_000n); // protocol fee, distinct from the relayer fee
+    expect(shield.broadcasterFee).toBe(10_000n); // gasless relayer fee note
+  });
+
+  it('recovers self-metadata stashed in the change-note memo (lever 3)', () => {
+    // The change note (owned, in the spend txid) carries a tagged metadata blob written at prove time.
+    // A fresh scan recovers it onto the spend entry even though local storage is gone.
+    const blob = 'fee=20000;mode=gasless';
+    const changeWithMeta = txo({ tree: 0, position: 6, value: 400_000n, txid: SPEND, origin: 'transact', blockNumber: 30, memo: encodeSelfMetadata(blob) });
+    const entries = reconstructHistory({ ...base, ownedTxos: [inputNote, changeWithMeta], unshields: [] });
+    const sent = entries.find((e) => e.txid === SPEND)!;
+    expect(sent.category).toBe('transfer-sent');
+    expect(sent.selfMetadata).toBe(blob);
+  });
+
+  it('does not mistake a user memo on a received note for self-metadata (lever 3)', () => {
+    // A plain incoming transfer with a user memo must not surface selfMetadata.
+    const received = txo({ tree: 0, position: 9, value: 100_000n, txid: tx('99'), origin: 'transact', blockNumber: 40, memo: 'thanks' });
+    const entries = reconstructHistory({ ...base, spentNullifiers: [], ownedTxos: [received], unshields: [] });
+    const entry = entries.find((e) => e.txid === tx('99'))!;
+    expect(entry.category).toBe('transfer-received');
+    expect(entry.selfMetadata).toBeUndefined();
+  });
+
+  it('a mixed send (self + external recipient) stays transfer-sent, self leg excluded from sentOutputs', () => {
+    const sentOutputs: SentOutput[] = [
+      { txid: SPEND, blockNumber: 30, tokenHash: USDC_HASH, value: 480_000n, recipientShieldedAddress: '0zk_bob', outputType: 0 },
+      { txid: SPEND, blockNumber: 30, tokenHash: USDC_HASH, value: 100_000n, recipientShieldedAddress: SELF_0ZK, outputType: 0 },
+    ];
+    const selfNote = txo({ tree: 0, position: 7, value: 100_000n, txid: SPEND, origin: 'transact', blockNumber: 30 });
+    const entries = reconstructHistory({ ...base, ownedTxos: [inputNote, changeNote, selfNote], unshields: [], sentOutputs });
+    const sent = entries.find((e) => e.txid === SPEND)!;
+    expect(sent.category).toBe('transfer-sent');
+    expect(sent.sentOutputs).toEqual([{ recipientShieldedAddress: '0zk_bob', value: 480_000n }]);
   });
 
   it('transfer-sent is dated by the spend block, not the spent input\'s origin block', () => {

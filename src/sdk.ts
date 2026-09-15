@@ -19,6 +19,7 @@ import {
   scanStateKey,
   tokenHashKey,
   withTokenAddresses,
+  encodeSelfMetadata,
   POOL_V2_EVENT_ABI,
   type EventSource,
   type SyncEventMap,
@@ -734,7 +735,9 @@ class ArmadaWallet implements Wallet {
       spentNullifiers: this.scanState.spentNullifiers(),
       unshields: this.scanState.unshieldEvents(),
       sentOutputs: this.scanState.sentOutputs(),
+      shieldRelayerFees: this.scanState.shieldRelayerFees(),
       nullifyingKey: this.keyset.nullifyingKey,
+      shieldedAddress: this.keyset.shieldedAddress,
       usdcHash: this.ctx.usdcHash,
       usdcAddress: this.ctx.usdcAddress,
       ...(this.ctx.yieldAdapterAddress !== undefined ? { yieldAdapterAddress: this.ctx.yieldAdapterAddress } : {}),
@@ -814,7 +817,17 @@ class ArmadaWallet implements Wallet {
     const outputs: WitnessOutputRequest[] = [];
     if (plan.summary.feeOutput) outputs.push({ receiverAddress: plan.summary.feeOutput.toShieldedAddress, value: plan.summary.feeOutput.value, outputType: OutputType.BroadcasterFee });
     for (const o of plan.summary.outputs) outputs.push({ receiverAddress: o.toShieldedAddress, value: o.value, outputType: OutputType.Transfer, ...(o.memo !== undefined ? { memo: o.memo } : {}) });
-    if (plan.summary.changeValue > 0n) outputs.push({ receiverAddress: this.keyset.shieldedAddress, value: plan.summary.changeValue, outputType: OutputType.Change });
+    if (plan.summary.changeValue > 0n) {
+      // Optionally stash caller metadata in the change note's memo (issue #88 lever 3). The change note
+      // is self-owned, so a fresh scan recovers this on history() even after local storage is cleared.
+      const changeMemo = options?.selfMetadata !== undefined ? encodeSelfMetadata(options.selfMetadata) : undefined;
+      outputs.push({
+        receiverAddress: this.keyset.shieldedAddress,
+        value: plan.summary.changeValue,
+        outputType: OutputType.Change,
+        ...(changeMemo !== undefined ? { memo: changeMemo } : {}),
+      });
+    }
 
     return prove(
       {

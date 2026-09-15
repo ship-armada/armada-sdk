@@ -96,6 +96,9 @@ export type {
 export { startAutoSync } from './auto-sync';
 export type { AutoSyncOptions } from './auto-sync';
 
+// Self-metadata codec — tag/recover a caller blob stored in a self-owned change-note memo (issue #88).
+export { encodeSelfMetadata, decodeSelfMetadata } from './self-metadata';
+
 // Balance aggregation — per-token spendable/pending from the TXO set + spent nullifiers.
 export { computeBalances, txoFromNote, tokenHashKey, withTokenAddresses } from './balances';
 export type { TXO, SpentNullifier, PendingSpend, TokenBalance, BalanceOptions } from './balances';
