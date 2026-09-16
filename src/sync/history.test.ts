@@ -299,10 +299,24 @@ describe('reconstructHistory (H2 — sends / unshields / yield)', () => {
     const sharesIn = txo({ tree: 0, position: 8, value: 12_000n, txid: tx('bb'), origin: 'transact', tokenHash: SHARE_HASH, blockNumber: 6 }); // spent in WD
     const usdcOut = txo({ tree: 0, position: 9, value: 950_000n, txid: WD, origin: 'transact', blockNumber: 40 }); // USDC returned to us
     const spentWd: SpentNullifier[] = [{ tree: 0, nullifier: TransactNote.getNullifier(NK, 8), txid: WD, blockNumber: 40 }];
-    const shareUnshield = unshield({ to: ADAPTER, txid: WD, tokenData: { tokenType: 0, tokenAddress: SHARE, tokenSubID: '0' } });
-    const entries = reconstructHistory({ ...base, spentNullifiers: spentWd, ownedTxos: [sharesIn, usdcOut], unshields: [shareUnshield], yieldAdapterAddress: ADAPTER });
-    expect(entries.find((e) => e.txid === WD && e.tokenHash === USDC_HASH)).toMatchObject({ category: 'yield-withdraw', value: 950_000n });
+    const shareUnshield = unshield({ to: ADAPTER, txid: WD, amount: 12_000n, tokenData: { tokenType: 0, tokenAddress: SHARE, tokenSubID: '0' } });
+    const entries = reconstructHistory({ ...base, spentNullifiers: spentWd, ownedTxos: [sharesIn, usdcOut], unshields: [shareUnshield], yieldAdapterAddress: ADAPTER, shieldRelayerFees: new Map([[WD, 3_000n]]) });
+    // The USDC leg carries the shares redeemed (the adapter Unshield amount) + the relayer's re-shield
+    // fee (shieldRelayerFees), so a consumer that keeps only the USDC leg is whole.
+    expect(entries.find((e) => e.txid === WD && e.tokenHash === USDC_HASH)).toMatchObject({ category: 'yield-withdraw', value: 950_000n, shares: 12_000n, broadcasterFee: 3_000n });
     expect(entries.find((e) => e.txid === WD && e.tokenHash === SHARE_HASH)).toMatchObject({ category: 'yield-withdraw', value: -12_000n });
+  });
+
+  it('yield-withdraw with no relayer fee: shares surfaced, no broadcasterFee', () => {
+    const WD = tx('e2');
+    const sharesIn = txo({ tree: 0, position: 8, value: 7_000n, txid: tx('cc'), origin: 'transact', tokenHash: SHARE_HASH, blockNumber: 6 });
+    const usdcOut = txo({ tree: 0, position: 9, value: 500_000n, txid: WD, origin: 'transact', blockNumber: 40 });
+    const spentWd: SpentNullifier[] = [{ tree: 0, nullifier: TransactNote.getNullifier(NK, 8), txid: WD, blockNumber: 40 }];
+    const shareUnshield = unshield({ to: ADAPTER, txid: WD, amount: 7_000n, tokenData: { tokenType: 0, tokenAddress: SHARE, tokenSubID: '0' } });
+    const entries = reconstructHistory({ ...base, spentNullifiers: spentWd, ownedTxos: [sharesIn, usdcOut], unshields: [shareUnshield], yieldAdapterAddress: ADAPTER });
+    const usdcLeg = entries.find((e) => e.txid === WD && e.tokenHash === USDC_HASH)!;
+    expect(usdcLeg).toMatchObject({ category: 'yield-withdraw', value: 500_000n, shares: 7_000n });
+    expect(usdcLeg.broadcasterFee).toBeUndefined();
   });
 
   it('transfer-sent is dated by the spend block, not the spent input\'s origin block', () => {
