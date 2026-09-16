@@ -31,13 +31,14 @@ const dummyCt = (): CommitmentCiphertextV2 => ({
 const mkTransact = (tree: number, position: number, hash: string): DecodedTransactCommitment => ({
   tree, position, blockNumber: 100, txid: TXID, hash, ciphertext: dummyCt(),
 });
-const mkShield = (tree: number, position: number, hash: string, value = 0n): DecodedShieldCommitment => ({
+const mkShield = (tree: number, position: number, hash: string, value = 0n, fee?: bigint): DecodedShieldCommitment => ({
   tree, position, blockNumber: 100, txid: TXID, hash,
   npk: leafHex(1),
   tokenData: { tokenType: 0, tokenAddress: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', tokenSubID: '0' } as TokenData,
   value,
   encryptedBundle: [leafHex(0), leafHex(0), leafHex(0)],
   shieldKey: leafHex(0),
+  ...(fee === undefined ? {} : { fee }),
 });
 
 const noEvents = (): DecodedPoolEvents => ({ shields: [], transacts: [], nullifiers: [], unshields: [] });
@@ -248,7 +249,8 @@ describe('wallet scan orchestrator (§4.4)', () => {
 
   it('records the gasless relayer fee for a co-authored shield (issue #88 lever 2)', async () => {
     const state = new WalletScanState();
-    // One Shield event / txid with our note (owned, 990k) + the relayer fee note (not owned, 10k).
+    // One Shield event / txid with our note (owned, 990k) + the relayer fee note (not owned, 10k). No
+    // per-commitment shield fee here → the relayer GROSS equals its net note value.
     await state.apply(
       { ...noEvents(), shields: [mkShield(0, 0, leafHex(90), 990_000n), mkShield(0, 1, leafHex(91), 10_000n)] },
       { transact: async () => undefined, shield: async (c) => (c.hash === leafHex(90) ? owned(TOKEN, 990_000n) : undefined) },
@@ -256,6 +258,25 @@ describe('wallet scan orchestrator (§4.4)', () => {
     expect(state.shieldRelayerFees().get(TXID)).toBe(10_000n);
     // Survives snapshot/restore.
     expect(WalletScanState.restore(state.snapshot()).shieldRelayerFees().get(TXID)).toBe(10_000n);
+  });
+
+  it('records the relayer fee GROSS — the relayer note value PLUS its own protocol shield fee (issue #88)', async () => {
+    const state = new WalletScanState();
+    // Gasless shield of 1_000_000: user note net 745_000 (+5_000 shield fee) + relayer note net 249_950
+    // (+50 shield fee). The relayer fee the user PAID is the relayer note GROSS = 249_950 + 50 = 250_000,
+    // NOT the relayer's net 249_950 — so a recovered shield reconstructs the full 1_000_000 deposit.
+    await state.apply(
+      {
+        ...noEvents(),
+        shields: [
+          mkShield(0, 0, leafHex(93), 745_000n, 5_000n),
+          mkShield(0, 1, leafHex(94), 249_950n, 50n),
+        ],
+      },
+      { transact: async () => undefined, shield: async (c) => (c.hash === leafHex(93) ? owned(TOKEN, 745_000n) : undefined) },
+    );
+    expect(state.shieldRelayerFees().get(TXID)).toBe(250_000n);
+    expect(WalletScanState.restore(state.snapshot()).shieldRelayerFees().get(TXID)).toBe(250_000n);
   });
 
   it('records no relayer fee for a non-gasless shield (single owned note, issue #88)', async () => {

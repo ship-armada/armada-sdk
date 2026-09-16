@@ -130,7 +130,8 @@ export interface ScanStateSnapshot {
     readonly addedAt: number;
   }>;
   /**
-   * Per-txid relayer fee for gasless shields we co-authored (issue #88). Optional so snapshots written
+   * Per-txid relayer fee (GROSS — the relayer note's value + its own protocol shield fee, i.e. what the
+   * user paid the relayer) for gasless shields we co-authored (issue #88). Optional so snapshots written
    * before this field restore cleanly (treated as none). `[txid, feeString]` pairs.
    */
   readonly shieldRelayerFees?: ReadonlyArray<readonly [string, string]>;
@@ -183,10 +184,11 @@ export class WalletScanState {
       ...events.transacts.map((c): Leaf => ({ kind: 'transact', c })),
     ].sort((a, b) => a.c.tree - b.c.tree || a.c.position - b.c.position);
 
-    // Per-txid shield-commitment value totals (issue #88 lever 2). A gasless shield emits both the
-    // user's note AND the relayer's fee note in one Shield event/txid, each with a PLAINTEXT value. The
-    // relayer fee (a note we don't own) is recoverable as (total shield value in the txid) − (our owned
-    // shield value), with no decryption of the relayer's note. Accumulated here, reconciled after the loop.
+    // Per-txid shield GROSS totals (issue #88 lever 2). A gasless shield emits both the user's note AND
+    // the relayer's fee note in one Shield event/txid, each with a PLAINTEXT value AND a plaintext
+    // protocol shield fee (the `fees[]` array). The relayer fee (a note we don't own) is recoverable as
+    // (total shield GROSS in the txid) − (our owned shield GROSS), with no decryption of the relayer's
+    // note — `gross = commitment value + its shield fee`. Accumulated here, reconciled after the loop.
     const shieldTotalByTxid = new Map<string, bigint>();
     const shieldOwnedByTxid = new Map<string, bigint>();
 
@@ -196,7 +198,11 @@ export class WalletScanState {
       this.insertLeaf(tree, position, hash);
 
       if (leaf.kind === 'shield') {
-        shieldTotalByTxid.set(txid, (shieldTotalByTxid.get(txid) ?? 0n) + leaf.c.value);
+        // Accumulate the GROSS shield value per commitment (net committed value + its protocol shield
+        // fee, both plaintext in the Shield event). Summing gross — not just the net commitment value —
+        // makes the relayer fee derived below the amount the user actually PAID the relayer (its note +
+        // the shield fee taken from it), so a recovered gasless shield reconstructs the full deposit.
+        shieldTotalByTxid.set(txid, (shieldTotalByTxid.get(txid) ?? 0n) + leaf.c.value + (leaf.c.fee ?? 0n));
       }
 
       const owned =
@@ -205,7 +211,9 @@ export class WalletScanState {
           : await decryptors.shield?.(leaf.c);
       if (owned !== undefined) {
         if (leaf.kind === 'shield') {
-          shieldOwnedByTxid.set(txid, (shieldOwnedByTxid.get(txid) ?? 0n) + owned.value);
+          // Our own shield gross (net note + its shield fee) — subtracted from the txid gross total
+          // below so what remains is the relayer fee note's GROSS.
+          shieldOwnedByTxid.set(txid, (shieldOwnedByTxid.get(txid) ?? 0n) + owned.value + (leaf.c.fee ?? 0n));
         }
         const shieldFee = leaf.kind === 'shield' ? leaf.c.fee : undefined;
         const txo: TXO = {
@@ -236,12 +244,13 @@ export class WalletScanState {
       }
     }
 
-    // Record the relayer fee for shields WE co-authored (issue #88 lever 2): for each txid where we own a
-    // shield note, any remaining (non-owned) shield value is the relayer's fee note. A shield tx is
+    // Record the relayer fee for shields WE co-authored (issue #88 lever 2): for each txid where we own
+    // a shield note, the remaining (non-owned) shield GROSS is the relayer's fee note — its net value
+    // plus its own protocol shield fee, i.e. what the user actually paid the relayer. A shield tx is
     // per-user, so a txid's commitments are our note(s) + the fee note only. Zero for a non-gasless shield.
-    for (const [txid, owned] of shieldOwnedByTxid) {
-      const fee = (shieldTotalByTxid.get(txid) ?? owned) - owned;
-      if (fee > 0n) this.shieldRelayerFeeByTxid.set(txid, fee);
+    for (const [txid, ownedGross] of shieldOwnedByTxid) {
+      const relayerGross = (shieldTotalByTxid.get(txid) ?? ownedGross) - ownedGross;
+      if (relayerGross > 0n) this.shieldRelayerFeeByTxid.set(txid, relayerGross);
     }
 
     const nullifiers: SpentNullifier[] = events.nullifiers.map((n) => ({
