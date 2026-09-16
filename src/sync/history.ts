@@ -47,6 +47,9 @@ export interface HistoryEntry {
   readonly shieldFee?: bigint;
   /** Protocol unshield fee (unshield entries) — from the on-chain Unshield event. */
   readonly unshieldFee?: bigint;
+  /** Vault shares redeemed (yield-withdraw entries) — the vault-token amount unshielded to the adapter.
+   *  Surfaced on the USDC leg so a consumer that keeps only the USDC leg still sees the share count. */
+  readonly shares?: bigint;
   /** Public recipient address (unshield entries). */
   readonly recipient?: string;
   /** Sender's 0zk, if they disclosed it (transfer receives). */
@@ -331,7 +334,23 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
     // (USDC) returned → withdraw, the vault share minted → deposit.
     if (toAdapter && a.receives.length > 0) {
       const sum = a.receives.reduce((acc, r) => acc + r.value, 0n);
-      entries.push({ txid, blockNumber: a.blockNumber, category: isUsdc ? 'yield-withdraw' : 'yield-deposit', tokenHash, tokenAddress, value: sum });
+      if (isUsdc) {
+        // yield-withdraw USDC leg. Attach BOTH pieces the counterpart share leg / re-shield fee would
+        // otherwise strand, so a consumer that keeps only this USDC leg is whole:
+        //  - `shares`: the vault shares redeemed = the vault-token unshield to the adapter (this txid's
+        //    only adapter-unshield on a withdraw).
+        //  - `broadcasterFee`: the relayer's re-shield fee note (GROSS), captured by `shieldRelayerFees`
+        //    (issue #92) — the redeem re-shields USDC to the user AND a fee note to the relayer.
+        const shares = txUnshields.find((u) => u.to.toLowerCase() === yieldAdapter)?.amount;
+        const relayerFee = input.shieldRelayerFees?.get(txid);
+        entries.push({
+          txid, blockNumber: a.blockNumber, category: 'yield-withdraw', tokenHash, tokenAddress, value: sum,
+          ...(shares !== undefined ? { shares } : {}),
+          ...(relayerFee !== undefined && relayerFee > 0n ? { broadcasterFee: relayerFee } : {}),
+        });
+      } else {
+        entries.push({ txid, blockNumber: a.blockNumber, category: 'yield-deposit', tokenHash, tokenAddress, value: sum });
+      }
       continue;
     }
     for (const r of a.receives) {
