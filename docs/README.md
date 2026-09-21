@@ -33,7 +33,7 @@ npm run docs:api && npm run docs:build && npm run docs:preview
 | `guide/*.md` | Hand-written guide pages |
 | `index.md` | Landing page |
 | `.vitepress/config.mts` | Site config — nav, sidebar, search |
-| `public/CNAME` | Custom domain for GitHub Pages (`docs.armada.blue`) |
+| `public/CNAME` | Custom domain for GitHub Pages (`sdk.armada.blue`) |
 | `api/` | Generated API reference — git-ignored, built by `docs:api` |
 
 ## Deployment
