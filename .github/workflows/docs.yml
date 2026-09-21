@@ -1,5 +1,5 @@
 # ABOUTME: Builds the VitePress developer docs (with the TypeDoc API reference) and deploys them to
-# ABOUTME: GitHub Pages on every push to main. Serves the custom domain docs.armada.blue.
+# ABOUTME: GitHub Pages on every push to main. Serves the custom domain sdk.armada.blue.
 name: docs
 
 on:
