@@ -34,7 +34,7 @@ import {
   type TokenBalance,
 } from './sync/index';
 import { EncryptedStore, deriveWalletStorageKey, type StorageAdapter } from './storage/index';
-import { planTransfer, planWitnessInputs, prove, runPreflight, type Plan, type ProofHandle, type PreflightResult, type FeeQuote } from './tx/index';
+import { planSpend, planWitnessInputs, prove, runPreflight, type Plan, type ProofHandle, type PreflightResult, type FeeQuote } from './tx/index';
 import type { WitnessOutputRequest } from './tx/witness';
 import {
   deriveKeyset,
@@ -765,7 +765,7 @@ class ArmadaWallet implements Wallet {
     });
   }
 
-  async planTransfer(request: PlanTransferRequest): Promise<Plan> {
+  async planTransfer(request: PlanTransferRequest): Promise<Plan[]> {
     if (!this.canSpend) throw new NoSpendCapabilityError('planTransfer: wallet has no SpendSigner');
     this.prunePendingSpends();
     const txos = this.scanState.spendableTxos(this.keyset.nullifyingKey);
@@ -777,7 +777,7 @@ class ArmadaWallet implements Wallet {
     // schedule that predates the per-op keys, then to 0 (no fee note) if even that is absent.
     const scheduleKey = feeScheduleKey(request, this.ctx.yieldAdapterAddress);
     const feeValue = BigInt(request.fee.schedule[scheduleKey] ?? request.fee.schedule['transfer'] ?? '0');
-    const selection = planTransfer({
+    const selections = planSpend({
       txos,
       // Defaults to USDC; a caller can spend any pool token (e.g. yield vault shares on redeem).
       tokenAddress: request.tokenAddress ?? this.ctx.usdcAddress,
@@ -799,12 +799,16 @@ class ArmadaWallet implements Wallet {
       ...(this.ctx.supportedShapes !== undefined ? { supportedShapes: this.ctx.supportedShapes } : {}),
     });
     // Capture each selected input's merkle proof from the SAME scan state the roots came from (no await
-    // since roots were read above), so the plan owns proofs consistent with its `merkleRoot`. `prove()`
+    // since roots were read above), so each plan owns proofs consistent with its `merkleRoot`. `prove()`
     // uses these rather than re-reading live state, closing the plan→prove tree-append race (SPEC §4.6).
-    const merkleProofs = selection.selectedInputs.map((txo) =>
-      this.scanState.merkleProof(txo.tree, txo.position).elements.map((e) => BigInt(`0x${e}`)),
-    );
-    return { ...selection, merkleProofs };
+    // A fragmented transfer yields >1 group, submitted atomically as one transact([...]); each group is
+    // an independent Plan proved separately (the caller proves all, then combines the calldata).
+    return selections.map((selection) => ({
+      ...selection,
+      merkleProofs: selection.selectedInputs.map((txo) =>
+        this.scanState.merkleProof(txo.tree, txo.position).elements.map((e) => BigInt(`0x${e}`)),
+      ),
+    }));
   }
 
   async prove(plan: Plan, options?: ProveOptions): Promise<ProofHandle> {

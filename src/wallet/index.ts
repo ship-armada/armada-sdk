@@ -57,7 +57,15 @@ export interface Wallet {
   balances(): Promise<TokenBalance[]>;
   /** Reconstructed transaction history from the wallet's own scan state (SPEC §5). Works view-only. */
   history(options?: { sinceBlock?: number }): Promise<HistoryEntry[]>;
-  planTransfer(request: PlanTransferRequest): Promise<Plan>;
+  /**
+   * Plan a shielded spend as ONE OR MORE supported-shape groups (SPEC §4.6). Returns a single-element
+   * array for the common case; a fragmented single-recipient transfer that no registered shape can cover
+   * in one proof is split across several groups (recipient receives multiple notes), all submitted
+   * atomically as one `transact([...])`. The caller proves each `Plan` and combines the calldata.
+   * Throws `TooFragmentedError` past the batch cap (consolidate first); `UnsupportedCircuitShapeError`
+   * for an unsplittable spend (unshield / multi-recipient) whose shape isn't registered.
+   */
+  planTransfer(request: PlanTransferRequest): Promise<Plan[]>;
   /**
    * Cheap pre-proof checks over a plan (SPEC §4.7) — root freshness, input nullifiers unspent, and
    * (if a `feeQuote` is passed) quote freshness. Returns a finding per check; the caller decides policy.
