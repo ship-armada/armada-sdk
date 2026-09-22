@@ -2,13 +2,8 @@
 // ABOUTME: every proof-group on a registered circuit shape (sparse table; input-count depends on output-count).
 
 import { describe, it, expect } from 'vitest';
-import {
-  parseShapeKey,
-  isSupportedShape,
-  supportedInputCounts,
-  nextSupportedInputCount,
-  padOutputTarget,
-} from './shapes';
+import { parseShapeKey, isSupportedShape, maxSupportedInputCount } from './shapes';
+import { shapeKey } from '../prover/index';
 
 // The armada-circuits v0.1.0-dev registered set (19 shapes). Deliberately SPARSE: valid input-count N
 // depends on output-count M — e.g. no 5x3, no 7x2, and M=4 exists only at N=8.
@@ -34,37 +29,21 @@ describe('isSupportedShape', () => {
   });
 });
 
-describe('supportedInputCounts', () => {
-  it('returns the ascending input counts valid for an output count', () => {
-    expect(supportedInputCounts(SUPPORTED, 1)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
-    expect(supportedInputCounts(SUPPORTED, 2)).toEqual([1, 2, 3, 4, 5, 6]);
-    expect(supportedInputCounts(SUPPORTED, 3)).toEqual([1, 2, 3, 4]);
-    expect(supportedInputCounts(SUPPORTED, 4)).toEqual([8]);
-    expect(supportedInputCounts(SUPPORTED, 5)).toEqual([]);
+describe('isSupportedShape key format', () => {
+  it('uses the prover manifest key format (shapeKey), so the two cannot diverge', () => {
+    const only = new Set([shapeKey({ nullifiers: 3, commitments: 2 })]);
+    expect(isSupportedShape(only, 3, 2)).toBe(true);
+    expect(isSupportedShape(only, 2, 3)).toBe(false);
   });
 });
 
-describe('nextSupportedInputCount', () => {
-  it('finds the smallest supported N >= minN for an output count', () => {
-    expect(nextSupportedInputCount(SUPPORTED, 3, 3)).toBe(3);
-    expect(nextSupportedInputCount(SUPPORTED, 5, 2)).toBe(5);
-    // M=3 tops out at N=4, so a 5-input group can't be a 3-output shape → caller must split or pad.
-    expect(nextSupportedInputCount(SUPPORTED, 5, 3)).toBeUndefined();
-    // M=2 tops out at N=6.
-    expect(nextSupportedInputCount(SUPPORTED, 7, 2)).toBeUndefined();
-    expect(nextSupportedInputCount(SUPPORTED, 7, 1)).toBe(7);
+describe('maxSupportedInputCount', () => {
+  it('returns the largest registered input count (bounds a split group\'s size)', () => {
+    expect(maxSupportedInputCount(SUPPORTED)).toBe(8);
+    expect(maxSupportedInputCount(new Set(['1x1', '4x2']))).toBe(4);
   });
-});
 
-describe('padOutputTarget', () => {
-  it('finds the smallest supported output count M\' >= minM for a fixed input count (L2 padding)', () => {
-    // 8 inputs with 2-3 real outputs pads up to 8x4 (the only M>1 shape at N=8).
-    expect(padOutputTarget(SUPPORTED, 8, 2)).toBe(4);
-    expect(padOutputTarget(SUPPORTED, 8, 3)).toBe(4);
-    // No padding needed when the exact shape exists.
-    expect(padOutputTarget(SUPPORTED, 3, 3)).toBe(3);
-    expect(padOutputTarget(SUPPORTED, 1, 3)).toBe(3);
-    // 5 inputs has no 3+-output shape (only 5x1, 5x2) → can't pad up to reach 3 outputs.
-    expect(padOutputTarget(SUPPORTED, 5, 3)).toBeUndefined();
+  it('returns 0 for an empty set', () => {
+    expect(maxSupportedInputCount(new Set())).toBe(0);
   });
 });

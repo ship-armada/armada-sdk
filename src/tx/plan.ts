@@ -12,20 +12,11 @@ import {
 import { shapeKey, type CircuitShape } from '../prover/index';
 import type { Plan, PlanSelection, PlanOutput, PlanSummary, DecodedBoundParams, CctpBinding } from './index';
 import { verifyCctpBinding } from './adapt-params';
-import { isSupportedShape } from './shapes';
+import { isSupportedShape, maxSupportedInputCount } from './shapes';
 import type { WitnessInput } from './witness';
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as const;
 const ZERO_BYTES32 = `0x${'00'.repeat(32)}` as const;
-
-/**
- * Max input notes per split group. 6 = the largest N supported at M=2 (`6x2`), so a split group carrying
- * a recipient portion + (fee OR change) is always a supported shape, and pure-portion middle groups
- * (`Nx1`) are supported for any N ≤ 6 too. Uniform cap keeps every split group provably in-range without
- * per-group shape gymnastics. (M=1 also supports 7,8 but the uniform-6 rule trades a little capacity for
- * a much simpler correctness argument.)
- */
-const SPLIT_GROUP_MAX_INPUTS = 6;
 
 /** Max groups in one atomic batch (proving is serial; this bounds worst-case latency). Beyond → consolidate. */
 const MAX_SPLIT_GROUPS = 4;
@@ -36,7 +27,11 @@ export interface TransferOutputRequest {
   readonly memo?: string;
 }
 
-/** The broadcaster (relayer) fee, paid as a shielded output note to the broadcaster's 0zk address. */
+/**
+ * The broadcaster (relayer) fee, paid as a shielded output note to the broadcaster's 0zk address.
+ * `value` is the PER-PROOF fee: a split batch of k proofs pays `k × value` (each proof costs the
+ * broadcaster its own verification gas), carried by fee notes in the batch's leading groups.
+ */
 export interface FeeRequest {
   readonly broadcasterShieldedAddress: string;
   readonly value: bigint;
@@ -79,8 +74,10 @@ export interface PlanTransferParams {
   readonly minGasPrice?: bigint;
   /**
    * Shape keys (`<nullifiers>x<commitments>`) the deployment has circuit artifacts for. When provided,
-   * `planTransfer` rejects a plan whose shape isn't in the set with `UnsupportedCircuitShapeError` —
-   * fail-fast, before the signer is asked and 30s of proving is spent. Omit to skip the check.
+   * `planSpend` splits a fragmented single-recipient transfer across groups that all land on registered
+   * shapes, and rejects anything it can't fit with `UnsupportedCircuitShapeError`; `planTransfer` (single
+   * group only) rejects an unregistered shape outright. Either way this fails fast, before the signer is
+   * asked and 30s of proving is spent. Omit to skip the check (and never split).
    */
   readonly supportedShapes?: ReadonlySet<string>;
 }
@@ -209,6 +206,24 @@ function assertAdaptBinding(params: PlanTransferParams): void {
   }
 }
 
+/** Whether `shape` has a registered circuit. An absent set means "don't check" (always supported). */
+function shapeSupported(supported: ReadonlySet<string> | undefined, shape: CircuitShape): boolean {
+  return supported === undefined || isSupportedShape(supported, shape.nullifiers, shape.commitments);
+}
+
+/** Select the fewest-input single-tree cover for the whole spend and assemble it as ONE group. */
+function planSingleGroup(params: PlanTransferParams, caller: string): PlanSelection {
+  const target = spendTarget(params);
+  const cover = pickFewestInputCover(params, target);
+  if (cover === undefined) {
+    throw new InsufficientBalanceError(
+      `${caller}: no single tree covers ${target.toString()} of token ${params.tokenAddress}`,
+    );
+  }
+  assertAdaptBinding(params);
+  return assembleSelection(params, cover, singleGroupOutputs(params, cover.total - target));
+}
+
 /**
  * Plan a shielded transfer as a SINGLE group (SPEC §4.6). Selects input notes from one tree covering
  * `sum(outputs) + fee + unshield`, preferring the tree that needs the fewest inputs. Throws
@@ -219,17 +234,8 @@ function assertAdaptBinding(params: PlanTransferParams): void {
  * decryptable note); the summary carries `feeOutput` separately for that.
  */
 export function planTransfer(params: PlanTransferParams): PlanSelection {
-  const target = spendTarget(params);
-  const cover = pickFewestInputCover(params, target);
-  if (cover === undefined) {
-    throw new InsufficientBalanceError(
-      `planTransfer: no single tree covers ${target.toString()} of token ${params.tokenAddress}`,
-    );
-  }
-  assertAdaptBinding(params);
-  const selection = assembleSelection(params, cover, singleGroupOutputs(params, cover.total - target));
-
-  if (params.supportedShapes !== undefined && !params.supportedShapes.has(shapeKey(selection.shape))) {
+  const selection = planSingleGroup(params, 'planTransfer');
+  if (!shapeSupported(params.supportedShapes, selection.shape)) {
     throw new UnsupportedCircuitShapeError(
       `planTransfer: no circuit artifact for shape ${shapeKey(selection.shape)} (inputs=${selection.shape.nullifiers}, commitments=${selection.shape.commitments})`,
     );
@@ -237,85 +243,105 @@ export function planTransfer(params: PlanTransferParams): PlanSelection {
   return selection;
 }
 
-/** Split an array (already largest-first) into `g` contiguous near-even chunks (sizes differ by ≤1). */
-function partitionEven<T>(items: readonly T[], g: number): T[][] {
-  const chunks: T[][] = [];
-  const base = Math.floor(items.length / g);
-  const rem = items.length % g;
-  let i = 0;
-  for (let c = 0; c < g; c += 1) {
-    const size = base + (c < rem ? 1 : 0);
-    chunks.push(items.slice(i, i + size));
-    i += size;
-  }
-  return chunks;
+/**
+ * How much of the fee, the recipient value, and the change fall inside one group's value window
+ * `[from, to)`. A split lays the spend out on one value line — fee `[0, fee)`, then recipient, then
+ * change up to the cover total — and each group takes the next contiguous window of it, so a portion
+ * that doesn't fit in one group (e.g. a fee larger than a group's notes) simply continues in the next.
+ */
+function portionsInWindow(
+  fee: bigint,
+  recipient: bigint,
+  coverTotal: bigint,
+  from: bigint,
+  to: bigint,
+): { fee: bigint; recipient: bigint; change: bigint } {
+  const overlap = (start: bigint, end: bigint): bigint => {
+    const lo = start > from ? start : from;
+    const hi = end < to ? end : to;
+    return hi > lo ? hi - lo : 0n;
+  };
+  return {
+    fee: overlap(0n, fee),
+    recipient: overlap(fee, fee + recipient),
+    change: overlap(fee + recipient, coverTotal),
+  };
 }
 
 /**
  * Split a fragmented single-recipient transfer across multiple supported-shape groups, submitted as one
- * atomic `transact([...])`. Each group spends a disjoint chunk of the SAME cover set (all one tree),
- * carries a portion of the recipient value, the fee note lands in group 0, and change lands in the last
- * group — so every group is `Nx1` or `Nx2` (both dense/supported for N ≤ 6). Throws `TooFragmentedError`
- * when it would need more than `MAX_SPLIT_GROUPS` groups (consolidate first — a separate sequential flow).
+ * atomic `transact([...])`. Groups take the cover's notes (largest-first) in order, each as many as a
+ * registered shape allows for the outputs its value window needs (`portionsInWindow`): a fee portion
+ * (emitted first, so the relayer counts it), a recipient portion, and/or change. Every group spends at
+ * least one note, and the recipient receives one note per group that carries a recipient portion.
+ * Throws `TooFragmentedError` when the notes need more than `MAX_SPLIT_GROUPS` groups (consolidate first —
+ * a separate sequential flow), and `UnsupportedCircuitShapeError` when no registered shape fits a group.
  */
-function splitTransfer(params: PlanTransferParams, cover: Cover, target: bigint): PlanSelection[] {
+function splitTransfer(
+  params: PlanTransferParams,
+  cover: Cover,
+  feeTotal: bigint,
+  supported: ReadonlySet<string>,
+): PlanSelection[] {
   const recipient = params.outputs[0]!; // caller guarantees exactly one recipient, no unshield
-  const feeValue = params.fee?.value ?? 0n;
-  const change = cover.total - target;
-  const hasFee = feeValue > 0n;
-  const hasChange = change > 0n;
-
-  const g = Math.max(
-    Math.ceil(cover.selected.length / SPLIT_GROUP_MAX_INPUTS),
-    hasFee && hasChange ? 2 : 1, // fee + change must live in DIFFERENT groups to keep each at M ≤ 2
-  );
-  if (g > MAX_SPLIT_GROUPS) {
-    throw new TooFragmentedError(
-      `planSpend: spend needs ${cover.selected.length} input notes across ${g} groups (> ${MAX_SPLIT_GROUPS}); consolidate small notes first`,
-    );
-  }
-
-  const chunks = partitionEven(cover.selected, g);
+  const maxInputs = maxSupportedInputCount(supported);
   const groups: PlanSelection[] = [];
-  for (let i = 0; i < chunks.length; i += 1) {
-    const chunk = chunks[i]!;
-    const inputSum = chunk.reduce((s, t) => s + t.value, 0n);
-    const isFirst = i === 0;
-    const isLast = i === chunks.length - 1;
-    const feeThis = isFirst && hasFee ? feeValue : 0n;
-    const changeThis = isLast ? change : 0n;
-    const portion = inputSum - feeThis - changeThis;
-    if (portion < 0n) {
-      // A group's inputs can't cover its fee/change obligation — pathological (huge fee vs note sizes).
-      throw new InvalidRequestError('planSpend: split produced a negative recipient portion');
-    }
+  let next = 0; // index of the first note not yet assigned to a group
+  let from = 0n; // value consumed by the groups so far
+  let memoPlaced = false;
+
+  // One candidate group of `n` notes starting at `next`, assembled so its shape can be checked.
+  const candidate = (n: number): { selection: PlanSelection; total: bigint; carriesRecipient: boolean } => {
+    const notes = cover.selected.slice(next, next + n);
+    const total = notes.reduce((s, t) => s + t.value, 0n);
+    const portions = portionsInWindow(feeTotal, recipient.value, cover.total, from, from + total);
     const outputs: PlanOutput[] =
-      portion > 0n
+      portions.recipient > 0n
         ? [{
             toShieldedAddress: recipient.toShieldedAddress,
-            value: portion,
+            value: portions.recipient,
             tokenAddress: params.tokenAddress,
-            ...(isFirst && recipient.memo !== undefined ? { memo: recipient.memo } : {}),
+            // The memo rides on the first recipient note only.
+            ...(!memoPlaced && recipient.memo !== undefined ? { memo: recipient.memo } : {}),
           }]
         : [];
     const feeOutput: PlanOutput | undefined =
-      feeThis > 0n
-        ? { toShieldedAddress: params.fee!.broadcasterShieldedAddress, value: feeValue, tokenAddress: params.tokenAddress }
+      portions.fee > 0n
+        ? { toShieldedAddress: params.fee!.broadcasterShieldedAddress, value: portions.fee, tokenAddress: params.tokenAddress }
         : undefined;
-    const groupCover: Cover = { tree: cover.tree, selected: chunk, total: inputSum, merkleRoot: cover.merkleRoot };
+    const groupCover: Cover = { tree: cover.tree, selected: notes, total, merkleRoot: cover.merkleRoot };
     const selection = assembleSelection(params, groupCover, {
       outputs,
       ...(feeOutput ? { feeOutput } : {}),
-      changeValue: changeThis,
+      changeValue: portions.change,
     });
-    if (params.supportedShapes !== undefined && !params.supportedShapes.has(shapeKey(selection.shape))) {
-      // Should be unreachable given the uniform ≤6 cap + fee/change separation; guard loudly if the
-      // supported set ever omits a dense M≤2 shape a split relies on.
-      throw new UnsupportedCircuitShapeError(
-        `planSpend: split produced unsupported shape ${shapeKey(selection.shape)} (group ${i + 1}/${chunks.length})`,
+    return { selection, total, carriesRecipient: portions.recipient > 0n };
+  };
+
+  while (next < cover.selected.length) {
+    if (groups.length === MAX_SPLIT_GROUPS) {
+      throw new TooFragmentedError(
+        `planSpend: spend needs ${cover.selected.length} input notes, more than ${MAX_SPLIT_GROUPS} supported-shape groups can hold; consolidate small notes first`,
       );
     }
-    groups.push(selection);
+    // Take the largest group a registered shape allows (fewest proofs overall).
+    let chosen: ReturnType<typeof candidate> | undefined;
+    for (let n = Math.min(maxInputs, cover.selected.length - next); n >= 1; n -= 1) {
+      const c = candidate(n);
+      if (shapeSupported(supported, c.selection.shape)) {
+        chosen = c;
+        break;
+      }
+    }
+    if (chosen === undefined) {
+      throw new UnsupportedCircuitShapeError(
+        `planSpend: no registered circuit shape fits split group ${groups.length + 1} (starting at input ${next + 1} of ${cover.selected.length})`,
+      );
+    }
+    groups.push(chosen.selection);
+    next += chosen.selection.selectedInputs.length;
+    from += chosen.total;
+    memoPlaced ||= chosen.carriesRecipient;
   }
   return groups;
 }
@@ -326,29 +352,50 @@ function splitTransfer(params: PlanTransferParams, cover: Cover, target: bigint)
  * single-recipient transfer, splits it across supported-shape groups (recipient receives multiple
  * notes). Unshields / multi-recipient spends aren't split — they surface `UnsupportedCircuitShapeError`.
  * Very fragmented wallets that exceed the batch cap raise `TooFragmentedError`.
+ *
+ * A split of k proofs pays the per-proof fee k times. Since the fee is part of the spend target, it
+ * changes which notes are selected and how they group, so each k from 2 up is tried in turn and the
+ * first plan that fits in at most k proofs wins. The fee paid is therefore always at least one
+ * per-proof fee per proof; it can exceed that when the larger fee happens to let the notes fit in fewer
+ * proofs (e.g. it absorbs the change, dropping an output) — still the cheapest fee that yields a plan.
  */
 export function planSpend(params: PlanTransferParams): PlanSelection[] {
-  const target = spendTarget(params);
-  const cover = pickFewestInputCover(params, target);
-  if (cover === undefined) {
-    throw new InsufficientBalanceError(
-      `planSpend: no single tree covers ${target.toString()} of token ${params.tokenAddress}`,
-    );
-  }
-  assertAdaptBinding(params);
-
-  const single = assembleSelection(params, cover, singleGroupOutputs(params, cover.total - target));
-  const supported = params.supportedShapes === undefined || params.supportedShapes.has(shapeKey(single.shape));
-  if (supported) return [single];
+  const single = planSingleGroup(params, 'planSpend');
+  const supported = params.supportedShapes;
+  if (supported === undefined || shapeSupported(supported, single.shape)) return [single];
 
   // Single-group shape unsupported. Split only a plain single-recipient transfer (no unshield leg).
   const splittable = params.unshield === undefined && params.outputs.length === 1;
-  if (splittable) return splitTransfer(params, cover, target);
+  if (!splittable) {
+    throw new UnsupportedCircuitShapeError(
+      `planSpend: no circuit for shape ${shapeKey(single.shape)} and this spend is not splittable ` +
+        `(inputs=${single.shape.nullifiers}, commitments=${single.shape.commitments})`,
+    );
+  }
 
-  throw new UnsupportedCircuitShapeError(
-    `planSpend: no circuit for shape ${shapeKey(single.shape)} and this spend is not splittable ` +
-      `(inputs=${single.shape.nullifiers}, commitments=${single.shape.commitments})`,
+  const recipientValue = params.outputs[0]!.value;
+  const perProofFee = params.fee?.value ?? 0n;
+  for (let proofs = 2; proofs <= MAX_SPLIT_GROUPS; proofs += 1) {
+    const feeTotal = perProofFee * BigInt(proofs);
+    const target = recipientValue + feeTotal;
+    const cover = pickFewestInputCover(params, target);
+    if (cover === undefined) {
+      throw new InsufficientBalanceError(
+        `planSpend: no single tree covers ${target.toString()} of token ${params.tokenAddress} ` +
+          `(the transfer needs ${proofs} proofs, each paying the broadcaster fee)`,
+      );
+    }
+    const groups = splitTransfer(params, cover, feeTotal, supported);
+    if (groups.length <= proofs) return groups;
+  }
+  throw new TooFragmentedError(
+    `planSpend: spend does not fit in ${MAX_SPLIT_GROUPS} supported-shape groups; consolidate small notes first`,
   );
+}
+
+/** A single plan or the groups of a split spend, as a list. */
+export function planList(plan: Plan | readonly Plan[]): readonly Plan[] {
+  return 'selectedInputs' in plan ? [plan] : plan;
 }
 
 /**
