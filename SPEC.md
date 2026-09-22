@@ -501,16 +501,23 @@ Replaces `TransactionBatch` orchestration and the wallet-package tx services wit
 explicit pipeline. UTXO selection and calldata serialization are vendored core behavior.
 
 ```ts
-const plan = await wallet.planTransfer({
+const plans = await wallet.planTransfer({
   outputs: [{ to0zk, amount, memo? }],
   unshield?: { recipient, amount, adaptParams? },   // adaptParams: CCTP binding, yield binding
   fee: FeeQuote,                                    // §4.6.1
 });
-// plan: selected TXOs, change output, shape, fee output — inspectable before proving
+// plans: one Plan per proof — selected TXOs, change output, shape, fee output — inspectable before proving
 
-const handle: ProofHandle = await sdk.prover.prove(plan, { signal, onProgress });
-const tx = handle.toTransactCalldata();             // { to, data, value }
+const handles: ProofHandle[] = await wallet.proveAll(plans, { signal, onProgress });
+const tx = buildTransactCalldata(handles.map((h) => h.toTransactionData()), pool); // { to, data, value }
 ```
+
+- **Shape-aware planning / split spends.** The deployed circuit set is sparse (valid input count
+  depends on output count) and inputs cannot be padded, so a fragmented wallet can need a shape
+  with no verifier. With `supportedShapes` configured, a single-recipient transfer whose one-proof
+  shape is unregistered is split across up to four registered-shape plans, submitted atomically as
+  one `transact([...])`; the recipient receives one note per plan. Beyond four plans the planner
+  throws `TooFragmentedError` (consolidate first). Unshields and multi-recipient spends are not split.
 
 - **ProofHandle** owns the proof and the exact plan it proves. Populate-time argument
   re-matching (the stock SDK's silent cache contract) does not exist; a handle either encodes
@@ -547,7 +554,10 @@ const tx = handle.toTransactCalldata();             // { to, data, value }
 address, `feesCacheId`, TTL). Fees are bound in-band on both paths:
 
 - **Transact path:** `planTransfer` computes the fee output note to the broadcaster's 0zk
-  address from the quote and includes it in the plan; the proof then commits it.
+  address from the quote and includes it in the plan; the proof then commits it. The quoted fee
+  is **per proof**: a split spend of k proofs pays k × the quoted fee (each proof costs the
+  relayer its own verification gas), carried by fee notes in the leading plans. The relayer sums
+  the fee notes across the batch.
 - **Shield path (#410):** `buildRequest` computes the relayer fee note (§4.6 Shield) with
   **grossed-up fee tiers** so the relayer nets its target amount *after* the on-chain shield
   fee is applied — the gross-up math is part of the SDK's fee model, not left to callers.
@@ -559,7 +569,7 @@ parallel formula).
 
 ### 4.7 Preflight
 
-`sdk.preflight(plan)` runs cheap RPC checks before proving and returns typed findings:
+`sdk.preflight(plans)` runs cheap RPC checks over a spend's plans before proving and returns typed findings:
 
 - merkle root of the plan still accepted by the pool (root freshness),
 - no input nullifier already spent on-chain,

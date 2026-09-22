@@ -35,8 +35,10 @@ export interface PoolConfig {
   readonly confirmationDepth?: number;
   /**
    * Circuit shapes (`<nullifiers>x<commitments>`, e.g. `"2x3"`) the deployment has artifacts for. When
-   * set, `planTransfer` rejects an unprovable shape up front with `UnsupportedCircuitShapeError` instead
-   * of failing late at artifact resolution / on-chain. Omit to skip the check.
+   * set, `wallet.planTransfer` lands every plan on a listed shape — splitting a fragmented
+   * single-recipient transfer across several plans when one proof's shape isn't listed — and rejects a
+   * spend it can't fit up front with `UnsupportedCircuitShapeError` (or `TooFragmentedError`) instead of
+   * failing late at artifact resolution / on-chain. Omit to skip the check (and never split).
    */
   readonly supportedShapes?: readonly string[];
   /**

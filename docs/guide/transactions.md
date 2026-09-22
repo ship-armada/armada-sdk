@@ -11,11 +11,11 @@ public address. A single plan can do both at once.
 
 ```mermaid
 flowchart TD
-  A["planTransfer()"] --> B[Plan]
+  A["planTransfer()"] --> B["Plan[]"]
   B -.->|optional| C["preflight()"]
-  B --> D["prove()"]
+  B --> D["proveAll()"]
   D <-->|signBatch| E[SpendSigner]
-  D --> F[ProofHandle]
+  D --> F["ProofHandle[]"]
   F --> G["toTransactCalldata() → submit on-chain"]
   F --> H["toTransactionData() → embed in wrapper call"]
 ```
@@ -37,22 +37,29 @@ interface FeeQuote {
 `schedule` is keyed by operation (`transfer`, `unshield`, …). How you obtain a quote is specific to
 your deployment's broadcaster.
 
+Each scheduled fee is charged **per proof**. Most spends are a single proof and pay it once; a
+[split spend](#fragmented-wallets-split-spends) of k proofs pays it k times, because every proof costs
+the broadcaster its own verification gas.
+
 ## Plan a transfer
 
-`planTransfer` selects input notes and builds a plan. Each output is a shielded address, an amount
-in the token's base units, and an optional memo:
+`planTransfer` selects input notes and builds the plans for one spend — an array with one `Plan` per
+proof. Each output is a shielded address, an amount in the token's base units, and an optional memo:
 
 ```ts
-const plan = await wallet.planTransfer({
+const plans = await wallet.planTransfer({
   outputs: [{ to0zk: '0zk…', amount: 1_000_000n, memo: 'invoice-42' }],
   fee: feeQuote,
 });
 ```
 
-The spent token defaults to the pool's USDC; set `tokenAddress` to spend another token the wallet
-holds. The returned plan's `summary` describes the selection:
+Almost always the array holds a single plan; see
+[Fragmented wallets](#fragmented-wallets-split-spends) for when it holds more. The spent token
+defaults to the pool's USDC; set `tokenAddress` to spend another token the wallet holds. Each plan's
+`summary` describes its selection:
 
 ```ts
+const [plan] = plans;
 plan.summary.inputTotal;  // total value of the selected input notes
 plan.summary.outputs;     // the resolved outputs
 plan.summary.changeValue; // change returned to the wallet
@@ -60,9 +67,26 @@ plan.summary.feeOutput;   // the fee note, when one is present
 ```
 
 If no single tree's spendable notes can cover the amount plus fee, `planTransfer` throws
-`InsufficientBalanceError`. If the pool config lists `supportedShapes` and the plan's circuit shape
-is not among them, it throws `UnsupportedCircuitShapeError` up front, rather than failing later
-during proving.
+`InsufficientBalanceError`. If the pool config lists `supportedShapes`, every plan lands on a listed
+circuit shape; a spend that can't is rejected up front with `UnsupportedCircuitShapeError`, rather
+than failing later during proving.
+
+### Fragmented wallets: split spends
+
+A proof's circuit shape is its number of input notes by its number of output notes, and a
+deployment only has circuits for some shapes. A wallet holding many small notes can need a shape
+that doesn't exist — say, five inputs paying a recipient, the fee, and change. When the pool config
+lists `supportedShapes`, `planTransfer` then splits a single-recipient transfer across several
+plans, each on a listed shape, submitted together as **one atomic transaction**:
+
+- the recipient receives the amount as several notes (one per plan that pays it), with the memo on
+  the first;
+- the fee is charged once per plan (see [Fees](#fees)) and may itself span plans;
+- change comes back in the last plan.
+
+A split holds at most four plans. A wallet too fragmented to fit throws `TooFragmentedError` —
+consolidate its small notes (a transfer to yourself) first. Unshields and multi-recipient spends
+are never split; if their shape isn't listed they throw `UnsupportedCircuitShapeError`.
 
 ## Unshield to a public address
 
@@ -70,24 +94,26 @@ Add an `unshield` to withdraw to a public recipient. Outputs and an unshield can
 plan:
 
 ```ts
-const plan = await wallet.planTransfer({
+const [plan] = await wallet.planTransfer({
   outputs: [],
   unshield: { recipient: '0x…', amount: 1_000_000n },
   fee: feeQuote,
 });
 ```
 
-The unshield is reflected in `plan.summary.unshield` as `{ recipient, value }`. For cross-chain
+An unshield is never split, so it always plans as a single proof. The unshield is reflected in
+`plan.summary.unshield` as `{ recipient, value }`. For cross-chain
 unshields, `unshield` also accepts `adaptParams` and `adaptContract` that bind the destination into
 the transaction; a decoded `adaptBinding` is surfaced to the signer for inspection.
 
 ## Preflight
 
-`preflight` runs a set of cheap checks over a plan before proving. It returns an overall `ok` plus a
+`preflight` runs a set of cheap checks over the plans before proving — pass the whole array so a
+split spend is checked as the one transaction it submits as. It returns an overall `ok` plus a
 finding per check — it never proceeds on its own, so the caller decides what to do:
 
 ```ts
-const { ok, findings } = await wallet.preflight(plan, { feeQuote });
+const { ok, findings } = await wallet.preflight(plans, { feeQuote });
 
 if (!ok) {
   for (const finding of findings.filter((f) => !f.ok)) {
@@ -101,13 +127,17 @@ Each finding's `check` is one of `root-freshness`, `nullifier-unspent`, `fee-quo
 
 ## Prove
 
-`prove` requests signatures from the wallet's signer, generates the proof, and returns a
-`ProofHandle`. It requires a spend-capable wallet — calling it without a signer throws
-`NoSpendCapabilityError` (see [Wallets](./wallets)):
+`proveAll` requests signatures from the wallet's signer, generates one proof per plan, and returns a
+`ProofHandle` per plan, in order. The signer is asked **once**, with every plan's intent in a single
+batch, so a split spend is approved as a whole. It requires a spend-capable wallet — calling it
+without a signer throws `NoSpendCapabilityError` (see [Wallets](./wallets)):
 
 ```ts
-const proof = await wallet.prove(plan);
+const proofs = await wallet.proveAll(plans);
 ```
+
+`prove(plan)` proves a single plan and returns one `ProofHandle`; the examples below use it for
+brevity, and `proveAll` takes the same options.
 
 Proving is a long operation. Pass an `AbortSignal` to cancel it and an `onProgress` callback to track
 it:
@@ -149,6 +179,18 @@ const { to, data, value } = proof.toTransactCalldata();
 // send { to, data, value } with your wallet / provider
 ```
 
+A split spend's proofs must land together. Combine them into one `transact()` call so they settle
+atomically:
+
+```ts
+import { buildTransactCalldata } from '@armada/sdk';
+
+const { to, data, value } = buildTransactCalldata(
+  proofs.map((p) => p.toTransactionData()),
+  poolAddress,
+);
+```
+
 For wrapper calls — cross-chain unshields and yield flows — use `toTransactionData()` to get the
 proved transaction struct to embed in the wrapper call instead of the bare `transact()` calldata.
 
@@ -162,15 +204,16 @@ scanned. Between submitting a spend and that event arriving, the input notes sti
 two spends issued in quick succession can select the same note, and the second reverts on-chain with
 `Note already spent`.
 
-After you submit, call `markSpendPending` with the plan and the transaction hash. The wallet holds
-that plan's input notes out of selection and out of the `spendable` balance until the spend confirms:
+After you submit, call `markSpendPending` with the plans and the transaction hash. The wallet holds
+their input notes out of selection and out of the `spendable` balance until the spend confirms. Pass
+the whole array, so a split spend holds every plan's notes:
 
 ```ts
-const proof = await wallet.prove(plan);
-const { to, data, value } = proof.toTransactCalldata();
+const proofs = await wallet.proveAll(plans);
+const { to, data, value } = buildTransactCalldata(proofs.map((p) => p.toTransactionData()), poolAddress);
 const txid = await submit({ to, data, value }); // your provider / broadcaster
 
-wallet.markSpendPending(plan, txid); // a rapid follow-up planTransfer now skips these notes
+wallet.markSpendPending(plans, txid); // a rapid follow-up planTransfer now skips these notes
 ```
 
 The hold is released automatically when the spend's `Nullified` event is scanned. If the transaction
