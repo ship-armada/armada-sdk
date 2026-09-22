@@ -43,7 +43,7 @@ flowchart TD
   C --> D["balances() / history()"]
   C --> E["planTransfer()"]
   E --> F["preflight()"]
-  F --> G["prove()"]
+  F --> G["proveAll()"]
   G --> H[submit on-chain]
 ```
 
