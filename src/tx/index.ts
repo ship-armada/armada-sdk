@@ -215,7 +215,7 @@ export { buildTransactCalldata, transactionToTuple } from './serialize';
 export type { TransactionData, TransactionBoundParams } from './serialize';
 
 // prove() orchestration + ProofHandle — witness → artifacts → proof → calldata.
-export { prove } from './prove';
+export { prove, proveAll } from './prove';
 export type { ProveParams } from './prove';
 
 // Preflight — cheap pre-proof checks over a Plan (SPEC §4.7).

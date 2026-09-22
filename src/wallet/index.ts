@@ -61,19 +61,28 @@ export interface Wallet {
    * Plan a shielded spend as ONE OR MORE supported-shape groups (SPEC §4.6). Returns a single-element
    * array for the common case; a fragmented single-recipient transfer that no registered shape can cover
    * in one proof is split across several groups (recipient receives multiple notes), all submitted
-   * atomically as one `transact([...])`. The caller proves each `Plan` and combines the calldata.
+   * atomically as one `transact([...])`. A k-group split pays the quoted per-proof broadcaster fee k
+   * times (each proof costs the relayer its own verification gas). Prove the whole array with
+   * `proveAll`, then combine the handles' `toTransactionData()` into one `buildTransactCalldata([...])`.
    * Throws `TooFragmentedError` past the batch cap (consolidate first); `UnsupportedCircuitShapeError`
    * for an unsplittable spend (unshield / multi-recipient) whose shape isn't registered.
    */
   planTransfer(request: PlanTransferRequest): Promise<Plan[]>;
   /**
-   * Cheap pre-proof checks over a plan (SPEC §4.7) — root freshness, input nullifiers unspent, and
-   * (if a `feeQuote` is passed) quote freshness. Returns a finding per check; the caller decides policy.
-   * Works view-only. Turns the 30s-proof-then-revert failure into a typed, pre-proof result.
+   * Cheap pre-proof checks over a plan — or every group of a split spend — (SPEC §4.7): root freshness,
+   * input nullifiers unspent, and (if a `feeQuote` is passed) quote freshness. Returns a finding per
+   * check; the caller decides policy. Works view-only. Turns the 30s-proof-then-revert failure into a
+   * typed, pre-proof result.
    */
-  preflight(plan: Plan, options?: { feeQuote?: FeeQuote }): Promise<PreflightResult>;
+  preflight(plan: Plan | readonly Plan[], options?: { feeQuote?: FeeQuote }): Promise<PreflightResult>;
   /** Requests signatures from the attached SpendSigner during witness assembly, then proves. */
   prove(plan: Plan, options?: ProveOptions): Promise<ProofHandle>;
+  /**
+   * Prove every group returned by `planTransfer`. The attached SpendSigner receives ALL groups' intents
+   * in ONE `signBatch` call before any signature is released (SPEC §4.2.1), so a split spend is approved
+   * as one unit; then each group is proved in order. Returns one handle per plan, in plan order.
+   */
+  proveAll(plans: readonly Plan[], options?: ProveOptions): Promise<ProofHandle[]>;
   /**
    * Optimistically mark a plan's input notes as spent when its transaction is submitted (issue #55), so a
    * rapid follow-up `planTransfer` won't reselect them before the on-chain `Nullified` event is scanned —
@@ -81,9 +90,10 @@ export interface Wallet {
    * right after broadcasting; the `txid` identifies the submission. Idempotent per note. The hold is
    * released automatically when the spend confirms (its `Nullified` event supersedes it), by
    * `clearSpendPending(txid)` on a known drop/revert, or by the `pendingSpendTtlMs` safety-net TTL.
-   * Requires spend capability.
+   * Pass every group of a split spend (the whole `planTransfer` array) so none of its inputs stay
+   * selectable. Requires spend capability.
    */
-  markSpendPending(plan: Plan, txid: string): void;
+  markSpendPending(plan: Plan | readonly Plan[], txid: string): void;
   /** Release the optimistic holds for a submission that will not confirm (dropped/reverted tx). */
   clearSpendPending(txid: string): void;
   /** Verifiable single-note disclosure receipt (SPEC §5.3). Available on view-only wallets too. */

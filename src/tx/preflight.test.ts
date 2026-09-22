@@ -38,6 +38,21 @@ describe('runPreflight (§4.7)', () => {
     expect(res.findings.every((f) => f.ok)).toBe(true);
   });
 
+  it('checks every group of a split spend: each distinct root once, and each group\'s balance', async () => {
+    const a = plan();
+    const b: Plan = { ...plan(), merkleRoot: 222n };
+    const seenRoots: bigint[] = [];
+    const queries: PreflightQueries = {
+      isKnownRoot: async (_tree, root) => { seenRoots.push(root); return root === 111n; },
+      isNullifierSpent: async () => false,
+    };
+    const res = await runPreflight({ plan: [a, a, b], nullifiers, queries, now: NOW });
+    expect(seenRoots.sort()).toEqual([111n, 222n]);
+    expect(res.ok).toBe(false);
+    expect(res.findings.filter((f) => f.check === 'root-freshness').map((f) => f.ok)).toEqual([true, false]);
+    expect(res.findings.filter((f) => f.check === 'balance-sufficiency')).toHaveLength(3);
+  });
+
   it('fails balance-sufficiency when the plan inputs do not cover outputs + fee + unshield', async () => {
     const p = plan();
     const underfunded: typeof p = { ...p, summary: { ...p.summary, inputTotal: 1n, outputs: [{ toShieldedAddress: '0zk', value: 5n, tokenAddress: USDC }] } };

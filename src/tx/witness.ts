@@ -13,7 +13,7 @@ import {
 } from '../core/index';
 import { createTransferNote, encryptNoteToReceiver, type CommitmentCiphertextV2 } from '../sync/index';
 import { SignerContractViolationError } from '../errors';
-import type { SpendSigner } from '../wallet/index';
+import type { SpendSigner, SpendSignRequest, EddsaSignature } from '../wallet/index';
 import type { PlanSummary, DecodedBoundParams, CctpBinding } from './index';
 import type { CircuitShape } from '../prover/index';
 import type { TransactionBoundParams } from './serialize';
@@ -183,6 +183,28 @@ function fullNetworkID(chainType: number, chainId: number): bigint {
  * tx chain differential; this builds the invariants (nullifiers, commitments, signature, hash) exactly.
  */
 export async function buildWitness(params: BuildWitnessParams): Promise<BuiltWitness> {
+  const prepared = await prepareWitness(params);
+  const [signature] = await params.signer.signBatch([prepared.signRequest]);
+  if (signature === undefined) {
+    throw new SignerContractViolationError('buildWitness: signer returned no signature');
+  }
+  return prepared.finalize(signature);
+}
+
+/** A witness assembled up to the spend-auth signature: the intent to sign, and how to finish once signed. */
+export interface PreparedWitness {
+  /** The fully-bound intent for the `SpendSigner` (SPEC §4.2.1). */
+  readonly signRequest: SpendSignRequest;
+  /** Complete the circuit witness with the signer's signature over `signRequest.message`. */
+  finalize(signature: EddsaSignature): BuiltWitness;
+}
+
+/**
+ * Everything `buildWitness` does EXCEPT asking the signer: output notes, nullifiers/commitments, the
+ * bound-params hash, and the intent digest. Split out so a multi-group spend can collect every group's
+ * intent and hand them to the signer as ONE batch (`proveAll`) before any signature is released.
+ */
+export async function prepareWitness(params: Omit<BuildWitnessParams, 'signer'>): Promise<PreparedWitness> {
   const tokenData = getTokenDataERC20(params.tokenAddress);
   const tokenHash = getTokenDataHash(tokenData);
   const senderAddressData = decodeAddress(params.sender.senderAddress);
@@ -256,42 +278,42 @@ export async function buildWitness(params: BuildWitnessParams): Promise<BuiltWit
     commitmentCiphertext: ciphertexts,
     summary: params.summary,
   };
-  const [signature] = await params.signer.signBatch([{ message, context }]);
-  if (signature === undefined) {
-    throw new SignerContractViolationError('buildWitness: signer returned no signature');
-  }
 
-  const formattedInputs: FormattedCircuitInputs = {
-    merkleRoot: params.merkleRoot,
-    boundParamsHash,
-    nullifiers,
-    commitmentsOut,
-    token: hexToBigInt(tokenHash),
-    publicKey: [params.sender.spendingPublicKey[0], params.sender.spendingPublicKey[1]],
-    signature: [signature.R8[0], signature.R8[1], signature.S],
-    randomIn: params.inputs.map((i) => hexToBigInt(i.random)),
-    valueIn: params.inputs.map((i) => i.value),
-    pathElements: params.inputs.flatMap((i) => [...i.merkleProofElements]),
-    leavesIndices: params.inputs.map((i) => BigInt(i.position)),
-    nullifyingKey: params.sender.nullifyingKey,
-    npkOut,
-    valueOut,
+  const finalize = (signature: EddsaSignature): BuiltWitness => {
+    const formattedInputs: FormattedCircuitInputs = {
+      merkleRoot: params.merkleRoot,
+      boundParamsHash,
+      nullifiers,
+      commitmentsOut,
+      token: hexToBigInt(tokenHash),
+      publicKey: [params.sender.spendingPublicKey[0], params.sender.spendingPublicKey[1]],
+      signature: [signature.R8[0], signature.R8[1], signature.S],
+      randomIn: params.inputs.map((i) => hexToBigInt(i.random)),
+      valueIn: params.inputs.map((i) => i.value),
+      pathElements: params.inputs.flatMap((i) => [...i.merkleProofElements]),
+      leavesIndices: params.inputs.map((i) => BigInt(i.position)),
+      nullifyingKey: params.sender.nullifyingKey,
+      npkOut,
+      valueOut,
+    };
+
+    const boundParams: TransactionBoundParams = {
+      treeNumber: params.treeNumber,
+      minGasPrice,
+      unshield,
+      chainID,
+      adaptContract,
+      adaptParams,
+      commitmentCiphertext: ciphertexts,
+    };
+
+    return {
+      formattedInputs,
+      publicInputs: { merkleRoot: params.merkleRoot, boundParamsHash, nullifiers, commitmentsOut },
+      boundParams,
+      shape: { nullifiers: params.inputs.length, commitments: commitmentsOut.length },
+    };
   };
 
-  const boundParams: TransactionBoundParams = {
-    treeNumber: params.treeNumber,
-    minGasPrice,
-    unshield,
-    chainID,
-    adaptContract,
-    adaptParams,
-    commitmentCiphertext: ciphertexts,
-  };
-
-  return {
-    formattedInputs,
-    publicInputs: { merkleRoot: params.merkleRoot, boundParamsHash, nullifiers, commitmentsOut },
-    boundParams,
-    shape: { nullifiers: params.inputs.length, commitments: commitmentsOut.length },
-  };
+  return { signRequest: { message, context }, finalize };
 }

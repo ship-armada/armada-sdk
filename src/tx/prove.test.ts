@@ -7,13 +7,14 @@ import { deriveKeyset, type Keyset } from '../wallet/derive';
 import { LocalSigner } from '../wallet/local-signer';
 import { UTXOMerkletree } from '../sync/merkletree';
 import { createTransferNote } from '../sync/index';
-import { prove } from './prove';
+import { prove, proveAll } from './prove';
 import { buildTransactCalldata, transactionToTuple } from './serialize';
 import { decodeTransact } from './decode';
-import { ProofHandleInvalidatedError, ProofExpiredError } from '../errors';
+import { ProofHandleInvalidatedError, ProofExpiredError, SignerContractViolationError, InvalidRequestError } from '../errors';
 import type { BuildWitnessParams } from './witness';
 import type { ArtifactSource, ArtifactSet, ProverAdapter, Groth16Proof, CircuitShape } from '../prover/index';
 import type { PlanSummary } from './index';
+import type { SpendSigner, SpendSignRequest } from '../wallet/index';
 
 const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' as const;
 const POOL = '0x00000000000000000000000000000000000000aa' as const;
@@ -135,5 +136,67 @@ describe('prove() + ProofHandle (§4.6)', () => {
 
     handle.invalidate();
     expect(() => handle.toTransactionData()).toThrow(/invalidated/);
+  });
+
+  describe('proveAll() — one signing batch for a multi-group spend (SPEC §4.2.1)', () => {
+    const artifacts: ArtifactSource = { resolve: async () => DUMMY_ARTIFACTS };
+    const prover: ProverAdapter = { prove: async () => DUMMY_PROOF, verify: async () => true, close: async () => {} };
+
+    // Wraps the real signer, recording each signBatch call's requests.
+    const recordingSigner = (inner: SpendSigner): { signer: SpendSigner; batches: SpendSignRequest[][] } => {
+      const batches: SpendSignRequest[][] = [];
+      return {
+        batches,
+        signer: {
+          getSpendingPublicKey: () => inner.getSpendingPublicKey(),
+          signBatch: async (requests) => { batches.push([...requests]); return inner.signBatch(requests); },
+        },
+      };
+    };
+
+    it('asks the signer ONCE with every group\'s intent, then returns one valid handle per group in order', async () => {
+      const { signer: recording, batches } = recordingSigner(signer);
+      const groups = [await witnessParams(), await witnessParams(), await witnessParams()].map((w) => ({
+        witness: { ...w, signer: recording }, artifacts, prover, poolAddress: POOL,
+      }));
+
+      const handles = await proveAll(groups);
+
+      expect(batches).toHaveLength(1);
+      expect(batches[0]).toHaveLength(3);
+      expect(handles).toHaveLength(3);
+      for (let i = 0; i < 3; i += 1) {
+        const [decoded] = decodeTransact(handles[i]!.toTransactCalldata().data);
+        // Each handle carries the proof of the intent the signer approved at the same index.
+        expect(decoded!.nullifiers).toEqual(batches[0]![i]!.context.nullifiers);
+        expect(decoded!.commitments).toEqual(batches[0]![i]!.context.commitmentsOut);
+      }
+    });
+
+    it('rejects a signer that returns fewer signatures than intents', async () => {
+      const short: SpendSigner = {
+        getSpendingPublicKey: () => signer.getSpendingPublicKey(),
+        signBatch: async (requests) => (await signer.signBatch(requests)).slice(0, 1),
+      };
+      const groups = [await witnessParams(), await witnessParams()].map((w) => ({
+        witness: { ...w, signer: short }, artifacts, prover, poolAddress: POOL,
+      }));
+      await expect(proveAll(groups)).rejects.toThrow(SignerContractViolationError);
+    });
+
+    it('rejects groups that name different signers (one approval must cover the whole batch)', async () => {
+      const other = await LocalSigner.fromRootSecret(new Uint8Array(32).fill(0x11));
+      const [a, b] = [await witnessParams(), await witnessParams()];
+      await expect(
+        proveAll([
+          { witness: a, artifacts, prover, poolAddress: POOL },
+          { witness: { ...b, signer: other }, artifacts, prover, poolAddress: POOL },
+        ]),
+      ).rejects.toThrow(InvalidRequestError);
+    });
+
+    it('returns no handles for no groups without asking the signer', async () => {
+      expect(await proveAll([])).toEqual([]);
+    });
   });
 });
