@@ -1,11 +1,11 @@
 // ABOUTME: prove() orchestration + ProofHandle (SPEC §4.6) — witness → artifacts → Groth16 proof →
 // ABOUTME: transact() calldata, wrapped in a handle that owns its calldata (no populate-time re-matching).
 
-import { buildWitness, type BuildWitnessParams } from './witness';
+import { buildWitness, prepareWitness, type BuildWitnessParams, type BuiltWitness } from './witness';
 import { buildTransactCalldata, type TransactionData } from './serialize';
 import type { ArtifactSource, ProverAdapter, ProveOptions } from '../prover/index';
 import type { ProofHandle, TransactCalldata } from './index';
-import { ProofHandleInvalidatedError, ProofExpiredError } from '../errors';
+import { ProofHandleInvalidatedError, ProofExpiredError, SignerContractViolationError, InvalidRequestError } from '../errors';
 
 export interface ProveParams {
   /** The transfer witness to assemble + prove. */
@@ -78,6 +78,41 @@ class ProvedTransaction implements ProofHandle {
  */
 export async function prove(params: ProveParams, options?: ProveOptions): Promise<ProofHandle> {
   const witness = await buildWitness(params.witness);
+  return proveWitness(params, witness, options);
+}
+
+/**
+ * Prove every group of a multi-group spend (SPEC §4.6) with ONE signing round: each group's witness is
+ * assembled up to its intent, the shared `SpendSigner` receives ALL intents in a single `signBatch` call
+ * (SPEC §4.2.1 batch semantics — the whole spend is approved as one unit, before any signature is
+ * released), then each group is proved in order. Returns one handle per group, in input order. Every
+ * group must name the same signer; a signer returning the wrong number of signatures is rejected.
+ */
+export async function proveAll(params: readonly ProveParams[], options?: ProveOptions): Promise<ProofHandle[]> {
+  const signer = params[0]?.witness.signer;
+  if (signer === undefined) return [];
+  if (params.some((p) => p.witness.signer !== signer)) {
+    throw new InvalidRequestError('proveAll: every group must be signed by the same SpendSigner');
+  }
+
+  const prepared = await Promise.all(params.map((p) => prepareWitness(p.witness)));
+  const signatures = await signer.signBatch(prepared.map((p) => p.signRequest));
+  if (signatures.length !== prepared.length) {
+    throw new SignerContractViolationError(
+      `proveAll: signer returned ${signatures.length} signatures for ${prepared.length} intents`,
+    );
+  }
+
+  const handles: ProofHandle[] = [];
+  for (let i = 0; i < params.length; i += 1) {
+    const witness = prepared[i]!.finalize(signatures[i]!);
+    handles.push(await proveWitness(params[i]!, witness, options));
+  }
+  return handles;
+}
+
+/** Resolve the shape's artifacts, generate the Groth16 proof, and wrap the calldata in a handle. */
+async function proveWitness(params: ProveParams, witness: BuiltWitness, options?: ProveOptions): Promise<ProofHandle> {
   const artifactSet = await params.artifacts.resolve(witness.shape);
   const proof = await params.prover.prove(witness.formattedInputs, artifactSet, options);
 

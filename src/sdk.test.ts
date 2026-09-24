@@ -23,6 +23,7 @@ import { NoSpendCapabilityError, InvalidKeyMaterialError, InvalidRequestError } 
 import { initPoseidonPromise, Mnemonic } from './core/index';
 import type { ProverAdapter, ArtifactSource, ArtifactSet, Groth16Proof } from './prover/index';
 import type { ArmadaSdkConfig } from './index';
+import type { Plan } from './tx/index';
 
 const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' as const;
 const seed = (fill: number): Uint8Array => new Uint8Array(32).fill(fill);
@@ -165,6 +166,7 @@ describe('createArmadaSdk (§4.1)', () => {
     // Spend-path calls on a view-only wallet throw NoSpendCapabilityError.
     const fee = { schedule: { transfer: '0' }, broadcasterShieldedAddress: '0zk', feesCacheId: 'x', expiresAt: 0 };
     await expect(viewOnly.planTransfer({ outputs: [{ to0zk: '0zk', amount: 1n }], fee })).rejects.toThrow(NoSpendCapabilityError);
+    await expect(viewOnly.proveAll([])).rejects.toThrow(NoSpendCapabilityError);
   });
 
   it('markSpendPending requires spend capability; clearSpendPending is always safe (issue #55)', async () => {
@@ -176,12 +178,16 @@ describe('createArmadaSdk (§4.1)', () => {
     const viewOnly = await sdk.wallet.viewOnlyFromViewingKey(full.shareViewingKey(), { creationBlock: 1 });
 
     // A plan only needs its selected inputs' (tree, position) to derive the nullifiers to hold.
-    const plan = { selectedInputs: [{ tree: 0, position: 0 }] } as unknown as Parameters<typeof full.markSpendPending>[0];
+    const plan = { selectedInputs: [{ tree: 0, position: 0 }] } as unknown as Plan;
 
     // View-only wallets can't spend, so they can't have an in-flight spend to track.
     expect(() => viewOnly.markSpendPending(plan, '0xabc')).toThrow(NoSpendCapabilityError);
     // Spend-capable: marking + clearing are synchronous and don't throw.
     expect(() => full.markSpendPending(plan, '0xabc')).not.toThrow();
+    // A split spend marks every group's inputs in one call.
+    const group2 = { selectedInputs: [{ tree: 0, position: 1 }] } as unknown as Plan;
+    expect(() => full.markSpendPending([plan, group2], '0xabc')).not.toThrow();
+    expect(() => viewOnly.markSpendPending([plan, group2], '0xabc')).toThrow(NoSpendCapabilityError);
     expect(() => full.clearSpendPending('0xabc')).not.toThrow();
     // clearSpendPending is a no-op safe call even with nothing pending / on a view-only wallet.
     expect(() => viewOnly.clearSpendPending('0xdef')).not.toThrow();

@@ -34,7 +34,8 @@ import {
   type TokenBalance,
 } from './sync/index';
 import { EncryptedStore, deriveWalletStorageKey, type StorageAdapter } from './storage/index';
-import { planTransfer, planWitnessInputs, prove, runPreflight, type Plan, type ProofHandle, type PreflightResult, type FeeQuote } from './tx/index';
+import { planSpend, planWitnessInputs, prove, proveAll, runPreflight, type Plan, type ProofHandle, type PreflightResult, type FeeQuote, type ProveParams } from './tx/index';
+import { planList } from './tx/plan';
 import type { WitnessOutputRequest } from './tx/witness';
 import {
   deriveKeyset,
@@ -703,18 +704,16 @@ class ArmadaWallet implements Wallet {
       .map((txo) => ({ tree: txo.tree, nullifier: TransactNote.getNullifier(this.keyset.nullifyingKey, txo.position) }));
   }
 
-  async preflight(plan: Plan, options?: { feeQuote?: FeeQuote }): Promise<PreflightResult> {
+  async preflight(plan: Plan | readonly Plan[], options?: { feeQuote?: FeeQuote }): Promise<PreflightResult> {
     // Cheap pre-proof checks (SPEC §4.7): the proved root must still be accepted by the pool, no input
     // note may already be spent on-chain, and (if a quote is given) it must be unexpired — turning the
     // 30-second-proof-then-revert failure into a typed finding. Nullifiers are derived from THIS plan's
     // selected inputs (not the whole wallet), so it works view-only too.
-    const nullifiers = plan.selectedInputs.map((txo) => ({
-      tree: txo.tree,
-      nullifier: TransactNote.getNullifier(this.keyset.nullifyingKey, txo.position),
-    }));
+    const plans = planList(plan);
+    const nullifiers = this.planNullifiers(plans);
     // Cross-chain unshield (a CCTP adaptParams binding) → add a messenger-liveness check when configured.
     const messenger = this.ctx.cctpMessenger;
-    const isCrossChain = plan.boundParams.decodedAdaptParams !== undefined;
+    const isCrossChain = plans.some((p) => p.boundParams.decodedAdaptParams !== undefined);
     const cctpLiveness =
       isCrossChain && messenger !== undefined
         ? async (): Promise<boolean> => (await this.ctx.provider.getCode(messenger)) !== '0x'
@@ -765,7 +764,7 @@ class ArmadaWallet implements Wallet {
     });
   }
 
-  async planTransfer(request: PlanTransferRequest): Promise<Plan> {
+  async planTransfer(request: PlanTransferRequest): Promise<Plan[]> {
     if (!this.canSpend) throw new NoSpendCapabilityError('planTransfer: wallet has no SpendSigner');
     this.prunePendingSpends();
     const txos = this.scanState.spendableTxos(this.keyset.nullifyingKey);
@@ -774,10 +773,11 @@ class ArmadaWallet implements Wallet {
       if (!roots.has(txo.tree)) roots.set(txo.tree, BigInt(`0x${this.scanState.treeRoot(txo.tree)}`));
     }
     // Bind the fee tier that matches this plan's op, falling back to `transfer` for an older relayer
-    // schedule that predates the per-op keys, then to 0 (no fee note) if even that is absent.
+    // schedule that predates the per-op keys, then to 0 (no fee note) if even that is absent. The quoted
+    // fee is PER PROOF: a split spend pays it once per group (planSpend scales it).
     const scheduleKey = feeScheduleKey(request, this.ctx.yieldAdapterAddress);
     const feeValue = BigInt(request.fee.schedule[scheduleKey] ?? request.fee.schedule['transfer'] ?? '0');
-    const selection = planTransfer({
+    const selections = planSpend({
       txos,
       // Defaults to USDC; a caller can spend any pool token (e.g. yield vault shares on redeem).
       tokenAddress: request.tokenAddress ?? this.ctx.usdcAddress,
@@ -799,16 +799,31 @@ class ArmadaWallet implements Wallet {
       ...(this.ctx.supportedShapes !== undefined ? { supportedShapes: this.ctx.supportedShapes } : {}),
     });
     // Capture each selected input's merkle proof from the SAME scan state the roots came from (no await
-    // since roots were read above), so the plan owns proofs consistent with its `merkleRoot`. `prove()`
+    // since roots were read above), so each plan owns proofs consistent with its `merkleRoot`. `prove()`
     // uses these rather than re-reading live state, closing the plan→prove tree-append race (SPEC §4.6).
-    const merkleProofs = selection.selectedInputs.map((txo) =>
-      this.scanState.merkleProof(txo.tree, txo.position).elements.map((e) => BigInt(`0x${e}`)),
-    );
-    return { ...selection, merkleProofs };
+    // A fragmented transfer yields >1 group, submitted atomically as one transact([...]); each group is
+    // an independent Plan proved separately (the caller proves all, then combines the calldata).
+    return selections.map((selection) => ({
+      ...selection,
+      merkleProofs: selection.selectedInputs.map((txo) =>
+        this.scanState.merkleProof(txo.tree, txo.position).elements.map((e) => BigInt(`0x${e}`)),
+      ),
+    }));
   }
 
   async prove(plan: Plan, options?: ProveOptions): Promise<ProofHandle> {
     if (!this.signer) throw new NoSpendCapabilityError('prove: wallet has no SpendSigner');
+    return prove(this.proveParams(plan, this.signer, options), options);
+  }
+
+  async proveAll(plans: readonly Plan[], options?: ProveOptions): Promise<ProofHandle[]> {
+    if (!this.signer) throw new NoSpendCapabilityError('proveAll: wallet has no SpendSigner');
+    const signer = this.signer;
+    return proveAll(plans.map((plan) => this.proveParams(plan, signer, options)), options);
+  }
+
+  // The prove() inputs for one plan: its captured witness inputs, fee-first outputs, and the bound params.
+  private proveParams(plan: Plan, signer: SpendSigner, options?: ProveOptions): ProveParams {
     // Use the proofs the plan captured at plan time (NOT a fresh scan-state read) so the path elements
     // match `plan.merkleRoot` even if a sync advanced the tree since planning (SPEC §4.6).
     const inputs = planWitnessInputs(plan);
@@ -829,63 +844,66 @@ class ArmadaWallet implements Wallet {
       });
     }
 
-    return prove(
-      {
-        witness: {
-          inputs,
-          outputs,
-          // The spent token comes from the plan (defaults to USDC; e.g. yield-share token on redeem).
-          tokenAddress: plan.summary.tokenAddress,
-          sender: {
-            masterPublicKey: this.keyset.masterPublicKey,
-            viewingPublicKey: this.keyset.viewingPublicKey,
-            viewingPrivateKey: this.keyset.viewingPrivateKey,
-            nullifyingKey: this.keyset.nullifyingKey,
-            spendingPublicKey: this.keyset.spendingPublicKey,
-            senderAddress: this.keyset.shieldedAddress,
-          },
-          signer: this.signer,
-          summary: plan.summary,
-          merkleRoot: plan.merkleRoot,
-          treeNumber: plan.boundParams.treeNumber,
-          chainType: ChainType.EVM,
-          chainId: this.ctx.chainId,
-          unshield: plan.boundParams.unshield,
-          // adaptContract/adaptParams are SNARK public inputs (bound-params hash + spend signature);
-          // pass the plan's values so a cross-chain unshield's CCTP binding is committed by the proof.
-          adaptContract: plan.boundParams.adaptContract,
-          adaptParams: plan.boundParams.adaptParams,
-          // Decoded CCTP binding (inspection-only) so the signer sees the destination it authorizes (§4.2.1).
-          ...(plan.boundParams.decodedAdaptParams ? { decodedAdaptParams: plan.boundParams.decodedAdaptParams } : {}),
-          ...(plan.summary.unshield ? { unshieldOutput: plan.summary.unshield } : {}),
+    return {
+      witness: {
+        inputs,
+        outputs,
+        // The spent token comes from the plan (defaults to USDC; e.g. yield-share token on redeem).
+        tokenAddress: plan.summary.tokenAddress,
+        sender: {
+          masterPublicKey: this.keyset.masterPublicKey,
+          viewingPublicKey: this.keyset.viewingPublicKey,
+          viewingPrivateKey: this.keyset.viewingPrivateKey,
+          nullifyingKey: this.keyset.nullifyingKey,
+          spendingPublicKey: this.keyset.spendingPublicKey,
+          senderAddress: this.keyset.shieldedAddress,
         },
-        artifacts: this.ctx.artifacts,
-        prover: this.ctx.prover,
-        poolAddress: this.ctx.poolAddress,
-        // The public unshield preimage the contract pays out on (npk = recipient EVM address).
-        ...(plan.summary.unshield
-          ? {
-              unshieldPreimage: {
-                npk: BigInt(plan.summary.unshield.recipient),
-                tokenType: 0,
-                tokenAddress: plan.summary.tokenAddress,
-                tokenSubID: 0n,
-                value: plan.summary.unshield.value,
-              },
-            }
-          : {}),
+        signer,
+        summary: plan.summary,
+        merkleRoot: plan.merkleRoot,
+        treeNumber: plan.boundParams.treeNumber,
+        chainType: ChainType.EVM,
+        chainId: this.ctx.chainId,
+        unshield: plan.boundParams.unshield,
+        // adaptContract/adaptParams are SNARK public inputs (bound-params hash + spend signature);
+        // pass the plan's values so a cross-chain unshield's CCTP binding is committed by the proof.
+        adaptContract: plan.boundParams.adaptContract,
+        adaptParams: plan.boundParams.adaptParams,
+        // Decoded CCTP binding (inspection-only) so the signer sees the destination it authorizes (§4.2.1).
+        ...(plan.boundParams.decodedAdaptParams ? { decodedAdaptParams: plan.boundParams.decodedAdaptParams } : {}),
+        ...(plan.summary.unshield ? { unshieldOutput: plan.summary.unshield } : {}),
       },
-      options,
-    );
+      artifacts: this.ctx.artifacts,
+      prover: this.ctx.prover,
+      poolAddress: this.ctx.poolAddress,
+      // The public unshield preimage the contract pays out on (npk = recipient EVM address).
+      ...(plan.summary.unshield
+        ? {
+            unshieldPreimage: {
+              npk: BigInt(plan.summary.unshield.recipient),
+              tokenType: 0,
+              tokenAddress: plan.summary.tokenAddress,
+              tokenSubID: 0n,
+              value: plan.summary.unshield.value,
+            },
+          }
+        : {}),
+    };
   }
 
-  markSpendPending(plan: Plan, txid: string): void {
+  markSpendPending(plan: Plan | readonly Plan[], txid: string): void {
     if (!this.canSpend) throw new NoSpendCapabilityError('markSpendPending: wallet has no SpendSigner');
-    const entries = plan.selectedInputs.map((txo) => ({
-      tree: txo.tree,
-      nullifier: TransactNote.getNullifier(this.keyset.nullifyingKey, txo.position),
-    }));
-    this.scanState.markSpendPending(entries, txid, Date.now());
+    this.scanState.markSpendPending(this.planNullifiers(planList(plan)), txid, Date.now());
+  }
+
+  // The (tree, nullifier) of every input note the plans spend.
+  private planNullifiers(plans: readonly Plan[]): { tree: number; nullifier: bigint }[] {
+    return plans.flatMap((p) =>
+      p.selectedInputs.map((txo) => ({
+        tree: txo.tree,
+        nullifier: TransactNote.getNullifier(this.keyset.nullifyingKey, txo.position),
+      })),
+    );
   }
 
   clearSpendPending(txid: string): void {

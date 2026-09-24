@@ -3,6 +3,7 @@
 
 import { Interface } from 'ethers';
 import type { Plan } from './index';
+import { planList } from './plan';
 
 const shieldPauseIface = new Interface(['function shieldsPaused() view returns (bool)']);
 
@@ -52,8 +53,9 @@ export interface PreflightQueries {
 }
 
 export interface PreflightParams {
-  readonly plan: Plan;
-  /** The plan's input-note nullifiers `(tree, nullifier)` — the wallet derives these from its key. */
+  /** The plan — or every group of a split spend, checked together as the one transaction they submit as. */
+  readonly plan: Plan | readonly Plan[];
+  /** The plans' input-note nullifiers `(tree, nullifier)` — the wallet derives these from its key. */
   readonly nullifiers: readonly { readonly tree: number; readonly nullifier: bigint }[];
   readonly queries: PreflightQueries;
   /** When present, checks the fee quote hasn't expired (a local, no-RPC check). */
@@ -81,8 +83,13 @@ export interface PreflightParams {
  * `findings`/`ok` and decide policy; nothing here proves or submits.
  */
 export async function runPreflight(params: PreflightParams): Promise<PreflightResult> {
-  const [rootKnown, nullifierChecks] = await Promise.all([
-    params.queries.isKnownRoot(params.plan.boundParams.treeNumber, params.plan.merkleRoot),
+  const plans = planList(params.plan);
+  // Split groups usually share one proved root; check each distinct (tree, root) once.
+  const roots = new Map<string, { tree: number; root: bigint }>();
+  for (const p of plans) roots.set(`${p.boundParams.treeNumber}:${p.merkleRoot}`, { tree: p.boundParams.treeNumber, root: p.merkleRoot });
+
+  const [rootChecks, nullifierChecks] = await Promise.all([
+    Promise.all([...roots.values()].map(async (r) => ({ ...r, known: await params.queries.isKnownRoot(r.tree, r.root) }))),
     Promise.all(
       params.nullifiers.map(async (n) => ({ n, spent: await params.queries.isNullifierSpent(n.tree, n.nullifier) })),
     ),
@@ -90,15 +97,17 @@ export async function runPreflight(params: PreflightParams): Promise<PreflightRe
 
   const findings: PreflightFinding[] = [];
 
-  findings.push(
-    rootKnown
-      ? { check: 'root-freshness', ok: true }
-      : {
-          check: 'root-freshness',
-          ok: false,
-          detail: `plan root is no longer in the pool's accepted history for tree ${params.plan.boundParams.treeNumber}`,
-        },
-  );
+  for (const { tree, known } of rootChecks) {
+    findings.push(
+      known
+        ? { check: 'root-freshness', ok: true }
+        : {
+            check: 'root-freshness',
+            ok: false,
+            detail: `plan root is no longer in the pool's accepted history for tree ${tree}`,
+          },
+    );
+  }
 
   for (const { n, spent } of nullifierChecks) {
     findings.push(
@@ -119,13 +128,15 @@ export async function runPreflight(params: PreflightParams): Promise<PreflightRe
 
   // Balance sufficiency (local): the selected inputs must cover every output + fee + unshield. planTransfer
   // guarantees this, so this is a defensive re-check that the plan handed to preflight is self-consistent.
-  const s = params.plan.summary;
-  const spent = s.outputs.reduce((sum, o) => sum + o.value, 0n) + (s.feeOutput?.value ?? 0n) + (s.unshield?.value ?? 0n);
-  findings.push(
-    s.inputTotal >= spent
-      ? { check: 'balance-sufficiency', ok: true }
-      : { check: 'balance-sufficiency', ok: false, detail: `plan inputs ${s.inputTotal} do not cover ${spent} (outputs + fee + unshield)` },
-  );
+  for (const p of plans) {
+    const s = p.summary;
+    const spent = s.outputs.reduce((sum, o) => sum + o.value, 0n) + (s.feeOutput?.value ?? 0n) + (s.unshield?.value ?? 0n);
+    findings.push(
+      s.inputTotal >= spent
+        ? { check: 'balance-sufficiency', ok: true }
+        : { check: 'balance-sufficiency', ok: false, detail: `plan inputs ${s.inputTotal} do not cover ${spent} (outputs + fee + unshield)` },
+    );
+  }
 
   if (params.cctpLiveness !== undefined) {
     const live = await params.cctpLiveness();

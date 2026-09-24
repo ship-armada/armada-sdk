@@ -207,7 +207,7 @@ export { buildGaslessCrossChainShield, hashShieldData, hashCrossChainShieldInten
 export type { ShieldData, CrossChainShieldIntent, CrossChainShieldIntentTypedData, GaslessCrossChainShieldInput } from './gasless-cross-chain-shield';
 
 // Transfer planning — inspectable Plan (TXO selection + change + fee output + circuit shape).
-export { planTransfer, planWitnessInputs } from './plan';
+export { planTransfer, planSpend, planWitnessInputs } from './plan';
 export type { PlanTransferParams, TransferOutputRequest, FeeRequest } from './plan';
 
 // transact() calldata serializer (inverse of decodeTransact) — proof G2 swap + Transaction structs.
@@ -215,7 +215,7 @@ export { buildTransactCalldata, transactionToTuple } from './serialize';
 export type { TransactionData, TransactionBoundParams } from './serialize';
 
 // prove() orchestration + ProofHandle — witness → artifacts → proof → calldata.
-export { prove } from './prove';
+export { prove, proveAll } from './prove';
 export type { ProveParams } from './prove';
 
 // Preflight — cheap pre-proof checks over a Plan (SPEC §4.7).

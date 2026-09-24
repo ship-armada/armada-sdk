@@ -96,6 +96,16 @@ export class UnsupportedCircuitShapeError extends ArmadaError {
   readonly code = 'UNSUPPORTED_CIRCUIT_SHAPE';
 }
 
+/**
+ * A spend is so fragmented it needs more input notes than one atomic batch of supported-shape proofs can
+ * hold (`planSpend`'s per-batch group cap). Splitting further would require multiple SEQUENTIAL
+ * transactions (consolidate-then-spend), which this pipeline does not do — the caller should consolidate
+ * the wallet's small notes first. Distinct from `InsufficientBalanceError` (enough value, too many notes).
+ */
+export class TooFragmentedError extends ArmadaError {
+  readonly code = 'TOO_FRAGMENTED';
+}
+
 /** A long operation (prove) was cancelled via its `AbortSignal`. Consumers match `code`, not message. */
 export class AbortedError extends ArmadaError {
   readonly code = 'ABORTED';

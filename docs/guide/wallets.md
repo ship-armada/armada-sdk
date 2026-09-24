@@ -73,7 +73,7 @@ const viewOnly = await sdk.wallet.fromRootSecret(rootSecret, {
 viewOnly.canSpend; // false
 ```
 
-Calling a spend-path method — `planTransfer` or `prove` — on a wallet without a signer throws
+Calling a spend-path method — `planTransfer`, `prove`, or `proveAll` — on a wallet without a signer throws
 `NoSpendCapabilityError`:
 
 ```ts
