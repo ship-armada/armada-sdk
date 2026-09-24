@@ -518,6 +518,15 @@ const tx = buildTransactCalldata(handles.map((h) => h.toTransactionData()), pool
   shape is unregistered is split across up to four registered-shape plans, submitted atomically as
   one `transact([...])`; the recipient receives one note per plan. Beyond four plans the planner
   throws `TooFragmentedError` (consolidate first). Unshields and multi-recipient spends are not split.
+- **Consolidation.** `wallet.consolidate({ tokenAddress?, fee })` merges one token's notes into fewer
+  self-owned notes: up to four proofs, one atomic relayer-submitted `transact([...])`. Old-tree notes
+  go first (migrating them to the current tree, whose single-tree planning then sees one balance),
+  then the smallest current-tree notes. Every proof pays the per-proof `transfer` fee in USDC; a
+  non-USDC run adds one USDC fee group. Dust worth no more than its fee, and a lone current-tree
+  note, are left alone (`NothingToConsolidateError` when nothing qualifies). It is the remedy for
+  unsplittable spends (unshield / yield) that exceed a registered shape, and for `TooFragmentedError`.
+  `wallet.planTransferAfter(merge, request)` dry-runs a spend against the post-merge wallet;
+  `TokenBalance.spendableNotes` counts each token's spendable notes.
 
 - **ProofHandle** owns the proof and the exact plan it proves. Populate-time argument
   re-matching (the stock SDK's silent cache contract) does not exist; a handle either encodes

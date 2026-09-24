@@ -106,7 +106,8 @@ for (const { tokenHash, tokenAddress, spendable, pending } of await wallet.balan
 }
 ```
 
-`spendable` and `pending` are `bigint` values in the token's base units. Each entry carries both
+`spendable` and `pending` are `bigint` values in the token's base units, and `spendableNotes` counts
+the notes making up `spendable` (see [Consolidating notes](./transactions#consolidating-notes)). Each entry carries both
 `tokenAddress` (the ERC-20 address) and `tokenHash` (the pool's canonical hash of the token, the key
 the balance and token events join on) — see [Adapters](./adapters) for how the two relate.
 
