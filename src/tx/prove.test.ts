@@ -195,6 +195,25 @@ describe('prove() + ProofHandle (§4.6)', () => {
       ).rejects.toThrow(InvalidRequestError);
     });
 
+    it('reports progress across the whole batch, not restarting per group', async () => {
+      const halfThenDone: ProverAdapter = {
+        prove: async (_inputs, _art, opts) => {
+          opts?.onProgress?.({ phase: 'proving', fraction: 0.5 });
+          opts?.onProgress?.({ phase: 'proving', fraction: 1 });
+          return DUMMY_PROOF;
+        },
+        verify: async () => true,
+        close: async () => {},
+      };
+      const groups = [await witnessParams(), await witnessParams()].map((w) => ({
+        witness: w, artifacts, prover: halfThenDone, poolAddress: POOL,
+      }));
+      const seen: { phase: string; fraction: number }[] = [];
+      await proveAll(groups, { onProgress: (p) => seen.push(p) });
+      expect(seen.map((p) => p.fraction)).toEqual([0.25, 0.5, 0.75, 1]);
+      expect(seen.every((p) => p.phase === 'proving')).toBe(true);
+    });
+
     it('returns no handles for no groups without asking the signer', async () => {
       expect(await proveAll([])).toEqual([]);
     });

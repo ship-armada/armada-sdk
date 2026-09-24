@@ -151,7 +151,8 @@ const proof = await wallet.prove(plan, {
 });
 ```
 
-Cancelling through the signal throws `AbortedError`.
+Cancelling through the signal throws `AbortedError`. With `proveAll`, `onProgress` covers the whole
+batch: the fraction runs from 0 to 1 once across all plans, rather than restarting for each proof.
 
 ### Persisting recoverable metadata
 
