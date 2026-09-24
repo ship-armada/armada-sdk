@@ -84,9 +84,42 @@ plans, each on a listed shape, submitted together as **one atomic transaction**:
 - the fee is charged once per plan (see [Fees](#fees)) and may itself span plans;
 - change comes back in the last plan.
 
-A split holds at most four plans. A wallet too fragmented to fit throws `TooFragmentedError` —
-consolidate its small notes (a transfer to yourself) first. Unshields and multi-recipient spends
-are never split; if their shape isn't listed they throw `UnsupportedCircuitShapeError`.
+A split holds at most four plans. A wallet too fragmented to fit throws `TooFragmentedError`.
+Unshields and multi-recipient spends are never split; if their shape isn't listed they throw
+`UnsupportedCircuitShapeError`. With the deployed circuits that happens as soon as an unshield needs
+five or more notes. Both are fixed by [consolidating](#consolidating-notes) first.
+
+### Consolidating notes
+
+`consolidate` merges one token's notes into fewer notes that the wallet owns, in one atomic
+transaction of up to four proofs. Prove and submit it like any other spend:
+
+```ts
+const plans = await wallet.consolidate({ fee: feeQuote }); // USDC by default
+// or: wallet.consolidate({ tokenAddress: vaultShares, fee: feeQuote })
+const proofs = await wallet.proveAll(plans);
+```
+
+- **Order.** Notes in older merkle trees go first. Spending them moves their value into the pool's
+  current tree, so a balance split across trees becomes one balance again. Then the smallest notes
+  in the current tree.
+- **Fee.** Every proof pays the quoted `transfer` fee, in USDC. When consolidating another token,
+  one extra USDC plan pays the fee for the whole batch.
+- **What's left alone.** A lone note in the current tree (merging it changes nothing), and dust
+  worth no more than the fee it would cost to merge. When nothing is worth merging, `consolidate`
+  throws `NothingToConsolidateError`.
+- **More than one round.** A run merges what fits in four proofs. Run it again for the rest.
+
+Before paying for a merge, check whether it unblocks a spend. `planTransferAfter` plans the spend
+against the wallet as it will be once the consolidation confirms:
+
+```ts
+const merge = await wallet.consolidate({ fee: feeQuote });
+await wallet.planTransferAfter(merge, unshieldRequest); // throws if it still won't work
+```
+
+Each `balances()` entry's `spendableNotes` counts the notes behind its `spendable` amount. A high
+count is the cue to consolidate.
 
 ## Unshield to a public address
 

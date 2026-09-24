@@ -208,6 +208,9 @@ export type { ShieldData, CrossChainShieldIntent, CrossChainShieldIntentTypedDat
 
 // Transfer planning — inspectable Plan (TXO selection + change + fee output + circuit shape).
 export { planTransfer, planSpend, planWitnessInputs } from './plan';
+// Consolidation — merge one token's notes into fewer self-owned notes (old trees first, then smallest).
+export { planConsolidate, txosAfterConsolidation } from './consolidate';
+export type { PlanConsolidateParams } from './consolidate';
 export type { PlanTransferParams, TransferOutputRequest, FeeRequest } from './plan';
 
 // transact() calldata serializer (inverse of decodeTransact) — proof G2 swap + Transaction structs.

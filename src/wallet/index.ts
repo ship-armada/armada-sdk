@@ -1,7 +1,7 @@
 // ABOUTME: Wallet-layer contracts (SPEC §4.2) — the SpendSigner custody boundary, enrollment factory,
 // ABOUTME: and view-only wallets. Implementations land in Phase 2; the interfaces are FROZEN here.
 
-import type { Plan, ProofHandle, FeeQuote, SpendIntentContext, CctpBinding, PreflightResult } from '../tx/index';
+import type { Plan, PlanSelection, ProofHandle, FeeQuote, SpendIntentContext, CctpBinding, PreflightResult } from '../tx/index';
 import type { ProveOptions } from '../prover/index';
 import type { TokenBalance, HistoryEntry, SyncEventMap, Unsubscribe } from '../sync/index';
 
@@ -68,6 +68,26 @@ export interface Wallet {
    * for an unsplittable spend (unshield / multi-recipient) whose shape isn't registered.
    */
   planTransfer(request: PlanTransferRequest): Promise<Plan[]>;
+  /**
+   * Dry-run `planTransfer` against the wallet as it would be once `consolidation` (from `consolidate`)
+   * confirms — its inputs gone, its merged notes in the current tree. Answers "will this spend work after
+   * merging?" before the user pays for the merge. Same planner rules and typed errors as `planTransfer`;
+   * returns selections WITHOUT merkle proofs (they describe notes that don't exist yet, so can't be proved).
+   */
+  planTransferAfter(consolidation: readonly Plan[], request: PlanTransferRequest): Promise<PlanSelection[]>;
+  /**
+   * Plan a consolidation (issue #98): merge ONE token's notes into fewer notes the wallet owns, as up to
+   * 4 proofs submitted atomically in one relayer `transact([...])`. Notes in older merkle trees go first
+   * (spending them moves their value into the current tree), then the smallest current-tree notes.
+   * Every proof pays the quoted `transfer` fee in USDC; a non-USDC run adds one USDC group that pays for
+   * the whole batch. Fragmented spends that can't split (unshields, yield) or that exceed one batch
+   * (`TooFragmentedError`) become possible after one or more runs. Prove with `proveAll`, then preflight
+   * and `markSpendPending` the whole array as for `planTransfer`.
+   * Throws `NothingToConsolidateError` when nothing is worth merging (e.g. only dust worth less than the
+   * fee), `InsufficientBalanceError` when a non-USDC run's fee can't be covered, and
+   * `InvalidRequestError` when the pool config has no `supportedShapes`. Requires spend capability.
+   */
+  consolidate(request: ConsolidateRequest): Promise<Plan[]>;
   /**
    * Cheap pre-proof checks over a plan — or every group of a split spend — (SPEC §4.7): root freshness,
    * input nullifiers unspent, and (if a `feeQuote` is passed) quote freshness. Returns a finding per
@@ -145,6 +165,13 @@ export interface PlanTransferRequest {
    * spendable. Must match the token of the selected input notes.
    */
   readonly tokenAddress?: `0x${string}`;
+}
+
+export interface ConsolidateRequest {
+  /** Token to consolidate. Defaults to the pool's USDC; any pool token works (e.g. yield vault shares). */
+  readonly tokenAddress?: `0x${string}`;
+  /** The relayer's quote; its `transfer` tier is the per-proof fee. */
+  readonly fee: FeeQuote;
 }
 
 /** Enrollment factory (SPEC §4.2). rootSecret is the canonical identity; no mnemonic intermediary. */

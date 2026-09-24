@@ -19,8 +19,8 @@ import { RootMismatchError, QuickSyncSchemaError, IndexerHttpError, PositionGapE
 import { deriveKeyset, LocalSigner } from './wallet/index';
 import { saveScanState, WalletScanState } from './sync/index';
 import { MemoryStorageAdapter } from './storage/index';
-import { NoSpendCapabilityError, InvalidKeyMaterialError, InvalidRequestError } from './errors';
-import { initPoseidonPromise, Mnemonic } from './core/index';
+import { NoSpendCapabilityError, InvalidKeyMaterialError, InvalidRequestError, UnsupportedCircuitShapeError } from './errors';
+import { initPoseidonPromise, Mnemonic, getTokenDataERC20, getTokenDataHash } from './core/index';
 import type { ProverAdapter, ArtifactSource, ArtifactSet, Groth16Proof } from './prover/index';
 import type { ArmadaSdkConfig } from './index';
 import type { Plan } from './tx/index';
@@ -564,5 +564,80 @@ describe('event payload builders (token identifier resolution)', () => {
       value: 7n,
     });
     expect(buildReceivedNote({ ...base, tokenHash: UNREGISTERED }, resolve)).toBeUndefined();
+  });
+});
+
+describe('wallet.consolidate + planTransferAfter (issue #98)', () => {
+  // The armada-circuits v0.1.0-dev registered set (no Nx3 above N=4).
+  const SHAPES = ['1x1', '1x2', '1x3', '2x1', '2x2', '2x3', '3x1', '3x2', '3x3', '4x1', '4x2', '4x3',
+    '5x1', '5x2', '6x1', '6x2', '7x1', '8x1', '8x4'];
+  const USDC_HASH = getTokenDataHash(getTokenDataERC20(USDC));
+  const FEE = { schedule: { transfer: '1' }, broadcasterShieldedAddress: '0zk_broadcaster', feesCacheId: 'c', expiresAt: 0 };
+  const leaf = (n: number): string => n.toString(16).padStart(64, '0');
+
+  // A spend-capable wallet whose persisted scan state holds USDC notes of the given values, per tree.
+  async function walletWithNotes(notesByTree: Record<number, bigint[]>, shapes: string[] | null = SHAPES) {
+    await initPoseidonPromise;
+    const store = new MemoryStorageAdapter();
+    await store.open({ schemaVersion: 1, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1 });
+    const address = (await deriveKeyset(seed(0x55))).shieldedAddress;
+    const trees = Object.entries(notesByTree).map(([tree, values]) => ({
+      tree: Number(tree),
+      leaves: values.map((_, i) => leaf(Number(tree) * 1000 + i + 1)),
+    }));
+    const txos = Object.entries(notesByTree).flatMap(([tree, values]) =>
+      values.map((value, position) => ({
+        tree: Number(tree), position, tokenHash: USDC_HASH, value: value.toString(), blockNumber: 1,
+        txid: `0x${'ee'.repeat(32)}`, origin: 'transact' as const, random: '00'.repeat(16), notePublicKey: '0',
+      })),
+    );
+    const state = WalletScanState.restore({ trees, txos, spent: [], unshields: [], sent: [] });
+    await saveScanState(store, address, state, 500);
+    const base = makeConfig();
+    const sdk = await createArmadaSdk({
+      ...base,
+      pool: { ...base.pool, ...(shapes ? { supportedShapes: shapes } : {}) },
+      storage: store,
+      dangerouslyAllowPlaintextStorage: true,
+    });
+    const wallet = await sdk.wallet.fromRootSecret(seed(0x55), { creationBlock: 1 });
+    await wallet.syncStatus(); // hydrate the persisted scan state
+    return { sdk, wallet };
+  }
+
+  it('plans a consolidation with each input\'s merkle proof, old-tree notes first, at the transfer fee', async () => {
+    const { sdk, wallet } = await walletWithNotes({ 0: [9n], 1: [1n, 2n, 3n] });
+    const plans = await wallet.consolidate({ fee: FEE });
+    expect(plans.map((p) => p.boundParams.treeNumber)).toEqual([0, 1]);
+    expect(plans.map((p) => p.summary.feeOutput?.value)).toEqual([1n, 1n]);
+    expect(plans.map((p) => p.summary.changeValue)).toEqual([8n, 5n]);
+    for (const p of plans) expect(p.merkleProofs).toHaveLength(p.selectedInputs.length);
+    await sdk.close();
+  });
+
+  it('dry-runs a blocked unshield against the wallet as it would be after the consolidation', async () => {
+    const { sdk, wallet } = await walletWithNotes({ 0: [3n, 3n, 3n, 3n, 3n] });
+    const unshield = { outputs: [], unshield: { recipient: `0x${'ab'.repeat(20)}` as const, amount: 12n }, fee: FEE };
+    // Five notes + unshield + fee + change = 5x3, which isn't registered — and unshields never split.
+    await expect(wallet.planTransfer(unshield)).rejects.toThrow(UnsupportedCircuitShapeError);
+    const consolidation = await wallet.consolidate({ fee: FEE });
+    const after = await wallet.planTransferAfter(consolidation, unshield);
+    expect(after).toHaveLength(1);
+    expect(after[0]!.shape).toEqual({ nullifiers: 1, commitments: 3 });
+    await sdk.close();
+  });
+
+  it('requires spend capability', async () => {
+    const sdk = await createArmadaSdk(makeConfig());
+    const full = await sdk.wallet.fromRootSecret(seed(0x11), { creationBlock: 1, signer: await LocalSigner.fromRootSecret(seed(0x11)) });
+    const viewOnly = await sdk.wallet.viewOnlyFromViewingKey(full.shareViewingKey(), { creationBlock: 1 });
+    await expect(viewOnly.consolidate({ fee: FEE })).rejects.toThrow(NoSpendCapabilityError);
+    await sdk.close();
+  });
+
+  it('requires the pool\'s supportedShapes (consolidation groups are sized from them)', async () => {
+    const { sdk, wallet } = await walletWithNotes({ 0: [1n, 2n] }, null);
+    await expect(wallet.consolidate({ fee: FEE })).rejects.toThrow(InvalidRequestError);
+    await sdk.close();
   });
 });
