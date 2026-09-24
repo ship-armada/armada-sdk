@@ -72,6 +72,11 @@ export interface TokenBalance {
   readonly tokenHash: string;
   readonly tokenAddress?: `0x${string}`;
   readonly spendable: bigint;
+  /**
+   * How many notes make up `spendable`. A spend's circuit shape depends on how many notes it spends, so a
+   * high count (a fragmented balance) is the cue to consolidate (`wallet.consolidate`).
+   */
+  readonly spendableNotes: number;
   readonly pending: bigint;
   /**
    * Value of otherwise-spendable notes with an optimistic in-flight spend (a submitted, unconfirmed
@@ -117,17 +122,18 @@ export function computeBalances(
   const pendingSet = new Set(pendingSpends.map((p) => spentKey(p.tree, p.nullifier)));
   const finalityCutoff = options.currentBlock - options.finalityThreshold;
 
-  const perToken = new Map<string, { spendable: bigint; pending: bigint; pendingSpent: bigint }>();
+  const perToken = new Map<string, { spendable: bigint; spendableNotes: number; pending: bigint; pendingSpent: bigint }>();
   for (const txo of txos) {
     const key = spentKey(txo.tree, TransactNote.getNullifier(nullifyingKey, txo.position));
     if (spentSet.has(key)) {
       continue; // confirmed spent — no longer part of the balance
     }
-    const bucket = perToken.get(txo.tokenHash) ?? { spendable: 0n, pending: 0n, pendingSpent: 0n };
+    const bucket = perToken.get(txo.tokenHash) ?? { spendable: 0n, spendableNotes: 0, pending: 0n, pendingSpent: 0n };
     if (pendingSet.has(key)) {
       bucket.pendingSpent += txo.value; // in-flight out — held aside, not spendable
     } else if (txo.blockNumber <= finalityCutoff) {
       bucket.spendable += txo.value;
+      bucket.spendableNotes += 1;
     } else {
       bucket.pending += txo.value;
     }
@@ -138,6 +144,7 @@ export function computeBalances(
     .map(([tokenHash, b]) => ({
       tokenHash,
       spendable: b.spendable,
+      spendableNotes: b.spendableNotes,
       pending: b.pending,
       ...(b.pendingSpent > 0n ? { pendingSpent: b.pendingSpent } : {}),
     }))

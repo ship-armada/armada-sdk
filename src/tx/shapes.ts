@@ -31,3 +31,17 @@ export function maxSupportedInputCount(supported: ReadonlySet<string>): number {
   for (const key of supported) max = Math.max(max, parseShapeKey(key).n);
   return max;
 }
+
+/**
+ * The largest input count N registered for output count `m` (0 when no shape has `m` outputs). Sizes a
+ * consolidation group, whose output count is fixed (merged note ± fee note) — the caller still checks the
+ * exact `NxM` it builds, since the set is sparse.
+ */
+export function maxInputCountForOutputs(supported: ReadonlySet<string>, m: number): number {
+  let max = 0;
+  for (const key of supported) {
+    const parsed = parseShapeKey(key);
+    if (parsed.m === m) max = Math.max(max, parsed.n);
+  }
+  return max;
+}

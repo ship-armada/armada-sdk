@@ -52,9 +52,24 @@ describe('balance aggregation (§4.4)', () => {
       finalityThreshold: 10,
     });
     expect(balances).toEqual([
-      { tokenHash: TOKEN_A, spendable: 150n, pending: 0n },
-      { tokenHash: TOKEN_B, spendable: 7n, pending: 0n },
+      { tokenHash: TOKEN_A, spendable: 150n, spendableNotes: 2, pending: 0n },
+      { tokenHash: TOKEN_B, spendable: 7n, spendableNotes: 1, pending: 0n },
     ]);
+  });
+
+  it('counts the spendable notes behind each token\'s spendable balance', () => {
+    const txos: TXO[] = [
+      txo({ tree: 0, position: 0, value: 100n, tokenHash: TOKEN_A }),
+      txo({ tree: 0, position: 1, value: 50n, tokenHash: TOKEN_A }),
+      txo({ tree: 0, position: 2, value: 5n, tokenHash: TOKEN_A }), // spent
+      txo({ tree: 0, position: 3, value: 6n, tokenHash: TOKEN_A }), // in-flight
+      txo({ tree: 0, position: 4, value: 7n, tokenHash: TOKEN_A, blockNumber: 999 }), // not yet final
+    ];
+    const [a] = computeBalances(txos, [spentFor(0, 2)], NULLIFYING_KEY, { currentBlock: 1000, finalityThreshold: 10 }, [
+      pendingFor(0, 3),
+    ]);
+    expect(a?.spendable).toBe(150n);
+    expect(a?.spendableNotes).toBe(2);
   });
 
   it('excludes spent TXOs (tree-scoped nullifier match)', () => {
@@ -67,7 +82,7 @@ describe('balance aggregation (§4.4)', () => {
       finalityThreshold: 10,
     });
     // Position 1 in tree 0 is spent → only position 0 remains.
-    expect(balances).toEqual([{ tokenHash: TOKEN_A, spendable: 100n, pending: 0n }]);
+    expect(balances).toEqual([{ tokenHash: TOKEN_A, spendable: 100n, spendableNotes: 1, pending: 0n }]);
   });
 
   it('holds an in-flight (pending-spent) TXO out of spendable and into pendingSpent', () => {
@@ -79,14 +94,14 @@ describe('balance aggregation (§4.4)', () => {
     const balances = computeBalances(txos, [], NULLIFYING_KEY, { currentBlock: 1000, finalityThreshold: 10 }, [
       pendingFor(0, 1),
     ]);
-    expect(balances).toEqual([{ tokenHash: TOKEN_A, spendable: 100n, pending: 0n, pendingSpent: 50n }]);
+    expect(balances).toEqual([{ tokenHash: TOKEN_A, spendable: 100n, spendableNotes: 1, pending: 0n, pendingSpent: 50n }]);
   });
 
   it('omits pendingSpent entirely when there are no in-flight spends', () => {
     const txos: TXO[] = [txo({ tree: 0, position: 0, value: 100n })];
     const balances = computeBalances(txos, [], NULLIFYING_KEY, { currentBlock: 1000, finalityThreshold: 10 }, []);
     // No pendingSpent key at all — absent means 0n (matches the tokenAddress-when-defined convention).
-    expect(balances).toEqual([{ tokenHash: TOKEN_A, spendable: 100n, pending: 0n }]);
+    expect(balances).toEqual([{ tokenHash: TOKEN_A, spendable: 100n, spendableNotes: 1, pending: 0n }]);
   });
 
   it('a confirmed nullifier takes precedence over an optimistic pending mark on the same note', () => {
@@ -108,7 +123,7 @@ describe('balance aggregation (§4.4)', () => {
     const balances = computeBalances(txos, [], NULLIFYING_KEY, { currentBlock: 1000, finalityThreshold: 10 }, [
       pendingFor(0, 5),
     ]);
-    expect(balances).toEqual([{ tokenHash: TOKEN_A, spendable: 200n, pending: 0n, pendingSpent: 100n }]);
+    expect(balances).toEqual([{ tokenHash: TOKEN_A, spendable: 200n, spendableNotes: 1, pending: 0n, pendingSpent: 100n }]);
   });
 
   it('does NOT cross-match nullifiers across trees (9.5.4 regression guard)', () => {
@@ -127,7 +142,7 @@ describe('balance aggregation (§4.4)', () => {
       finalityThreshold: 10,
     });
     // Tree 0's position-5 TXO is spent; tree 1's position-5 TXO survives despite the shared nullifier.
-    expect(balances).toEqual([{ tokenHash: TOKEN_A, spendable: 200n, pending: 0n }]);
+    expect(balances).toEqual([{ tokenHash: TOKEN_A, spendable: 200n, spendableNotes: 1, pending: 0n }]);
   });
 
   it('buckets TXOs newer than the finality window as pending', () => {
@@ -139,7 +154,7 @@ describe('balance aggregation (§4.4)', () => {
       currentBlock: 1000,
       finalityThreshold: 10, // cutoff = 990
     });
-    expect(balances).toEqual([{ tokenHash: TOKEN_A, spendable: 100n, pending: 30n }]);
+    expect(balances).toEqual([{ tokenHash: TOKEN_A, spendable: 100n, spendableNotes: 1, pending: 30n }]);
   });
 
   it('a TXO exactly at the finality cutoff is spendable', () => {
@@ -148,7 +163,7 @@ describe('balance aggregation (§4.4)', () => {
       currentBlock: 1000,
       finalityThreshold: 10, // cutoff = 990, inclusive
     });
-    expect(balances).toEqual([{ tokenHash: TOKEN_A, spendable: 42n, pending: 0n }]);
+    expect(balances).toEqual([{ tokenHash: TOKEN_A, spendable: 42n, spendableNotes: 1, pending: 0n }]);
   });
 
   it('returns an empty array for no TXOs', () => {
@@ -223,18 +238,18 @@ describe('withTokenAddresses (hash → address enrichment)', () => {
   const resolve = (hash: string): `0x${string}` | undefined => (tokenHashKey(hash) === TOKEN_A ? ADDR_A : undefined);
 
   it('attaches the registered address to each balance, keyed by hash', () => {
-    const enriched = withTokenAddresses([{ tokenHash: TOKEN_A, spendable: 5n, pending: 1n }], resolve);
-    expect(enriched).toEqual([{ tokenHash: TOKEN_A, tokenAddress: ADDR_A, spendable: 5n, pending: 1n }]);
+    const enriched = withTokenAddresses([{ tokenHash: TOKEN_A, spendable: 5n, spendableNotes: 1, pending: 1n }], resolve);
+    expect(enriched).toEqual([{ tokenHash: TOKEN_A, tokenAddress: ADDR_A, spendable: 5n, spendableNotes: 1, pending: 1n }]);
   });
 
   it('leaves tokenAddress undefined for an unregistered hash but keeps the row (never hide a balance)', () => {
-    const enriched = withTokenAddresses([{ tokenHash: TOKEN_B, spendable: 9n, pending: 0n }], resolve);
-    expect(enriched).toEqual([{ tokenHash: TOKEN_B, spendable: 9n, pending: 0n }]);
+    const enriched = withTokenAddresses([{ tokenHash: TOKEN_B, spendable: 9n, spendableNotes: 1, pending: 0n }], resolve);
+    expect(enriched).toEqual([{ tokenHash: TOKEN_B, spendable: 9n, spendableNotes: 1, pending: 0n }]);
     expect(enriched[0]?.tokenAddress).toBeUndefined();
   });
 
   it('resolves a 0x-prefixed hash through the same key normalization', () => {
-    const enriched = withTokenAddresses([{ tokenHash: `0x${TOKEN_A}`, spendable: 2n, pending: 0n }], resolve);
+    const enriched = withTokenAddresses([{ tokenHash: `0x${TOKEN_A}`, spendable: 2n, spendableNotes: 1, pending: 0n }], resolve);
     expect(enriched[0]?.tokenAddress).toBe(ADDR_A);
   });
 });

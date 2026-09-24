@@ -83,7 +83,7 @@ describe('shield-note ownership decryption (§4.4)', () => {
     expect(state.txoCount).toBe(1);
     expect(state.treeLength(0)).toBe(1);
     expect(state.balances(receiver.nullifyingKey, { currentBlock: 200, finalityThreshold: 10 })).toEqual([
-      { tokenHash: getTokenDataHash(tokenData), spendable: value, pending: 0n },
+      { tokenHash: getTokenDataHash(tokenData), spendable: value, spendableNotes: 1, pending: 0n },
     ]);
   });
 });

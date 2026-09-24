@@ -67,7 +67,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
     expect(state.treeRoot(0)).toBe(ref.root());
 
     expect(state.balances(NK, { currentBlock: 1000, finalityThreshold: 10 })).toEqual([
-      { tokenHash: TOKEN, spendable: 100n, pending: 0n },
+      { tokenHash: TOKEN, spendable: 100n, spendableNotes: 1, pending: 0n },
     ]);
   });
 
@@ -130,7 +130,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
     );
     expect(withShield.txoCount).toBe(1);
     expect(withShield.balances(NK, { currentBlock: 1000, finalityThreshold: 10 })).toEqual([
-      { tokenHash: TOKEN, spendable: 500n, pending: 0n },
+      { tokenHash: TOKEN, spendable: 500n, spendableNotes: 1, pending: 0n },
     ]);
   });
 
@@ -142,7 +142,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
       { transact: async () => owned(TOKEN, 250n) },
     );
     expect(state.balances(NK, { currentBlock: 1000, finalityThreshold: 10 })).toEqual([
-      { tokenHash: TOKEN, spendable: 250n, pending: 0n },
+      { tokenHash: TOKEN, spendable: 250n, spendableNotes: 1, pending: 0n },
     ]);
 
     // Its nullifier arrives in a later batch → spent → drops out of the balance.
@@ -206,7 +206,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
     expect(res.ownedTxos[0]!.random).toBe(note.random);
     expect(res.ownedTxos[0]!.notePublicKey).toBe(note.notePublicKey);
     expect(state.balances(receiver.nullifyingKey, { currentBlock: 200, finalityThreshold: 10 })).toEqual([
-      { tokenHash: note.tokenHash, spendable: value, pending: 0n },
+      { tokenHash: note.tokenHash, spendable: value, spendableNotes: 1, pending: 0n },
     ]);
   });
 
@@ -312,7 +312,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
     it('reflects the pending spend in balances (out of spendable, into pendingSpent)', async () => {
       const state = await twoNoteState();
       state.markSpendPending([nf(0)], TXID, 1000);
-      expect(state.balances(NK, BAL)).toEqual([{ tokenHash: TOKEN, spendable: 100n, pending: 0n, pendingSpent: 100n }]);
+      expect(state.balances(NK, BAL)).toEqual([{ tokenHash: TOKEN, spendable: 100n, spendableNotes: 1, pending: 0n, pendingSpent: 100n }]);
     });
 
     it('a confirmed Nullified event supersedes the optimistic hold (no double bookkeeping)', async () => {
@@ -329,7 +329,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
       expect(spendable).toHaveLength(1);
       expect(spendable[0]!.position).toBe(1);
       // Position 0 is now genuinely spent → out of balances entirely (not lingering as pendingSpent).
-      expect(state.balances(NK, BAL)).toEqual([{ tokenHash: TOKEN, spendable: 100n, pending: 0n }]);
+      expect(state.balances(NK, BAL)).toEqual([{ tokenHash: TOKEN, spendable: 100n, spendableNotes: 1, pending: 0n }]);
     });
 
     it('markSpendPending ignores a note already confirmed-spent (confirmed set wins)', async () => {

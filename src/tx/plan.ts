@@ -19,7 +19,7 @@ const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as const;
 const ZERO_BYTES32 = `0x${'00'.repeat(32)}` as const;
 
 /** Max groups in one atomic batch (proving is serial; this bounds worst-case latency). Beyond → consolidate. */
-const MAX_SPLIT_GROUPS = 4;
+export const MAX_SPLIT_GROUPS = 4;
 
 export interface TransferOutputRequest {
   readonly toShieldedAddress: string;
@@ -87,7 +87,7 @@ const UNSHIELD_FLAG_NONE = 0;
 const UNSHIELD_FLAG_UNSHIELD = 1;
 
 // Greedy largest-first selection within one tree; returns the covering set (largest-first) or undefined.
-function selectWithinTree(txos: readonly TXO[], target: bigint): { selected: TXO[]; total: bigint } | undefined {
+export function selectWithinTree(txos: readonly TXO[], target: bigint): { selected: TXO[]; total: bigint } | undefined {
   const sorted = [...txos].sort((a, b) => (a.value < b.value ? 1 : a.value > b.value ? -1 : 0));
   const selected: TXO[] = [];
   let total = 0n;
@@ -99,7 +99,7 @@ function selectWithinTree(txos: readonly TXO[], target: bigint): { selected: TXO
   return total >= target ? { selected, total } : undefined;
 }
 
-interface Cover {
+export interface Cover {
   readonly tree: number;
   readonly selected: TXO[];
   readonly total: bigint;
@@ -132,7 +132,7 @@ function pickFewestInputCover(params: PlanTransferParams, target: bigint): Cover
 }
 
 /** The output components of one group/plan, from which the shape + summary + boundParams are derived. */
-interface GroupOutputs {
+export interface GroupOutputs {
   readonly outputs: readonly PlanOutput[];
   readonly feeOutput?: PlanOutput;
   readonly changeValue: bigint;
@@ -140,8 +140,11 @@ interface GroupOutputs {
   readonly unshield?: { readonly recipient: `0x${string}`; readonly value: bigint };
 }
 
+/** The request fields a group's summary + boundParams are built from (token, chain, gas price, unshield binding). */
+export type SelectionContext = Pick<PlanTransferParams, 'tokenAddress' | 'chainID' | 'minGasPrice' | 'unshield'>;
+
 /** Assemble one PlanSelection from a chosen cover + its resolved output components. Pure. */
-function assembleSelection(params: PlanTransferParams, cover: Cover, parts: GroupOutputs): PlanSelection {
+export function assembleSelection(params: SelectionContext, cover: Cover, parts: GroupOutputs): PlanSelection {
   const commitments =
     parts.outputs.length + (parts.feeOutput ? 1 : 0) + (parts.changeValue > 0n ? 1 : 0) + (parts.unshield ? 1 : 0);
   const shape: CircuitShape = { nullifiers: cover.selected.length, commitments };
@@ -207,7 +210,7 @@ function assertAdaptBinding(params: PlanTransferParams): void {
 }
 
 /** Whether `shape` has a registered circuit. An absent set means "don't check" (always supported). */
-function shapeSupported(supported: ReadonlySet<string> | undefined, shape: CircuitShape): boolean {
+export function shapeSupported(supported: ReadonlySet<string> | undefined, shape: CircuitShape): boolean {
   return supported === undefined || isSupportedShape(supported, shape.nullifiers, shape.commitments);
 }
 

@@ -34,7 +34,9 @@ import {
   type TokenBalance,
 } from './sync/index';
 import { EncryptedStore, deriveWalletStorageKey, type StorageAdapter } from './storage/index';
-import { planSpend, planWitnessInputs, prove, proveAll, runPreflight, type Plan, type ProofHandle, type PreflightResult, type FeeQuote, type ProveParams } from './tx/index';
+import { planSpend, planWitnessInputs, prove, proveAll, runPreflight, type Plan, type PlanSelection, type ProofHandle, type PreflightResult, type FeeQuote, type ProveParams } from './tx/index';
+import { planConsolidate, txosAfterConsolidation } from './tx/consolidate';
+import type { PlanTransferParams } from './tx/plan';
 import { planList } from './tx/plan';
 import type { WitnessOutputRequest } from './tx/witness';
 import {
@@ -48,6 +50,7 @@ import {
   type Wallet,
   type WalletFactory,
   type PlanTransferRequest,
+  type ConsolidateRequest,
   type SpendSigner,
 } from './wallet/index';
 import {
@@ -768,16 +771,81 @@ class ArmadaWallet implements Wallet {
     if (!this.canSpend) throw new NoSpendCapabilityError('planTransfer: wallet has no SpendSigner');
     this.prunePendingSpends();
     const txos = this.scanState.spendableTxos(this.keyset.nullifyingKey);
+    // A fragmented transfer yields >1 group, submitted atomically as one transact([...]); each group is
+    // an independent Plan proved separately (the caller proves all, then combines the calldata).
+    return this.withMerkleProofs(planSpend(this.spendParams(request, txos, this.rootsFor(txos))));
+  }
+
+  async planTransferAfter(consolidation: readonly Plan[], request: PlanTransferRequest): Promise<PlanSelection[]> {
+    this.prunePendingSpends();
+    // Plan over the notes as they'd be once the consolidation confirms (its merged notes in the current
+    // tree). Planning only — the hypothetical notes can't be proved, so no merkle proofs are captured.
+    const currentTree = this.currentTree();
+    const txos = txosAfterConsolidation(
+      this.scanState.spendableTxos(this.keyset.nullifyingKey),
+      consolidation,
+      currentTree,
+    );
+    const roots = this.rootsFor(txos);
+    if (!roots.has(currentTree)) roots.set(currentTree, BigInt(`0x${this.scanState.treeRoot(currentTree)}`));
+    return planSpend(this.spendParams(request, txos, roots));
+  }
+
+  async consolidate(request: ConsolidateRequest): Promise<Plan[]> {
+    if (!this.canSpend) throw new NoSpendCapabilityError('consolidate: wallet has no SpendSigner');
+    const supportedShapes = this.ctx.supportedShapes;
+    if (supportedShapes === undefined) {
+      throw new InvalidRequestError('consolidate: pool.supportedShapes is required (it sizes the merge groups)');
+    }
+    this.prunePendingSpends();
+    const txos = this.scanState.spendableTxos(this.keyset.nullifyingKey);
+    // A consolidation is a bare transact() self-spend, priced by the relayer at the `transfer` tier, PER
+    // PROOF, always in USDC (the only token the relayer counts).
+    const feeValue = BigInt(request.fee.schedule['transfer'] ?? '0');
+    return this.withMerkleProofs(
+      planConsolidate({
+        txos,
+        tokenAddress: request.tokenAddress ?? this.ctx.usdcAddress,
+        ...(feeValue > 0n
+          ? {
+              fee: {
+                broadcasterShieldedAddress: request.fee.broadcasterShieldedAddress,
+                value: feeValue,
+                tokenAddress: this.ctx.usdcAddress,
+              },
+            }
+          : {}),
+        roots: this.rootsFor(txos),
+        currentTree: this.currentTree(),
+        chainID: BigInt(this.ctx.chainId),
+        supportedShapes,
+      }),
+    );
+  }
+
+  // The pool's current (latest) tree: the scan rebuilds every tree, so the highest one seen.
+  private currentTree(): number {
+    const trees = this.scanState.treeNumbers();
+    return trees.length === 0 ? 0 : Math.max(...trees);
+  }
+
+  // The current root of every tree the notes sit in, read from the same scan state the proofs come from.
+  private rootsFor(txos: readonly TXO[]): Map<number, bigint> {
     const roots = new Map<number, bigint>();
     for (const txo of txos) {
       if (!roots.has(txo.tree)) roots.set(txo.tree, BigInt(`0x${this.scanState.treeRoot(txo.tree)}`));
     }
+    return roots;
+  }
+
+  // The planner request for a transfer/unshield over `txos`.
+  private spendParams(request: PlanTransferRequest, txos: readonly TXO[], roots: ReadonlyMap<number, bigint>): PlanTransferParams {
     // Bind the fee tier that matches this plan's op, falling back to `transfer` for an older relayer
     // schedule that predates the per-op keys, then to 0 (no fee note) if even that is absent. The quoted
     // fee is PER PROOF: a split spend pays it once per group (planSpend scales it).
     const scheduleKey = feeScheduleKey(request, this.ctx.yieldAdapterAddress);
     const feeValue = BigInt(request.fee.schedule[scheduleKey] ?? request.fee.schedule['transfer'] ?? '0');
-    const selections = planSpend({
+    return {
       txos,
       // Defaults to USDC; a caller can spend any pool token (e.g. yield vault shares on redeem).
       tokenAddress: request.tokenAddress ?? this.ctx.usdcAddress,
@@ -797,12 +865,13 @@ class ArmadaWallet implements Wallet {
       roots,
       chainID: BigInt(this.ctx.chainId),
       ...(this.ctx.supportedShapes !== undefined ? { supportedShapes: this.ctx.supportedShapes } : {}),
-    });
-    // Capture each selected input's merkle proof from the SAME scan state the roots came from (no await
-    // since roots were read above), so each plan owns proofs consistent with its `merkleRoot`. `prove()`
-    // uses these rather than re-reading live state, closing the plan→prove tree-append race (SPEC §4.6).
-    // A fragmented transfer yields >1 group, submitted atomically as one transact([...]); each group is
-    // an independent Plan proved separately (the caller proves all, then combines the calldata).
+    };
+  }
+
+  // Capture each selected input's merkle proof from the SAME scan state the roots came from (no await
+  // since roots were read), so each plan owns proofs consistent with its `merkleRoot`. `prove()` uses
+  // these rather than re-reading live state, closing the plan→prove tree-append race (SPEC §4.6).
+  private withMerkleProofs(selections: readonly PlanSelection[]): Plan[] {
     return selections.map((selection) => ({
       ...selection,
       merkleProofs: selection.selectedInputs.map((txo) =>

@@ -2,7 +2,7 @@
 // ABOUTME: every proof-group on a registered circuit shape (sparse table; input-count depends on output-count).
 
 import { describe, it, expect } from 'vitest';
-import { parseShapeKey, isSupportedShape, maxSupportedInputCount } from './shapes';
+import { parseShapeKey, isSupportedShape, maxSupportedInputCount, maxInputCountForOutputs } from './shapes';
 import { shapeKey } from '../prover/index';
 
 // The armada-circuits v0.1.0-dev registered set (19 shapes). Deliberately SPARSE: valid input-count N
@@ -45,5 +45,18 @@ describe('maxSupportedInputCount', () => {
 
   it('returns 0 for an empty set', () => {
     expect(maxSupportedInputCount(new Set())).toBe(0);
+  });
+});
+
+describe('maxInputCountForOutputs', () => {
+  it('returns the largest registered input count for an output count', () => {
+    expect(maxInputCountForOutputs(SUPPORTED, 1)).toBe(8);
+    expect(maxInputCountForOutputs(SUPPORTED, 2)).toBe(6);
+    expect(maxInputCountForOutputs(SUPPORTED, 3)).toBe(4);
+    expect(maxInputCountForOutputs(SUPPORTED, 4)).toBe(8);
+  });
+
+  it('returns 0 when no shape has that output count', () => {
+    expect(maxInputCountForOutputs(SUPPORTED, 5)).toBe(0);
   });
 });

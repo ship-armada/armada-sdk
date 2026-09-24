@@ -106,6 +106,15 @@ export class TooFragmentedError extends ArmadaError {
   readonly code = 'TOO_FRAGMENTED';
 }
 
+/**
+ * A consolidation found nothing worth merging for the token: too few notes (a lone current-tree note
+ * merges nothing), or only dust worth no more than the fee it would cost. Not a failure of the wallet —
+ * the caller should report that there's nothing to do.
+ */
+export class NothingToConsolidateError extends ArmadaError {
+  readonly code = 'NOTHING_TO_CONSOLIDATE';
+}
+
 /** A long operation (prove) was cancelled via its `AbortSignal`. Consumers match `code`, not message. */
 export class AbortedError extends ArmadaError {
   readonly code = 'ABORTED';
