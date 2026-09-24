@@ -87,6 +87,7 @@ export async function prove(params: ProveParams, options?: ProveOptions): Promis
  * (SPEC §4.2.1 batch semantics — the whole spend is approved as one unit, before any signature is
  * released), then each group is proved in order. Returns one handle per group, in input order. Every
  * group must name the same signer; a signer returning the wrong number of signatures is rejected.
+ * `onProgress` spans the whole batch: the fraction runs 0→1 once across all groups.
  */
 export async function proveAll(params: readonly ProveParams[], options?: ProveOptions): Promise<ProofHandle[]> {
   const signer = params[0]?.witness.signer;
@@ -106,9 +107,17 @@ export async function proveAll(params: readonly ProveParams[], options?: ProveOp
   const handles: ProofHandle[] = [];
   for (let i = 0; i < params.length; i += 1) {
     const witness = prepared[i]!.finalize(signatures[i]!);
-    handles.push(await proveWitness(params[i]!, witness, options));
+    handles.push(await proveWitness(params[i]!, witness, batchProgressOptions(options, i, params.length)));
   }
   return handles;
+}
+
+// Group `index` of `count` reports its 0→1 progress as its slice of the whole batch, so a consumer's
+// progress runs 0→1 once across all groups instead of restarting for each one.
+function batchProgressOptions(options: ProveOptions | undefined, index: number, count: number): ProveOptions | undefined {
+  const onProgress = options?.onProgress;
+  if (onProgress === undefined) return options;
+  return { ...options, onProgress: (p) => onProgress({ ...p, fraction: (index + p.fraction) / count }) };
 }
 
 /** Resolve the shape's artifacts, generate the Groth16 proof, and wrap the calldata in a handle. */

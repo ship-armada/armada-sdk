@@ -81,6 +81,7 @@ export interface Wallet {
    * Prove every group returned by `planTransfer`. The attached SpendSigner receives ALL groups' intents
    * in ONE `signBatch` call before any signature is released (SPEC §4.2.1), so a split spend is approved
    * as one unit; then each group is proved in order. Returns one handle per plan, in plan order.
+   * `onProgress` spans the whole batch (0→1 once across all plans).
    */
   proveAll(plans: readonly Plan[], options?: ProveOptions): Promise<ProofHandle[]>;
   /**
