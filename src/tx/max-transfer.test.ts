@@ -4,7 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import { getTokenDataERC20, getTokenDataHash } from '../core/index';
 import type { TXO } from '../sync/index';
-import { maxTransferAmount } from './max-transfer';
+import { maxTransferAmount, maxUnshieldAmount } from './max-transfer';
 import { planSpend } from './plan';
 
 const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' as const;
@@ -35,6 +35,29 @@ const params = (txos: TXO[], feeValue: bigint) => ({
   chainID: 31337n,
   supportedShapes: SUPPORTED,
 });
+
+const EVM = `0x${'ab'.repeat(20)}` as const;
+
+// Whether the planner can build an unshield of `amount` from these notes at all.
+function unshieldPlannable(txos: TXO[], feeValue: bigint, amount: bigint): boolean {
+  try {
+    planSpend({ ...params(txos, feeValue), outputs: [], unshield: { recipient: EVM, value: amount } });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Seeded mulberry32 (32-bit integer math, so no float precision loss) so a failure reproduces.
+function seededRandom(start: number): (n: number) => number {
+  let seed = start;
+  return (n: number) => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) % n;
+  };
+}
 
 // Whether the planner can build a transfer of `amount` from these notes at all.
 function plannable(txos: TXO[], feeValue: bigint, amount: bigint): boolean {
@@ -93,14 +116,7 @@ describe('maxTransferAmount', () => {
   });
 
   it('matches a brute-force search over every amount, across random wallets', () => {
-    // Seeded mulberry32 (32-bit integer math, so no float precision loss) so a failure reproduces.
-    let seed = 0x5eed;
-    const rand = (n: number) => {
-      seed = (seed + 0x6d2b79f5) | 0;
-      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-      return ((t ^ (t >>> 14)) >>> 0) % n;
-    };
+    const rand = seededRandom(0x5eed);
     for (let run = 0; run < 300; run += 1) {
       const feeValue = BigInt(rand(4)); // 0..3, including no fee
       // Up to 3 trees and 40 notes: past what one batch can spend, so the 4-proof cap is exercised too.
@@ -116,6 +132,49 @@ describe('maxTransferAmount', () => {
       }
       const context = `run ${run}: fee ${feeValue}, notes ${txos.map((t) => `${t.value}@${t.tree}`).join(',')}`;
       expect(maxTransferAmount(params(txos, feeValue)), context).toBe(expected);
+    }
+  });
+});
+
+describe('maxUnshieldAmount', () => {
+  const unshield = (txos: TXO[], feeValue: bigint) => ({ ...params(txos, feeValue), unshield: { recipient: EVM } });
+
+  it('is the notes minus one fee when a single proof carries them all', () => {
+    expect(maxUnshieldAmount(unshield([txo(10n)], 1n))).toBe(9n);
+  });
+
+  it('never splits: stops at what one proof can spend', () => {
+    // Seven 10s, fee 3: a transfer could split to 70 − 6 = 64, but an unshield is one proof — its largest
+    // registered no-change shape (fee + unshield) is 6x2, so 60 − 3.
+    const txos = Array.from({ length: 7 }, () => txo(10n));
+    expect(maxUnshieldAmount(unshield(txos, 3n))).toBe(57n);
+  });
+
+  it('spends from one tree only — the best tree, not the total balance', () => {
+    expect(maxUnshieldAmount(unshield([txo(30n, 0), txo(20n, 1), txo(20n, 1)], 1n))).toBe(39n);
+  });
+
+  it('is zero when nothing can be unshielded', () => {
+    expect(maxUnshieldAmount(unshield([], 1n))).toBe(0n);
+    expect(maxUnshieldAmount(unshield([txo(1n)], 1n))).toBe(0n);
+  });
+
+  it('matches a brute-force search over every amount, across random wallets', () => {
+    const rand = seededRandom(0xfee1);
+    for (let run = 0; run < 300; run += 1) {
+      const feeValue = BigInt(rand(4)); // 0..3, including no fee
+      const trees = 1 + rand(3);
+      const txos = Array.from({ length: 1 + rand(12) }, () => txo(BigInt(1 + rand(20)), rand(trees)));
+      const total = txos.reduce((s, t) => s + t.value, 0n);
+      let expected = 0n;
+      for (let amount = total; amount > 0n; amount -= 1n) {
+        if (unshieldPlannable(txos, feeValue, amount)) {
+          expected = amount;
+          break;
+        }
+      }
+      const context = `run ${run}: fee ${feeValue}, notes ${txos.map((t) => `${t.value}@${t.tree}`).join(',')}`;
+      expect(maxUnshieldAmount(unshield(txos, feeValue)), context).toBe(expected);
     }
   });
 });

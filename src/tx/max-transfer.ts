@@ -1,5 +1,5 @@
-// ABOUTME: maxTransferAmount (pure) — the largest single-recipient transfer the planner can build from the wallet's
-// ABOUTME: notes, fee included: checks each "whole notes minus k per-proof fees" candidate against planSpend itself.
+// ABOUTME: maxTransferAmount / maxUnshieldAmount (pure) — the largest transfer / unshield the planner can build from the
+// ABOUTME: wallet's notes, fee included: checks each "whole notes minus k per-proof fees" candidate against planSpend itself.
 
 import { getTokenDataERC20, getTokenDataHash } from '../core/index';
 import { InsufficientBalanceError, TooFragmentedError, UnsupportedCircuitShapeError } from '../errors';
@@ -8,6 +8,14 @@ import { maxSupportedInputCount } from './shapes';
 
 /** The planner request for a transfer, less its recipient output (the max doesn't depend on who receives it). */
 export type MaxTransferParams = Omit<PlanTransferParams, 'outputs' | 'unshield'>;
+
+/**
+ * The planner request for an unshield, less its value: where it goes (`recipient`, and any adapter / CCTP
+ * binding) is kept so the probe plans exactly the spend the caller will make.
+ */
+export type MaxUnshieldParams = Omit<PlanTransferParams, 'outputs' | 'unshield'> & {
+  readonly unshield: Omit<NonNullable<PlanTransferParams['unshield']>, 'value'>;
+};
 
 // The recipient is irrelevant to which notes are selected or how they group; any address plans the same.
 const PROBE_RECIPIENT = '0zk_max_transfer_probe';
@@ -24,14 +32,47 @@ const PROBE_RECIPIENT = '0zk_max_transfer_probe';
  * largest that plans wins.
  */
 export function maxTransferAmount(params: MaxTransferParams): bigint {
-  for (const amount of candidateAmounts(params)) {
-    if (plans(params, amount)) return amount;
+  // Without a shape set the planner never splits: one proof, any number of notes.
+  const split = params.supportedShapes !== undefined;
+  return largestPlannable(params, split ? MAX_SPLIT_GROUPS : 1, (amount) => ({
+    ...params,
+    outputs: [{ toShieldedAddress: PROBE_RECIPIENT, value: amount }],
+  }));
+}
+
+/**
+ * The largest amount an unshield (plain, cross-chain, or to a yield adapter) can take out, fee included —
+ * the unshield flows' "Max". Returns 0 when nothing can be unshielded.
+ *
+ * Same method as `maxTransferAmount`, but an unshield is never split: one proof, one per-proof fee, so the
+ * candidates are "the n largest notes of a tree minus one fee" for every n a single proof can spend. (The
+ * planner may fold a small change into the fee; at the max there is no change, so that never raises it.)
+ */
+export function maxUnshieldAmount(params: MaxUnshieldParams): bigint {
+  return largestPlannable(params, 1, (amount) => ({
+    ...params,
+    outputs: [],
+    unshield: { ...params.unshield, value: amount },
+  }));
+}
+
+/** The largest candidate `amount` whose spend (`spendOf(amount)`) the planner can build, or 0. */
+function largestPlannable(
+  params: MaxTransferParams,
+  maxProofs: number,
+  spendOf: (amount: bigint) => PlanTransferParams,
+): bigint {
+  for (const amount of candidateAmounts(params, maxProofs)) {
+    if (plans(spendOf(amount))) return amount;
   }
   return 0n;
 }
 
-/** Every "n largest notes of one tree minus k per-proof fees" amount, largest first, without duplicates. */
-function candidateAmounts(params: MaxTransferParams): bigint[] {
+/**
+ * Every "n largest notes of one tree minus k per-proof fees" amount (k up to `maxProofs`, n up to what that
+ * many proofs can spend), largest first, without duplicates.
+ */
+function candidateAmounts(params: MaxTransferParams, maxProofs: number): bigint[] {
   const tokenHash = getTokenDataHash(getTokenDataERC20(params.tokenAddress));
   const byTree = new Map<number, bigint[]>();
   for (const txo of params.txos) {
@@ -42,11 +83,10 @@ function candidateAmounts(params: MaxTransferParams): bigint[] {
   }
 
   const perProofFee = params.fee?.value ?? 0n;
-  // Without a shape set the planner never splits: one proof, any number of notes.
-  const maxProofs = params.supportedShapes === undefined ? 1 : MAX_SPLIT_GROUPS;
+  // Without a shape set any number of notes fits one proof.
   const maxNotes = params.supportedShapes === undefined
     ? Number.POSITIVE_INFINITY
-    : MAX_SPLIT_GROUPS * maxSupportedInputCount(params.supportedShapes);
+    : maxProofs * maxSupportedInputCount(params.supportedShapes);
 
   const candidates = new Set<bigint>();
   for (const values of byTree.values()) {
@@ -63,10 +103,10 @@ function candidateAmounts(params: MaxTransferParams): bigint[] {
   return [...candidates].sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
 }
 
-// Whether the planner can build a transfer of `amount`; only "can't be planned" outcomes count as no.
-function plans(params: MaxTransferParams, amount: bigint): boolean {
+// Whether the planner can build this spend; only "can't be planned" outcomes count as no.
+function plans(spend: PlanTransferParams): boolean {
   try {
-    planSpend({ ...params, outputs: [{ toShieldedAddress: PROBE_RECIPIENT, value: amount }] });
+    planSpend(spend);
     return true;
   } catch (err) {
     if (

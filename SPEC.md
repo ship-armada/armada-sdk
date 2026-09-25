@@ -528,6 +528,8 @@ const tx = buildTransactCalldata(handles.map((h) => h.toTransactionData()), pool
   one tree, a split pays the per-proof fee once per proof, and the batch cap limits the notes one send
   can spend. At the max the spend uses its notes up exactly, so each "n largest notes of a tree minus k
   per-proof fees" candidate is checked with the planner itself, largest first.
+  `wallet.maxUnshieldAmount({ tokenAddress?, fee, unshield? })` is the same for an unshield (plain,
+  cross-chain, or to a yield adapter; the binding picks the fee tier): one proof, one fee, never split.
 - **Consolidation.** `wallet.consolidate({ tokenAddress?, fee })` merges one token's notes into fewer
   self-owned notes: up to four proofs, one atomic relayer-submitted `transact([...])`. Old-tree notes
   go first (migrating them to the current tree, whose single-tree planning then sees one balance),

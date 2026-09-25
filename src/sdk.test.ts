@@ -655,6 +655,27 @@ describe('wallet.consolidate + planTransferAfter (issue #98)', () => {
       await sdk.close();
     });
 
+    it('maxUnshieldAmount: one proof (unshields never split), at the unshield fee tier', async () => {
+      // Seven 10s: a transfer could split, but an unshield's largest no-change proof is 6x2 → 60 − 3.
+      const { sdk, wallet } = await walletWithNotes({ 0: Array.from({ length: 7 }, () => 10n) })
+      const fee = { ...FEE, schedule: { transfer: '1', unshield: '3' } }
+      const recipient = `0x${'ab'.repeat(20)}` as const
+      const max = await wallet.maxUnshieldAmount({ fee })
+      expect(max).toBe(57n)
+      const unshieldOf = (amount: bigint) => ({ outputs: [], unshield: { recipient, amount }, fee })
+      await expect(wallet.planTransfer(unshieldOf(max))).resolves.toHaveLength(1)
+      await expect(wallet.planTransfer(unshieldOf(max + 1n))).rejects.toThrow()
+      await sdk.close()
+    })
+
+    it('maxUnshieldAmount: a CCTP-bound unshield is priced at the cross-chain tier', async () => {
+      const { sdk, wallet } = await walletWithNotes({ 0: Array.from({ length: 7 }, () => 10n) })
+      const fee = { ...FEE, schedule: { transfer: '1', unshield: '3', crossChainUnshield: '5' } }
+      const unshield = { recipient: `0x${'ab'.repeat(20)}` as const, adaptParams: `0x${'cd'.repeat(32)}` as const }
+      expect(await wallet.maxUnshieldAmount({ fee, unshield })).toBe(55n) // 60 − 5
+      await sdk.close()
+    })
+
     it('leaves out notes a pending spend holds', async () => {
       const { sdk, wallet } = await walletWithNotes({ 0: [20n, 10n] });
       expect(await wallet.maxTransferAmount({ fee: FEE_3 })).toBe(27n); // 30 − 3

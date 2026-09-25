@@ -109,7 +109,15 @@ the same rules `planTransfer` uses, so `planTransfer` accepts the amount it retu
 const max = await wallet.maxTransferAmount({ fee: feeQuote }); // USDC by default; 0n if nothing can be sent
 ```
 
-Notes held by a pending spend are left out, as they are for `planTransfer`.
+Unshields have their own max. An unshield is never split, so it is limited to what one plan can
+spend, less one fee at the tier its destination selects:
+
+```ts
+await wallet.maxUnshieldAmount({ fee: feeQuote }); // a plain unshield
+await wallet.maxUnshieldAmount({ fee: feeQuote, unshield: { recipient: pool, adaptParams } }); // cross-chain
+```
+
+Notes held by a pending spend are left out of both, as they are for `planTransfer`.
 
 ### Consolidating notes
 

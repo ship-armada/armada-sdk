@@ -36,7 +36,7 @@ import {
 import { EncryptedStore, deriveWalletStorageKey, type StorageAdapter } from './storage/index';
 import { planSpend, planWitnessInputs, prove, proveAll, runPreflight, type Plan, type PlanSelection, type ProofHandle, type PreflightResult, type FeeQuote, type ProveParams } from './tx/index';
 import { planConsolidate, txosAfterConsolidation } from './tx/consolidate';
-import { maxTransferAmount } from './tx/max-transfer';
+import { maxTransferAmount, maxUnshieldAmount } from './tx/max-transfer';
 import type { PlanTransferParams } from './tx/plan';
 import { planList } from './tx/plan';
 import type { WitnessOutputRequest } from './tx/witness';
@@ -53,6 +53,7 @@ import {
   type PlanTransferRequest,
   type ConsolidateRequest,
   type MaxTransferRequest,
+  type MaxUnshieldRequest,
   type SpendSigner,
 } from './wallet/index';
 import {
@@ -326,6 +327,9 @@ export function planSyncWindow(
 
 // Max concurrent `getBlock` calls when attaching timestamps in history() — bounds RPC fan-out.
 const HISTORY_BLOCK_CONCURRENCY = 8;
+
+// Any EVM address: a plain unshield's max doesn't depend on where it goes, only on its value.
+const MAX_UNSHIELD_PROBE_RECIPIENT = '0x0000000000000000000000000000000000000001' as const;
 
 class ArmadaWallet implements Wallet {
   private scanState = new WalletScanState();
@@ -798,6 +802,24 @@ class ArmadaWallet implements Wallet {
     const txos = this.scanState.spendableTxos(this.keyset.nullifyingKey);
     // The planner request for a transfer (`transfer` fee tier); the max probes it with its own amounts.
     return maxTransferAmount(this.spendParams({ ...request, outputs: [] }, txos, this.rootsFor(txos)));
+  }
+
+  async maxUnshieldAmount(request: MaxUnshieldRequest): Promise<bigint> {
+    this.prunePendingSpends();
+    const txos = this.scanState.spendableTxos(this.keyset.nullifyingKey);
+    // The planner request for this unshield (its binding picks the fee tier); the max probes its value.
+    const destination = request.unshield ?? { recipient: MAX_UNSHIELD_PROBE_RECIPIENT };
+    const params = this.spendParams(
+      {
+        outputs: [],
+        fee: request.fee,
+        ...(request.tokenAddress !== undefined ? { tokenAddress: request.tokenAddress } : {}),
+        unshield: { ...destination, amount: 0n },
+      },
+      txos,
+      this.rootsFor(txos),
+    );
+    return maxUnshieldAmount({ ...params, unshield: params.unshield! });
   }
 
   async consolidate(request: ConsolidateRequest): Promise<Plan[]> {
