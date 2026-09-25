@@ -517,7 +517,12 @@ const tx = buildTransactCalldata(handles.map((h) => h.toTransactionData()), pool
   with no verifier. With `supportedShapes` configured, a single-recipient transfer whose one-proof
   shape is unregistered is split across up to four registered-shape plans, submitted atomically as
   one `transact([...])`; the recipient receives one note per plan. Beyond four plans the planner
-  throws `TooFragmentedError` (consolidate first). Unshields and multi-recipient spends are not split.
+  throws `TooFragmentedError` (consolidate first), as it does when a split's extra per-proof fees
+  don't fit a balance that covers one. Unshields and multi-recipient spends are not split.
+- **Change folded into the fee.** When a single plan's shape is unregistered only because of its
+  change output, and the change is at most one per-proof fee, the change is paid to the broadcaster
+  with the fee (one output fewer) instead of splitting or refusing. It never costs more than an extra
+  proof or a consolidation would, and it applies to every spend, unshields included.
 - **Max transfer.** `wallet.maxTransferAmount({ tokenAddress?, fee })` is the largest single-recipient
   transfer `planTransfer` accepts, fee included. It is not "balance minus a fee": a transfer spends
   one tree, a split pays the per-proof fee once per proof, and the batch cap limits the notes one send

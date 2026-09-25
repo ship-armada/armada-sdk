@@ -351,10 +351,12 @@ function splitTransfer(
 
 /**
  * Plan a shielded spend as ONE OR MORE supported-shape groups, submitted atomically. Tries a single
- * group first (fewest inputs); if that shape isn't registered, and the spend is a splittable
- * single-recipient transfer, splits it across supported-shape groups (recipient receives multiple
- * notes). Unshields / multi-recipient spends aren't split — they surface `UnsupportedCircuitShapeError`.
- * Very fragmented wallets that exceed the batch cap raise `TooFragmentedError`.
+ * group first (fewest inputs); if that shape isn't registered only because of its change note, and the
+ * change is at most one per-proof fee, folds the change into the fee (`foldChangeIntoFee`). Otherwise,
+ * if the spend is a splittable single-recipient transfer, splits it across supported-shape groups
+ * (recipient receives multiple notes). Unshields / multi-recipient spends aren't split — they surface
+ * `UnsupportedCircuitShapeError`. Very fragmented wallets that exceed the batch cap, or whose balance
+ * covers one proof's fee but not a split's, raise `TooFragmentedError`.
  *
  * A split of k proofs pays the per-proof fee k times. Since the fee is part of the spend target, it
  * changes which notes are selected and how they group, so each k from 2 up is tried in turn and the
@@ -366,6 +368,9 @@ export function planSpend(params: PlanTransferParams): PlanSelection[] {
   const single = planSingleGroup(params, 'planSpend');
   const supported = params.supportedShapes;
   if (supported === undefined || shapeSupported(supported, single.shape)) return [single];
+
+  const folded = foldChangeIntoFee(params, single, supported);
+  if (folded !== undefined) return [folded];
 
   // Single-group shape unsupported. Split only a plain single-recipient transfer (no unshield leg).
   const splittable = params.unshield === undefined && params.outputs.length === 1;
@@ -383,9 +388,11 @@ export function planSpend(params: PlanTransferParams): PlanSelection[] {
     const target = recipientValue + feeTotal;
     const cover = pickFewestInputCover(params, target);
     if (cover === undefined) {
-      throw new InsufficientBalanceError(
+      // A tree covers the transfer at one proof's fee (planSingleGroup found it), so what's missing is
+      // the extra per-proof fees the fragmented notes force — consolidating is the fix, not more funds.
+      throw new TooFragmentedError(
         `planSpend: no single tree covers ${target.toString()} of token ${params.tokenAddress} ` +
-          `(the transfer needs ${proofs} proofs, each paying the broadcaster fee)`,
+          `(the fragmented notes need ${proofs} proofs, each paying the broadcaster fee); consolidate small notes first`,
       );
     }
     const groups = splitTransfer(params, cover, feeTotal, supported);
@@ -394,6 +401,37 @@ export function planSpend(params: PlanTransferParams): PlanSelection[] {
   throw new TooFragmentedError(
     `planSpend: spend does not fit in ${MAX_SPLIT_GROUPS} supported-shape groups; consolidate small notes first`,
   );
+}
+
+/**
+ * Re-assemble a single group that is unregistered ONLY because of its change output, paying the change
+ * to the broadcaster as part of the fee note instead: same inputs, one output fewer. Only when that costs
+ * no more than one extra per-proof fee — the least a split (one more proof) or consolidating first (at
+ * least one proof) would add — so it is always the cheapest way to make the spend. Applies to any spend,
+ * including unshields, which can't split. Returns undefined when it doesn't apply.
+ */
+function foldChangeIntoFee(
+  params: PlanTransferParams,
+  single: PlanSelection,
+  supported: ReadonlySet<string>,
+): PlanSelection | undefined {
+  const feeOutput = single.summary.feeOutput;
+  const change = single.summary.changeValue;
+  if (params.fee === undefined || feeOutput === undefined || change <= 0n || change > params.fee.value) return undefined;
+  const shape = { nullifiers: single.shape.nullifiers, commitments: single.shape.commitments - 1 };
+  if (!shapeSupported(supported, shape)) return undefined;
+  const cover: Cover = {
+    tree: single.boundParams.treeNumber,
+    selected: [...single.selectedInputs],
+    total: single.summary.inputTotal,
+    merkleRoot: single.merkleRoot,
+  };
+  return assembleSelection(params, cover, {
+    outputs: single.summary.outputs,
+    feeOutput: { ...feeOutput, value: feeOutput.value + change },
+    changeValue: 0n,
+    ...(single.summary.unshield ? { unshield: single.summary.unshield } : {}),
+  });
 }
 
 /** A single plan or the groups of a split spend, as a list. */

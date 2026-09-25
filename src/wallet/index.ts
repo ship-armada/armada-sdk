@@ -64,8 +64,11 @@ export interface Wallet {
    * atomically as one `transact([...])`. A k-group split pays the quoted per-proof broadcaster fee k
    * times (each proof costs the relayer its own verification gas). Prove the whole array with
    * `proveAll`, then combine the handles' `toTransactionData()` into one `buildTransactCalldata([...])`.
-   * Throws `TooFragmentedError` past the batch cap (consolidate first); `UnsupportedCircuitShapeError`
-   * for an unsplittable spend (unshield / multi-recipient) whose shape isn't registered.
+   * A spend blocked only by its change note, with change of at most one per-proof fee, pays that change
+   * to the broadcaster with the fee instead (one proof, one output fewer — cheaper than a split).
+   * Throws `TooFragmentedError` past the batch cap, or when a split's extra fees don't fit a balance that
+   * covers one (consolidate first); `UnsupportedCircuitShapeError` for an unsplittable spend (unshield /
+   * multi-recipient) whose shape isn't registered.
    */
   planTransfer(request: PlanTransferRequest): Promise<Plan[]>;
   /**
