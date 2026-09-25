@@ -153,11 +153,30 @@ function mergeGroups(params: PlanConsolidateParams, maxGroups: number, ownFee: F
 /**
  * The group that pays a non-fee-token run's fee: the fewest fee-token notes in one tree that cover
  * `feeTotal` (every proof's per-proof fee), returning the rest to the wallet as a self-owned note.
+ * It prefers a cover that leaves SOME change: the consolidation's self-metadata tag rides on a change
+ * note, and without one a fresh scan reads this merge as an anonymous send. An exact cover (no change)
+ * is the fallback when the wallet's fee-token notes allow nothing else.
  */
 function feeGroup(params: PlanConsolidateParams, fee: Fee, feeTotal: bigint): PlanSelection {
+  const group = feeGroupCovering(params, fee, feeTotal, feeTotal + 1n) ?? feeGroupCovering(params, fee, feeTotal, feeTotal);
+  if (group === undefined) {
+    throw new InsufficientBalanceError(
+      `planConsolidate: no single tree's ${fee.tokenAddress} notes cover the ${feeTotal.toString()} fee for this consolidation`,
+    );
+  }
+  return group;
+}
+
+// The fee group spending the fewest fee-token notes in one tree worth at least `target` (≥ `feeTotal`).
+function feeGroupCovering(
+  params: PlanConsolidateParams,
+  fee: Fee,
+  feeTotal: bigint,
+  target: bigint,
+): PlanSelection | undefined {
   const context = selectionContext(params, fee.tokenAddress);
   for (const [tree, notes] of notesByTreeInMergeOrder(params.txos, fee.tokenAddress)) {
-    const pick = selectWithinTree(notes, feeTotal);
+    const pick = selectWithinTree(notes, target);
     if (pick === undefined) continue;
     const change = pick.total - feeTotal;
     const shape = { nullifiers: pick.selected.length, commitments: change > 0n ? 2 : 1 };
@@ -168,9 +187,7 @@ function feeGroup(params: PlanConsolidateParams, fee: Fee, feeTotal: bigint): Pl
       changeValue: change,
     });
   }
-  throw new InsufficientBalanceError(
-    `planConsolidate: no single tree's ${fee.tokenAddress} notes cover the ${feeTotal.toString()} fee for this consolidation`,
-  );
+  return undefined;
 }
 
 /**

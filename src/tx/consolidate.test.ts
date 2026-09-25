@@ -134,7 +134,17 @@ describe('planConsolidate — non-fee token run (shares + a USDC fee group)', ()
     ).toThrow(InsufficientBalanceError); // 1 USDC can't cover 2 proofs × 1
   });
 
-  it('a fee group that exactly covers the fee has no merged note (Nx1)', () => {
+  it('the fee group prefers a cover that leaves change — the merge tag rides on that change note (#102)', () => {
+    // Fee 2 × 2 proofs = 4. The 4-note alone covers it EXACTLY (no change → no note to carry the
+    // consolidation tag), so the group also takes the 1-note and returns 1 as change.
+    const shares = Array.from({ length: 3 }, () => note(100n, 0, SHARES));
+    const groups = planConsolidate(base([...shares, note(4n), note(1n)], { tokenAddress: SHARES, fee: fee(2n) }));
+    expect(groups.map(shapeOf)).toEqual(['3x1', '2x2']);
+    expect(groups[1]!.summary.feeOutput?.value).toBe(4n);
+    expect(groups[1]!.summary.changeValue).toBe(1n);
+  });
+
+  it('falls back to an exact fee cover (no change note) only when the USDC allows nothing else', () => {
     const shares = Array.from({ length: 3 }, () => note(100n, 0, SHARES));
     const groups = planConsolidate(base([...shares, note(4n)], { tokenAddress: SHARES, fee: fee(2n) }));
     expect(groups.map(shapeOf)).toEqual(['3x1', '1x1']);
