@@ -119,11 +119,38 @@ export function newReceivedNotes(
 }
 
 /**
+ * ONE `transfer-received` entry for every note a tx paid us in one token. A fragmented sender's split
+ * transfer (#95) pays the recipient one note per proof, all in the same tx, and consumers key history by
+ * txid — so the notes are folded into a single entry: `value` sums them, `blockNumber` is the earliest,
+ * and the memo / disclosed sender come from whichever note carries them (the memo rides on one note).
+ */
+function transferReceivedEntry(
+  notes: readonly TXO[],
+  tokenHash: string,
+  tokenAddress: `0x${string}`,
+): HistoryEntry {
+  const first = notes[0]!;
+  const memo = notes.find((n) => n.memo !== undefined)?.memo;
+  const sender = notes.find((n) => n.senderShieldedAddress !== undefined)?.senderShieldedAddress;
+  return {
+    txid: first.txid,
+    blockNumber: Math.min(...notes.map((n) => n.blockNumber)),
+    category: 'transfer-received',
+    tokenHash,
+    tokenAddress,
+    value: notes.reduce((sum, n) => sum + n.value, 0n),
+    ...(memo !== undefined ? { memo } : {}),
+    ...(sender !== undefined ? { senderShieldedAddress: sender } : {}),
+  };
+}
+
+/**
  * Reconstruct RECEIVE history (H1): shields the wallet deposited + transfers it received. Owned
  * transact-origin notes created in a tx where the wallet ALSO spent an input are its own change, not
  * incoming transfers, so they are excluded here — the corresponding send entry is produced by the
  * spend-side reconstruction (H2). Requires the nullifying key to detect the wallet's own spends;
- * a view-only wallet has it (derived from the viewing key), so this works for view-only too.
+ * a view-only wallet has it (derived from the viewing key), so this works for view-only too. A transfer
+ * paid to us as several notes in one tx (a split send) is ONE `transfer-received` entry.
  */
 export function reconstructReceiveHistory(
   ownedTxos: readonly TXO[],
@@ -134,6 +161,7 @@ export function reconstructReceiveHistory(
   const ownSpends = ownSpendTxids(ownedTxos, spentNullifiers, nullifyingKey);
 
   const entries: HistoryEntry[] = [];
+  const transfersByKey = new Map<string, { notes: TXO[]; tokenAddress: `0x${string}` }>();
   for (const txo of ownedTxos) {
     const tokenAddress = resolveToken(txo.tokenHash);
     if (tokenAddress === undefined) continue;
@@ -150,18 +178,16 @@ export function reconstructReceiveHistory(
       });
       continue;
     }
-    // transact-origin: change (skip) if created in one of our own spends, else an incoming transfer.
+    // transact-origin: change (skip) if created in one of our own spends, else an incoming transfer —
+    // gathered per (txid, token) so a transfer paid as several notes is one entry.
     if (ownSpends.has(txo.txid)) continue;
-    entries.push({
-      txid: txo.txid,
-      blockNumber: txo.blockNumber,
-      category: 'transfer-received',
-      tokenHash: tokenHashKey(txo.tokenHash),
-      tokenAddress,
-      value: txo.value,
-      ...(txo.memo !== undefined ? { memo: txo.memo } : {}),
-      ...(txo.senderShieldedAddress !== undefined ? { senderShieldedAddress: txo.senderShieldedAddress } : {}),
-    });
+    const key = `${txo.txid}::${txo.tokenHash}`;
+    const bucket = transfersByKey.get(key);
+    if (bucket) bucket.notes.push(txo);
+    else transfersByKey.set(key, { notes: [txo], tokenAddress });
+  }
+  for (const { notes, tokenAddress } of transfersByKey.values()) {
+    entries.push(transferReceivedEntry(notes, tokenHashKey(notes[0]!.tokenHash), tokenAddress));
   }
   return entries.sort(sortEntries);
 }
@@ -193,7 +219,8 @@ export interface ReconstructHistoryInput {
  * Full history reconstruction (H1 receives + H2 sends/unshields/yield). Each transaction the wallet
  * participated in is classified once, per token, from owned notes + spent nullifiers + Unshield events:
  *
- *  - receive tx (no own spend): `shield` / `transfer-received` per created note — unless the tx also
+ *  - receive tx (no own spend): `shield` per created shield note, and ONE `transfer-received` per
+ *    `(txid, token)` however many notes paid us (a split send pays one per proof) — unless the tx also
  *    carries an Unshield to the yield adapter, i.e. the USDC leg of a yield withdrawal → `yield-withdraw`.
  *  - spend tx (own inputs nullified): net delta = change − inputs (negative). Category by Unshield:
  *    to the adapter → `yield-deposit`; to any other address → `unshield` (+ recipient + protocol fee);
@@ -354,15 +381,15 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
       continue;
     }
     for (const r of a.receives) {
-      const isShield = r.origin === 'shield';
+      if (r.origin !== 'shield') continue;
       // Gasless shields carry a relayer fee note in the same txid (issue #88); surface its GROSS (note +
       // its own shield fee) as the entry's broadcaster fee so the recovered shield matches the local
       // record's total — user note + user shield fee + relayer gross reconstructs the full deposit.
-      const shieldRelayerFee = isShield ? input.shieldRelayerFees?.get(txid) : undefined;
+      const shieldRelayerFee = input.shieldRelayerFees?.get(txid);
       entries.push({
         txid,
         blockNumber: r.blockNumber,
-        category: isShield ? 'shield' : 'transfer-received',
+        category: 'shield',
         tokenHash, tokenAddress,
         value: r.value,
         ...(r.shieldFee !== undefined ? { shieldFee: r.shieldFee } : {}),
@@ -371,6 +398,9 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
         ...(r.senderShieldedAddress !== undefined ? { senderShieldedAddress: r.senderShieldedAddress } : {}),
       });
     }
+    // Incoming transfers in this tx + token: one entry however many notes paid us (a split send, #100).
+    const transfersIn = a.receives.filter((r) => r.origin !== 'shield');
+    if (transfersIn.length > 0) entries.push(transferReceivedEntry(transfersIn, tokenHash, tokenAddress));
   }
   return entries.sort(sortEntries);
 }
