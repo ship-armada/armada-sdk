@@ -131,6 +131,72 @@ describe('planSpend — split (the 5x3 class)', () => {
   });
 });
 
+describe('planSpend — change folded into the fee', () => {
+  it('pays a change no bigger than the fee to the broadcaster rather than splitting (one proof, cheaper)', () => {
+    // Six 10s + a 2; R=55, F=3 → target 58 takes the six 10s with change 2 → 6x3 (unregistered). Folding
+    // the 2 into the fee gives a registered 6x2 at fee 5; a split would have charged 2F = 6.
+    const txos = [txo(10n), txo(10n), txo(10n), txo(10n), txo(10n), txo(10n), txo(2n)];
+    const groups = planSpend({
+      ...base,
+      outputs: [{ toShieldedAddress: RECIPIENT, value: 55n }],
+      fee: { broadcasterShieldedAddress: BROADCASTER, value: 3n },
+      txos,
+    });
+    expect(groups.map(shapeOf)).toEqual(['6x2']);
+    expect(feeTotal(groups)).toBe(5n);
+    expect(groups[0]!.summary.changeValue).toBe(0n);
+    expect(recipientTotal(groups)).toBe(55n);
+    expect(conserves(groups[0]!)).toBe(true);
+  });
+
+  it('lets an unshield through that no split could carry', () => {
+    // Five 3s; unshield 13, F=1 → change 1 → 5x3 (unregistered). Folded: fee 2 + unshield 13 = 5x2.
+    const groups = planSpend({
+      ...base,
+      outputs: [],
+      fee: { broadcasterShieldedAddress: BROADCASTER, value: 1n },
+      unshield: { recipient: `0x${'ab'.repeat(20)}`, value: 13n },
+      txos: [txo(3n), txo(3n), txo(3n), txo(3n), txo(3n)],
+    });
+    expect(groups.map(shapeOf)).toEqual(['5x2']);
+    expect(feeTotal(groups)).toBe(2n);
+    expect(groups[0]!.summary.unshield?.value).toBe(13n);
+    expect(groups[0]!.summary.changeValue).toBe(0n);
+    expect(feeTotal(groups) + 13n).toBe(sumInputs(groups[0]!)); // every input is accounted for
+  });
+
+  it('does not fold when the change is bigger than the fee (a split is cheaper)', () => {
+    // Five 3s; R=12, F=1 → change 2 > F → splits (2F) instead of paying 3.
+    const groups = planSpend({
+      ...base,
+      outputs: [{ toShieldedAddress: RECIPIENT, value: 12n }],
+      fee: { broadcasterShieldedAddress: BROADCASTER, value: 1n },
+      txos: [txo(3n), txo(3n), txo(3n), txo(3n), txo(3n)],
+    });
+    expect(groups).toHaveLength(2);
+    expect(feeTotal(groups)).toBe(2n);
+  });
+
+  it('does not fold when the no-change shape is unregistered too', () => {
+    // Seven 10s; R=64, F=3 → change 3 → 7x3; folded would be 7x2, also unregistered → splits.
+    const groups = planSpend({
+      ...base,
+      outputs: [{ toShieldedAddress: RECIPIENT, value: 64n }],
+      fee: { broadcasterShieldedAddress: BROADCASTER, value: 3n },
+      txos: Array.from({ length: 7 }, () => txo(10n)),
+    });
+    expect(groups.length).toBeGreaterThan(1);
+    expect(feeTotal(groups)).toBe(6n);
+  });
+
+  it('does not fold without a fee note (nothing to fold into)', () => {
+    // Seven 3s, no fee; R=20 → change 1 → 7x2 unregistered → splits, keeping the change.
+    const groups = planSpend({ ...base, outputs: [{ toShieldedAddress: RECIPIENT, value: 20n }], txos: Array.from({ length: 7 }, () => txo(3n)) });
+    expect(groups.length).toBeGreaterThan(1);
+    expect(groups[groups.length - 1]!.summary.changeValue).toBe(1n);
+  });
+});
+
 describe('planSpend — limits', () => {
   it('throws TooFragmentedError past the batch cap', () => {
     // Needs 33 inputs; the largest shape is 8x1, so 4 groups hold at most 32 → 5 groups > cap(4).
@@ -151,8 +217,9 @@ describe('planSpend — limits', () => {
     ).toThrow(UnsupportedCircuitShapeError);
   });
 
-  it('throws InsufficientBalanceError when the balance covers one proof\'s fee but not the split fee', () => {
-    // Seven 1-value notes; R=6, F=1 → target 7 = 7x2 (unsupported). Splitting needs 2F → target 8 > 7.
+  it('throws TooFragmentedError (not InsufficientBalanceError) when the balance covers one proof\'s fee but not a split\'s', () => {
+    // Seven 1-value notes; R=6, F=1 → target 7 = 7x2 (unsupported). Splitting needs 2F → target 8 > 7. The
+    // balance is enough for one proof — the notes are what's wrong, so consolidating is the remedy.
     const txos = Array.from({ length: 7 }, () => txo(1n));
     expect(() =>
       planSpend({
@@ -161,17 +228,29 @@ describe('planSpend — limits', () => {
         fee: { broadcasterShieldedAddress: BROADCASTER, value: 1n },
         txos,
       }),
+    ).toThrow(TooFragmentedError);
+  });
+
+  it('still throws InsufficientBalanceError when no tree covers the amount plus one fee', () => {
+    expect(() =>
+      planSpend({
+        ...base,
+        outputs: [{ toShieldedAddress: RECIPIENT, value: 10n }],
+        fee: { broadcasterShieldedAddress: BROADCASTER, value: 1n },
+        txos: [txo(3n), txo(3n)],
+      }),
     ).toThrow(InsufficientBalanceError);
   });
 
   it('does not split an unshield — surfaces UnsupportedCircuitShapeError', () => {
-    const txos = [txo(3n), txo(3n), txo(3n), txo(3n), txo(3n)]; // 5 inputs, fee+change+unshield = 5x3
+    // 5 inputs, fee + change + unshield = 5x3; the change (2) is more than the fee (1), so it isn't folded.
+    const txos = [txo(3n), txo(3n), txo(3n), txo(3n), txo(3n)];
     expect(() =>
       planSpend({
         ...base,
         outputs: [],
         fee: { broadcasterShieldedAddress: BROADCASTER, value: 1n },
-        unshield: { recipient: `0x${'ab'.repeat(20)}`, value: 13n },
+        unshield: { recipient: `0x${'ab'.repeat(20)}`, value: 12n },
         txos,
       }),
     ).toThrow(UnsupportedCircuitShapeError);
@@ -206,10 +285,9 @@ describe('planSpend — randomized invariants (seeded)', () => {
           txos,
         });
       } catch (err) {
-        // Acceptable failures for a transfer fundable at one proof: too many notes for the batch cap, or
-        // (with a fee) a balance that can't also cover the per-proof fee of a split.
-        const insufficientAtSplitFee = fee > 0n && err instanceof InsufficientBalanceError;
-        expect(err instanceof TooFragmentedError || insufficientAtSplitFee).toBe(true);
+        // The only acceptable failure for a transfer fundable at one proof is fragmentation: too many notes
+        // for the batch cap, or a split whose per-proof fees the balance can't also cover.
+        expect(err).toBeInstanceOf(TooFragmentedError);
         continue;
       }
 
@@ -218,14 +296,20 @@ describe('planSpend — randomized invariants (seeded)', () => {
       for (const g of groups) expect(SUPPORTED.has(shapeOf(g))).toBe(true);
       // 2. recipient gets exactly R.
       expect(recipientTotal(groups)).toBe(R);
-      // 3. the fee is a whole number of per-proof fees, at least one per proof, within the batch cap.
+      // 3. the fee is at least one per-proof fee per proof, within the batch cap: a whole number of
+      //    per-proof fees, or one proof's fee plus a folded change of at most one more fee (no change left).
       const paid = feeTotal(groups);
       if (fee === 0n) {
         expect(paid).toBe(0n);
       } else {
-        expect(paid % fee).toBe(0n);
         expect(paid >= fee * BigInt(groups.length)).toBe(true);
         expect(paid <= fee * 4n).toBe(true);
+        const folded = paid % fee !== 0n;
+        if (folded) {
+          expect(groups).toHaveLength(1);
+          expect(paid <= fee * 2n).toBe(true);
+          expect(groups[0]!.summary.changeValue).toBe(0n);
+        }
       }
       // 4. change only in the last group.
       expect(groups.slice(0, -1).every((g) => g.summary.changeValue === 0n)).toBe(true);

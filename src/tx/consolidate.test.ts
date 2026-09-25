@@ -225,11 +225,12 @@ describe('txosAfterConsolidation', () => {
   });
 
   it('turns a blocked unshield (no 5x3 circuit) into one that plans', () => {
+    // Five 3s, unshield 12 + fee 1: change 2 is more than the fee, so it can't be folded into it — 5x3.
     const txos = Array.from({ length: 5 }, () => note(3n));
     const unshield = {
       tokenAddress: USDC,
       outputs: [],
-      unshield: { recipient: `0x${'ab'.repeat(20)}` as const, value: 13n },
+      unshield: { recipient: `0x${'ab'.repeat(20)}` as const, value: 12n },
       fee: { broadcasterShieldedAddress: BROADCASTER, value: 1n },
       roots: new Map([[0, 100n]]),
       chainID: 31337n,

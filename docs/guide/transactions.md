@@ -66,7 +66,7 @@ plan.summary.changeValue; // change returned to the wallet
 plan.summary.feeOutput;   // the fee note, when one is present
 ```
 
-If no single tree's spendable notes can cover the amount plus fee, `planTransfer` throws
+If no single tree's spendable notes can cover the amount plus one fee, `planTransfer` throws
 `InsufficientBalanceError`. If the pool config lists `supportedShapes`, every plan lands on a listed
 circuit shape; a spend that can't is rejected up front with `UnsupportedCircuitShapeError`, rather
 than failing later during proving.
@@ -75,19 +75,29 @@ than failing later during proving.
 
 A proof's circuit shape is its number of input notes by its number of output notes, and a
 deployment only has circuits for some shapes. A wallet holding many small notes can need a shape
-that doesn't exist — say, five inputs paying a recipient, the fee, and change. When the pool config
-lists `supportedShapes`, `planTransfer` then splits a single-recipient transfer across several
-plans, each on a listed shape, submitted together as **one atomic transaction**:
+that doesn't exist — say, five inputs paying a recipient, the fee, and change.
+
+When the only thing standing in the way is the change note, and the change is no more than one fee,
+`planTransfer` pays the change to the broadcaster with the fee instead of returning it. The plan then
+needs one output fewer and fits a listed shape. The fee note is larger than the quote, but it is
+always cheaper than the alternatives: an extra plan, or consolidating first, costs at least one more
+fee. This applies to every spend, unshields included.
+
+Otherwise, when the pool config lists `supportedShapes`, `planTransfer` splits a single-recipient
+transfer across several plans, each on a listed shape, submitted together as **one atomic
+transaction**:
 
 - the recipient receives the amount as several notes (one per plan that pays it), with the memo on
   the first;
 - the fee is charged once per plan (see [Fees](#fees)) and may itself span plans;
 - change comes back in the last plan.
 
-A split holds at most four plans. A wallet too fragmented to fit throws `TooFragmentedError`.
+A split holds at most four plans. A wallet too fragmented to fit throws `TooFragmentedError`, as
+does one whose balance covers the amount plus one fee but not the extra fees a split needs.
 Unshields and multi-recipient spends are never split; if their shape isn't listed they throw
-`UnsupportedCircuitShapeError`. With the deployed circuits that happens as soon as an unshield needs
-five or more notes. Both are fixed by [consolidating](#consolidating-notes) first.
+`UnsupportedCircuitShapeError`. With the deployed circuits that happens when an unshield needs five
+or more notes and leaves more change than one fee. Both are fixed by
+[consolidating](#consolidating-notes) first.
 
 ### The most you can send
 
@@ -99,7 +109,15 @@ the same rules `planTransfer` uses, so `planTransfer` accepts the amount it retu
 const max = await wallet.maxTransferAmount({ fee: feeQuote }); // USDC by default; 0n if nothing can be sent
 ```
 
-Notes held by a pending spend are left out, as they are for `planTransfer`.
+Unshields have their own max. An unshield is never split, so it is limited to what one plan can
+spend, less one fee at the tier its destination selects:
+
+```ts
+await wallet.maxUnshieldAmount({ fee: feeQuote }); // a plain unshield
+await wallet.maxUnshieldAmount({ fee: feeQuote, unshield: { recipient: pool, adaptParams } }); // cross-chain
+```
+
+Notes held by a pending spend are left out of both, as they are for `planTransfer`.
 
 ### Consolidating notes
 

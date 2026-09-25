@@ -64,8 +64,11 @@ export interface Wallet {
    * atomically as one `transact([...])`. A k-group split pays the quoted per-proof broadcaster fee k
    * times (each proof costs the relayer its own verification gas). Prove the whole array with
    * `proveAll`, then combine the handles' `toTransactionData()` into one `buildTransactCalldata([...])`.
-   * Throws `TooFragmentedError` past the batch cap (consolidate first); `UnsupportedCircuitShapeError`
-   * for an unsplittable spend (unshield / multi-recipient) whose shape isn't registered.
+   * A spend blocked only by its change note, with change of at most one per-proof fee, pays that change
+   * to the broadcaster with the fee instead (one proof, one output fewer — cheaper than a split).
+   * Throws `TooFragmentedError` past the batch cap, or when a split's extra fees don't fit a balance that
+   * covers one (consolidate first); `UnsupportedCircuitShapeError` for an unsplittable spend (unshield /
+   * multi-recipient) whose shape isn't registered.
    */
   planTransfer(request: PlanTransferRequest): Promise<Plan[]>;
   /**
@@ -84,6 +87,15 @@ export interface Wallet {
    * Planning only (no proofs, no RPC); works view-only.
    */
   maxTransferAmount(request: MaxTransferRequest): Promise<bigint>;
+  /**
+   * The largest amount an unshield can take out right now, fee included — the unshield flows' "Max"
+   * (`planTransfer` accepts it). An unshield is never split, so it's one proof: the notes one proof can
+   * spend, from ONE tree, less one per-proof fee at the tier the unshield's binding selects (plain,
+   * cross-chain, or a yield adapter call — pass `unshield` as for `planTransfer`, without the amount).
+   * Notes held by a pending spend are left out. Returns 0n when nothing can be unshielded. Planning only
+   * (no proofs, no RPC); works view-only.
+   */
+  maxUnshieldAmount(request: MaxUnshieldRequest): Promise<bigint>;
   /**
    * Plan a consolidation (issue #98): merge ONE token's notes into fewer notes the wallet owns, as up to
    * 4 proofs submitted atomically in one relayer `transact([...])`. Notes in older merkle trees go first
@@ -181,6 +193,15 @@ export interface MaxTransferRequest {
   readonly fee: FeeQuote;
   /** Token to send. Defaults to the pool's USDC. */
   readonly tokenAddress?: `0x${string}`;
+}
+
+export interface MaxUnshieldRequest {
+  /** The relayer quote; the fee tier follows the unshield's binding, as for `planTransfer`. */
+  readonly fee: FeeQuote;
+  /** Token to unshield. Defaults to the pool's USDC. */
+  readonly tokenAddress?: `0x${string}`;
+  /** Where the unshield goes (its adapter / CCTP binding), without the amount. Omit for a plain unshield. */
+  readonly unshield?: Omit<NonNullable<PlanTransferRequest['unshield']>, 'amount'>;
 }
 
 export interface ConsolidateRequest {
