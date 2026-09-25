@@ -145,12 +145,42 @@ function transferReceivedEntry(
 }
 
 /**
+ * ONE `shield` entry for every note a tx shielded to us in one token. Anyone can batch `shield([...])`
+ * requests to our 0zk and consumers key history by txid, so the notes are folded: `value` and the
+ * per-note protocol `shieldFee` are summed, and the gasless relayer fee — a per-tx figure — is attached
+ * once (`relayerFee`), not once per note.
+ */
+function shieldEntry(
+  notes: readonly TXO[],
+  tokenHash: string,
+  tokenAddress: `0x${string}`,
+  relayerFee: bigint | undefined,
+): HistoryEntry {
+  const first = notes[0]!;
+  const feeNotes = notes.filter((n) => n.shieldFee !== undefined);
+  const memo = notes.find((n) => n.memo !== undefined)?.memo;
+  const sender = notes.find((n) => n.senderShieldedAddress !== undefined)?.senderShieldedAddress;
+  return {
+    txid: first.txid,
+    blockNumber: Math.min(...notes.map((n) => n.blockNumber)),
+    category: 'shield',
+    tokenHash,
+    tokenAddress,
+    value: notes.reduce((sum, n) => sum + n.value, 0n),
+    ...(feeNotes.length > 0 ? { shieldFee: feeNotes.reduce((sum, n) => sum + n.shieldFee!, 0n) } : {}),
+    ...(relayerFee !== undefined && relayerFee > 0n ? { broadcasterFee: relayerFee } : {}),
+    ...(memo !== undefined ? { memo } : {}),
+    ...(sender !== undefined ? { senderShieldedAddress: sender } : {}),
+  };
+}
+
+/**
  * Reconstruct RECEIVE history (H1): shields the wallet deposited + transfers it received. Owned
  * transact-origin notes created in a tx where the wallet ALSO spent an input are its own change, not
  * incoming transfers, so they are excluded here — the corresponding send entry is produced by the
  * spend-side reconstruction (H2). Requires the nullifying key to detect the wallet's own spends;
- * a view-only wallet has it (derived from the viewing key), so this works for view-only too. A transfer
- * paid to us as several notes in one tx (a split send) is ONE `transfer-received` entry.
+ * a view-only wallet has it (derived from the viewing key), so this works for view-only too. Several
+ * notes of one kind in one tx (a split send, a batched shield) are ONE entry per `(txid, token)`.
  */
 export function reconstructReceiveHistory(
   ownedTxos: readonly TXO[],
@@ -162,29 +192,29 @@ export function reconstructReceiveHistory(
 
   const entries: HistoryEntry[] = [];
   const transfersByKey = new Map<string, { notes: TXO[]; tokenAddress: `0x${string}` }>();
+  const shieldsByKey = new Map<string, { notes: TXO[]; tokenAddress: `0x${string}` }>();
+  const gather = (byKey: typeof transfersByKey, txo: TXO, tokenAddress: `0x${string}`): void => {
+    const key = `${txo.txid}::${txo.tokenHash}`;
+    const bucket = byKey.get(key);
+    if (bucket) bucket.notes.push(txo);
+    else byKey.set(key, { notes: [txo], tokenAddress });
+  };
   for (const txo of ownedTxos) {
     const tokenAddress = resolveToken(txo.tokenHash);
     if (tokenAddress === undefined) continue;
 
+    // Shields and incoming transfers are each gathered per (txid, token), so a tx paying us several
+    // notes of one kind is one entry.
     if (txo.origin === 'shield') {
-      entries.push({
-        txid: txo.txid,
-        blockNumber: txo.blockNumber,
-        category: 'shield',
-        tokenHash: tokenHashKey(txo.tokenHash),
-        tokenAddress,
-        value: txo.value,
-        ...(txo.shieldFee !== undefined ? { shieldFee: txo.shieldFee } : {}),
-      });
+      gather(shieldsByKey, txo, tokenAddress);
       continue;
     }
-    // transact-origin: change (skip) if created in one of our own spends, else an incoming transfer —
-    // gathered per (txid, token) so a transfer paid as several notes is one entry.
+    // transact-origin: change (skip) if created in one of our own spends, else an incoming transfer.
     if (ownSpends.has(txo.txid)) continue;
-    const key = `${txo.txid}::${txo.tokenHash}`;
-    const bucket = transfersByKey.get(key);
-    if (bucket) bucket.notes.push(txo);
-    else transfersByKey.set(key, { notes: [txo], tokenAddress });
+    gather(transfersByKey, txo, tokenAddress);
+  }
+  for (const { notes, tokenAddress } of shieldsByKey.values()) {
+    entries.push(shieldEntry(notes, tokenHashKey(notes[0]!.tokenHash), tokenAddress, undefined));
   }
   for (const { notes, tokenAddress } of transfersByKey.values()) {
     entries.push(transferReceivedEntry(notes, tokenHashKey(notes[0]!.tokenHash), tokenAddress));
@@ -219,8 +249,8 @@ export interface ReconstructHistoryInput {
  * Full history reconstruction (H1 receives + H2 sends/unshields/yield). Each transaction the wallet
  * participated in is classified once, per token, from owned notes + spent nullifiers + Unshield events:
  *
- *  - receive tx (no own spend): `shield` per created shield note, and ONE `transfer-received` per
- *    `(txid, token)` however many notes paid us (a split send pays one per proof) — unless the tx also
+ *  - receive tx (no own spend): ONE `shield` and ONE `transfer-received` per `(txid, token)` however
+ *    many notes paid us (a split send pays one per proof; anyone can batch shields) — unless the tx also
  *    carries an Unshield to the yield adapter, i.e. the USDC leg of a yield withdrawal → `yield-withdraw`.
  *  - spend tx (own inputs nullified): net delta = change − inputs (negative). Category by Unshield:
  *    to the adapter → `yield-deposit`; to any other address → `unshield` (+ recipient + protocol fee);
@@ -380,23 +410,13 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
       }
       continue;
     }
-    for (const r of a.receives) {
-      if (r.origin !== 'shield') continue;
-      // Gasless shields carry a relayer fee note in the same txid (issue #88); surface its GROSS (note +
-      // its own shield fee) as the entry's broadcaster fee so the recovered shield matches the local
-      // record's total — user note + user shield fee + relayer gross reconstructs the full deposit.
-      const shieldRelayerFee = input.shieldRelayerFees?.get(txid);
-      entries.push({
-        txid,
-        blockNumber: r.blockNumber,
-        category: 'shield',
-        tokenHash, tokenAddress,
-        value: r.value,
-        ...(r.shieldFee !== undefined ? { shieldFee: r.shieldFee } : {}),
-        ...(shieldRelayerFee !== undefined && shieldRelayerFee > 0n ? { broadcasterFee: shieldRelayerFee } : {}),
-        ...(r.memo !== undefined ? { memo: r.memo } : {}),
-        ...(r.senderShieldedAddress !== undefined ? { senderShieldedAddress: r.senderShieldedAddress } : {}),
-      });
+    // Shields in this tx + token: one entry however many notes (#102). Gasless shields carry a relayer
+    // fee note in the same txid (issue #88); its GROSS (note + its own shield fee) is the entry's
+    // broadcaster fee, so the recovered shield matches the local record's total — user notes + user
+    // shield fees + relayer gross reconstructs the full deposit. It's per tx, so it's attached once.
+    const shieldsIn = a.receives.filter((r) => r.origin === 'shield');
+    if (shieldsIn.length > 0) {
+      entries.push(shieldEntry(shieldsIn, tokenHash, tokenAddress, input.shieldRelayerFees?.get(txid)));
     }
     // Incoming transfers in this tx + token: one entry however many notes paid us (a split send, #100).
     const transfersIn = a.receives.filter((r) => r.origin !== 'shield');

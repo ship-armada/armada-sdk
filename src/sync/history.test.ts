@@ -63,6 +63,14 @@ describe('reconstructReceiveHistory (H1)', () => {
     expect(entries[0]).toMatchObject({ txid: tx('55'), category: 'transfer-received', value: 10_000_000n, memo: 'rent' });
    });
 
+  it('folds shield notes from one tx into ONE shield entry (#102)', () => {
+    const a = txo({ tree: 0, position: 11, value: 600_000n, txid: tx('79'), origin: 'shield', shieldFee: 600n });
+    const b = txo({ tree: 0, position: 12, value: 390_000n, txid: tx('79'), origin: 'shield' });
+    const entries = reconstructReceiveHistory([a, b], [], NK, resolveToken);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ category: 'shield', value: 990_000n, shieldFee: 600n });
+  });
+
   it('skips notes in non-USDC tokens', () => {
     const other = txo({ tree: 0, position: 0, value: 1n, txid: tx('44'), origin: 'shield', tokenHash: 'bb'.repeat(32) });
     expect(reconstructReceiveHistory([other], [], NK, resolveToken)).toHaveLength(0);
@@ -258,6 +266,22 @@ describe('reconstructHistory (H2 — sends / unshields / yield)', () => {
     expect(shield.value).toBe(990_000n);
     expect(shield.shieldFee).toBe(1_000n); // protocol fee, distinct from the relayer fee
     expect(shield.broadcasterFee).toBe(10_000n); // gasless relayer fee note
+  });
+
+  it('folds two shield notes in one tx into ONE shield entry, relayer fee counted once (#102)', () => {
+    // Anyone can batch shield([...]) requests to our 0zk; consumers key history by txid.
+    const shieldTxid = tx('78');
+    const a = txo({ tree: 0, position: 9, value: 600_000n, txid: shieldTxid, origin: 'shield', shieldFee: 600n, blockNumber: 12 });
+    const b = txo({ tree: 0, position: 10, value: 390_000n, txid: shieldTxid, origin: 'shield', shieldFee: 400n, blockNumber: 12 });
+    const entries = reconstructHistory({
+      ...base,
+      spentNullifiers: [],
+      ownedTxos: [a, b],
+      unshields: [],
+      shieldRelayerFees: new Map([[shieldTxid, 10_000n]]),
+    }).filter((e) => e.txid === shieldTxid);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ category: 'shield', value: 990_000n, shieldFee: 1_000n, broadcasterFee: 10_000n });
   });
 
   it('recovers self-metadata stashed in the change-note memo (lever 3)', () => {
