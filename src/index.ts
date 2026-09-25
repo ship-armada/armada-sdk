@@ -42,6 +42,14 @@ export interface PoolConfig {
    */
   readonly supportedShapes?: readonly string[];
   /**
+   * Keeps wallets from fragmenting (issue #108): when a token has at least this many spendable notes, a
+   * single-proof spend also spends that tree's smallest notes as extra inputs — up to the largest listed
+   * shape — merging them into its change at no extra fee. The fee, the amount, and whether a spend can be
+   * made never change; the proof gets larger, which is why a wallet below the threshold is left alone.
+   * Needs `supportedShapes`. Default 5; 0 turns it off.
+   */
+  readonly sweepNoteThreshold?: number;
+  /**
    * How long (ms) an optimistic in-flight spend hold survives before it's auto-released (issue #55). When
    * a spend's transaction is submitted, `wallet.markSpendPending` holds its input notes out of selection
    * so a rapid follow-up spend can't reselect them before the on-chain `Nullified` event is scanned. A

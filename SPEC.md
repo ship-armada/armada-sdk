@@ -523,6 +523,12 @@ const tx = buildTransactCalldata(handles.map((h) => h.toTransactionData()), pool
   change output, and the change is at most one per-proof fee, the change is paid to the broadcaster
   with the fee (one output fewer) instead of splitting or refusing. It never costs more than an extra
   proof or a consolidation would, and it applies to every spend, unshields included.
+- **Small notes swept into spends.** When a token has at least `pool.sweepNoteThreshold` spendable
+  notes (default 5; 0 = off), a single plan on a listed shape also spends its tree's smallest notes as
+  extra inputs, up to the largest listed shape for its outputs, adding them to the change. The fee, the
+  amount, and whether a spend can be made never change; the proof grows, so wallets below the threshold
+  are left alone. Split and folded plans are not swept. It keeps a wallet from fragmenting between
+  consolidations.
 - **Max transfer.** `wallet.maxTransferAmount({ tokenAddress?, fee })` is the largest single-recipient
   transfer `planTransfer` accepts, fee included. It is not "balance minus a fee": a transfer spends
   one tree, a split pays the per-proof fee once per proof, and the batch cap limits the notes one send

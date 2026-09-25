@@ -119,6 +119,15 @@ await wallet.maxUnshieldAmount({ fee: feeQuote, unshield: { recipient: pool, ada
 
 Notes held by a pending spend are left out of both, as they are for `planTransfer`.
 
+### Small notes are swept into spends
+
+Once a token is spread over several notes (5 by default, set with `pool.sweepNoteThreshold`; 0 turns it
+off), a spend that fits in one plan also spends that tree's smallest notes as extra inputs, as many as a
+listed circuit shape allows. Their value comes back in the change. The fee, the amount sent and whether
+the spend can be made are unchanged; only the proof is larger. Everyday spending therefore keeps a
+wallet from fragmenting, and splits, change folded into the fee, and manual consolidation are needed
+less often. Split and folded plans are not swept.
+
 ### Consolidating notes
 
 `consolidate` merges one token's notes into fewer notes that the wallet owns, in one atomic
