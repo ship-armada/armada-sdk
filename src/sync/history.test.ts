@@ -53,6 +53,16 @@ describe('reconstructReceiveHistory (H1)', () => {
     for (const e of entries) expect(e).toMatchObject({ tokenHash: USDC_HASH, tokenAddress: USDC });
   });
 
+  it('folds a transfer received as several notes in one tx into ONE entry (a split send, #100)', () => {
+    // A fragmented sender's split transfer pays us one note per proof, all in one tx (e.g. 9.217001 +
+    // 0.782999 = 10). Consumers key history by txid, so two entries would lose one of the notes.
+    const first = txo({ tree: 0, position: 3, value: 9_217_001n, txid: tx('55'), origin: 'transact', blockNumber: 40, memo: 'rent' });
+    const second = txo({ tree: 0, position: 4, value: 782_999n, txid: tx('55'), origin: 'transact', blockNumber: 40 });
+    const entries = reconstructReceiveHistory([first, second], [], NK, resolveToken);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ txid: tx('55'), category: 'transfer-received', value: 10_000_000n, memo: 'rent' });
+   });
+
   it('skips notes in non-USDC tokens', () => {
     const other = txo({ tree: 0, position: 0, value: 1n, txid: tx('44'), origin: 'shield', tokenHash: 'bb'.repeat(32) });
     expect(reconstructReceiveHistory([other], [], NK, resolveToken)).toHaveLength(0);
@@ -132,6 +142,15 @@ describe('reconstructHistory (H2 — sends / unshields / yield)', () => {
     txid: SPEND,
     ...over,
   });
+
+  it('transfer-received: several notes from one tx are ONE entry, value summed (a split send, #100)', () => {
+    const first = txo({ tree: 0, position: 20, value: 782_999n, txid: tx('66'), origin: 'transact', blockNumber: 50 });
+    const second = txo({ tree: 0, position: 21, value: 9_217_001n, txid: tx('66'), origin: 'transact', blockNumber: 50, memo: 'rent', senderShieldedAddress: '0zk_alice' });
+    const entries = reconstructHistory({ ...base, ownedTxos: [first, second], unshields: [] }).filter((e) => e.txid === tx('66'));
+    expect(entries).toHaveLength(1);
+    // The memo / disclosed sender come from whichever note carries them.
+    expect(entries[0]).toMatchObject({ category: 'transfer-received', value: 10_000_000n, memo: 'rent', senderShieldedAddress: '0zk_alice' });
+   });
 
   it('transfer-sent: net outflow (inputs − change), no unshield event', () => {
     const entries = reconstructHistory({ ...base, ownedTxos: [inputNote, changeNote], unshields: [] });
