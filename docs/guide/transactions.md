@@ -89,6 +89,18 @@ Unshields and multi-recipient spends are never split; if their shape isn't liste
 `UnsupportedCircuitShapeError`. With the deployed circuits that happens as soon as an unshield needs
 five or more notes. Both are fixed by [consolidating](#consolidating-notes) first.
 
+### The most you can send
+
+Because a transfer spends one tree's notes and a split pays the fee once per plan, the largest
+amount you can send is not simply the balance minus one fee. `maxTransferAmount` works it out with
+the same rules `planTransfer` uses, so `planTransfer` accepts the amount it returns:
+
+```ts
+const max = await wallet.maxTransferAmount({ fee: feeQuote }); // USDC by default; 0n if nothing can be sent
+```
+
+Notes held by a pending spend are left out, as they are for `planTransfer`.
+
 ### Consolidating notes
 
 `consolidate` merges one token's notes into fewer notes that the wallet owns, in one atomic
