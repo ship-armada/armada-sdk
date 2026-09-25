@@ -197,6 +197,140 @@ describe('planSpend — change folded into the fee', () => {
   });
 });
 
+describe('planSpend — sweeping small notes into the change (fragmented wallets)', () => {
+  const FEE = { broadcasterShieldedAddress: BROADCASTER, value: 1n };
+  const sweep = { sweepNoteThreshold: 5 };
+  const inputValues = (g: PlanSelection) => g.selectedInputs.map((t) => t.value);
+
+  it('adds the tree\'s smallest notes to a single proof, into its change, at no extra fee', () => {
+    // A 10 and four dust notes (5 notes ≥ threshold). The 10 alone covers R=5 + F=1 (1x3, change 4); up to
+    // 4 inputs fit a 3-output proof, so the three smallest others join it — change 4 + 3 = 7.
+    const txos = [txo(10n), txo(1n), txo(1n), txo(1n), txo(2n)];
+    const groups = planSpend({ ...base, ...sweep, outputs: [{ toShieldedAddress: RECIPIENT, value: 5n }], fee: FEE, txos });
+    expect(groups).toHaveLength(1);
+    expect(shapeOf(groups[0]!)).toBe('4x3');
+    expect(inputValues(groups[0]!)).toEqual([10n, 1n, 1n, 1n]); // the three smallest, not the 2
+    expect(feeTotal(groups)).toBe(1n);
+    expect(recipientTotal(groups)).toBe(5n);
+    expect(groups[0]!.summary.changeValue).toBe(7n);
+    expect(conserves(groups[0]!)).toBe(true);
+  });
+
+  it('leaves a wallet with fewer notes than the threshold alone', () => {
+    const txos = [txo(10n), txo(1n), txo(1n), txo(1n)];
+    const groups = planSpend({ ...base, ...sweep, outputs: [{ toShieldedAddress: RECIPIENT, value: 5n }], fee: FEE, txos });
+    expect(shapeOf(groups[0]!)).toBe('1x3');
+  });
+
+  it('is off without a threshold (or at 0)', () => {
+    const txos = [txo(10n), txo(1n), txo(1n), txo(1n), txo(1n)];
+    for (const extra of [{}, { sweepNoteThreshold: 0 }]) {
+      const groups = planSpend({ ...base, ...extra, outputs: [{ toShieldedAddress: RECIPIENT, value: 5n }], fee: FEE, txos });
+      expect(shapeOf(groups[0]!)).toBe('1x3');
+    }
+  });
+
+  it('gives an exact spend a change note for what it sweeps', () => {
+    // The 6 exactly covers R=5 + F=1 (1x2, no change); sweeping adds value, so a change output joins: 4x3.
+    const txos = [txo(6n), txo(1n), txo(1n), txo(1n), txo(1n)];
+    const groups = planSpend({ ...base, ...sweep, outputs: [{ toShieldedAddress: RECIPIENT, value: 5n }], fee: FEE, txos });
+    expect(shapeOf(groups[0]!)).toBe('4x3');
+    expect(groups[0]!.summary.changeValue).toBe(3n);
+    expect(feeTotal(groups)).toBe(1n);
+  });
+
+  it('sweeps an unshield too', () => {
+    const txos = [txo(10n), txo(1n), txo(1n), txo(1n), txo(1n)];
+    const groups = planSpend({
+      ...base, ...sweep, outputs: [], fee: FEE, txos,
+      unshield: { recipient: `0x${'ab'.repeat(20)}`, value: 5n },
+    });
+    expect(shapeOf(groups[0]!)).toBe('4x3');
+    expect(groups[0]!.summary.unshield?.value).toBe(5n);
+    expect(groups[0]!.summary.changeValue).toBe(7n);
+  });
+
+  it('only sweeps notes from the tree the spend already uses', () => {
+    const roots = new Map<number, bigint>([[0, 111n], [1, 222n]]);
+    const txos = [txo(10n, 0), txo(1n, 0), txo(1n, 1), txo(1n, 1), txo(1n, 1)];
+    const groups = planSpend({ ...base, ...sweep, roots, outputs: [{ toShieldedAddress: RECIPIENT, value: 5n }], fee: FEE, txos });
+    expect(groups[0]!.selectedInputs.every((t) => t.tree === 0)).toBe(true);
+    expect(shapeOf(groups[0]!)).toBe('2x3');
+  });
+
+  it('stops at the largest registered shape (sparse sets)', () => {
+    const txos = [txo(10n), txo(1n), txo(1n), txo(1n), txo(1n)];
+    const groups = planSpend({
+      ...base, ...sweep, supportedShapes: withoutShapes('4x3'),
+      outputs: [{ toShieldedAddress: RECIPIENT, value: 5n }], fee: FEE, txos,
+    });
+    expect(shapeOf(groups[0]!)).toBe('3x3');
+  });
+
+  it('never changes what can be spent or what it costs — only adds inputs and change (random wallets)', () => {
+    // Seeded mulberry32 (32-bit integer math, so no float precision loss) so a failure reproduces.
+    let seed = 0x5a1e;
+    const rand = (n: number) => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) % n;
+    };
+    const outcome = (run: () => PlanSelection[]) => {
+      try {
+        return run();
+      } catch (err) {
+        return err as Error;
+      }
+    };
+    let swept = 0;
+    for (let run = 0; run < 400; run += 1) {
+      const txos = Array.from({ length: 1 + rand(12) }, () => txo(BigInt(1 + rand(20))));
+      const total = txos.reduce((a, t) => a + t.value, 0n);
+      const fee = rand(2) === 0 ? { broadcasterShieldedAddress: BROADCASTER, value: BigInt(1 + rand(3)) } : undefined;
+      const value = 1n + BigInt(rand(Number(total)));
+      const spend = rand(2) === 0
+        ? { outputs: [{ toShieldedAddress: RECIPIENT, value }] }
+        : { outputs: [], unshield: { recipient: `0x${'ab'.repeat(20)}` as const, value } };
+      const request = { ...base, ...spend, ...(fee ? { fee } : {}), txos };
+      const plain = outcome(() => planSpend(request));
+      const withSweep = outcome(() => planSpend({ ...request, ...sweep }));
+      const context = `run ${run}: value ${value}, fee ${fee?.value ?? 0n}, notes ${txos.map((t) => t.value).join(',')}`;
+      if (plain instanceof Error) {
+        expect(withSweep, context).toBeInstanceOf(plain.constructor);
+        continue;
+      }
+      expect(withSweep, context).not.toBeInstanceOf(Error);
+      const groups = withSweep as PlanSelection[];
+      expect(groups.length, context).toBe(plain.length);
+      expect(feeTotal(groups), context).toBe(feeTotal(plain));
+      expect(recipientTotal(groups), context).toBe(recipientTotal(plain));
+      for (const g of groups) {
+        expect(SUPPORTED.has(shapeOf(g)), context).toBe(true);
+        expect(sumInputs(g), context).toBe(g.summary.outputs.reduce((a, o) => a + o.value, 0n) + (g.summary.feeOutput?.value ?? 0n) + g.summary.changeValue + (g.summary.unshield?.value ?? 0n));
+      }
+      // Every note the plain plan spends is still spent; any extra one only adds to the change.
+      const plainInputs = plain.flatMap((g) => g.selectedInputs.map((t) => t.position));
+      const sweptInputs = new Set(groups.flatMap((g) => g.selectedInputs.map((t) => t.position)));
+      for (const position of plainInputs) expect(sweptInputs.has(position), context).toBe(true);
+      if (sweptInputs.size > plainInputs.length) swept += 1;
+    }
+    expect(swept).toBeGreaterThan(0); // the corpus actually exercised the sweep
+  });
+
+  it('leaves split and folded plans as they are', () => {
+    // Five 3s, R=12, F=1 → a 2-proof split (see "splits a 5-input…"); sweeping never touches it.
+    const split = planSpend({ ...base, ...sweep, outputs: [{ toShieldedAddress: RECIPIENT, value: 12n }], fee: FEE, txos: [txo(3n), txo(3n), txo(3n), txo(3n), txo(3n)] });
+    expect(split.map(shapeOf)).toEqual(['4x2', '1x2']);
+    // Five 3s, unshield 13, F=1 → the change folded into the fee (5x2); nothing more to add.
+    const folded = planSpend({
+      ...base, ...sweep, outputs: [], fee: FEE, txos: [txo(3n), txo(3n), txo(3n), txo(3n), txo(3n)],
+      unshield: { recipient: `0x${'ab'.repeat(20)}`, value: 13n },
+    });
+    expect(folded.map(shapeOf)).toEqual(['5x2']);
+  });
+});
+
 describe('planSpend — limits', () => {
   it('throws TooFragmentedError past the batch cap', () => {
     // Needs 33 inputs; the largest shape is 8x1, so 4 groups hold at most 32 → 5 groups > cap(4).

@@ -12,7 +12,7 @@ import {
 import { shapeKey, type CircuitShape } from '../prover/index';
 import type { Plan, PlanSelection, PlanOutput, PlanSummary, DecodedBoundParams, CctpBinding } from './index';
 import { verifyCctpBinding } from './adapt-params';
-import { isSupportedShape, maxSupportedInputCount } from './shapes';
+import { isSupportedShape, maxInputCountForOutputs, maxSupportedInputCount } from './shapes';
 import type { WitnessInput } from './witness';
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as const;
@@ -80,6 +80,14 @@ export interface PlanTransferParams {
    * asked and 30s of proving is spent. Omit to skip the check (and never split).
    */
   readonly supportedShapes?: ReadonlySet<string>;
+  /**
+   * Sweep a fragmented wallet's dust into spends: when the token has at least this many candidate notes, a
+   * single-group spend on a registered shape also spends its tree's smallest unselected notes as extra inputs
+   * (up to the largest registered shape for its outputs), adding their value to the change. The fee, the
+   * recipient / unshield amount, and whether the spend plans are unchanged — only the proof grows, which is
+   * why a healthy wallet (fewer notes) is left alone. Requires `supportedShapes`. Omit or 0 to disable.
+   */
+  readonly sweepNoteThreshold?: number;
 }
 
 /** Railgun unshield flag (boundParams). NONE = plain transfer; UNSHIELD = a normal unshield. */
@@ -367,7 +375,8 @@ function splitTransfer(
 export function planSpend(params: PlanTransferParams): PlanSelection[] {
   const single = planSingleGroup(params, 'planSpend');
   const supported = params.supportedShapes;
-  if (supported === undefined || shapeSupported(supported, single.shape)) return [single];
+  if (supported === undefined) return [single];
+  if (shapeSupported(supported, single.shape)) return [sweepSmallNotes(params, single, supported)];
 
   const folded = foldChangeIntoFee(params, single, supported);
   if (folded !== undefined) return [folded];
@@ -401,6 +410,53 @@ export function planSpend(params: PlanTransferParams): PlanSelection[] {
   throw new TooFragmentedError(
     `planSpend: spend does not fit in ${MAX_SPLIT_GROUPS} supported-shape groups; consolidate small notes first`,
   );
+}
+
+/**
+ * Add the tree's smallest unselected notes to a single group as extra inputs — merging them into its change,
+ * at no extra fee — when the wallet holds at least `sweepNoteThreshold` notes of the token (it's fragmented).
+ * As many as the largest registered shape for the group's outputs allows (a change output counts: added
+ * value always leaves change). Keeps a wallet from fragmenting further without the user having to merge;
+ * the cost is a larger proof, so it's left off for wallets below the threshold. Returns the group unchanged
+ * when there's nothing to add.
+ */
+function sweepSmallNotes(
+  params: PlanTransferParams,
+  group: PlanSelection,
+  supported: ReadonlySet<string>,
+): PlanSelection {
+  const threshold = params.sweepNoteThreshold;
+  if (threshold === undefined || threshold <= 0) return group;
+  const tokenHash = getTokenDataHash(getTokenDataERC20(params.tokenAddress));
+  const tokenNotes = params.txos.filter((t) => t.tokenHash === tokenHash && t.value > 0n);
+  if (tokenNotes.length < threshold) return group;
+
+  const tree = group.boundParams.treeNumber;
+  const selected = new Set(group.selectedInputs.map((t) => `${t.tree}:${t.position}`));
+  const dust = tokenNotes
+    .filter((t) => t.tree === tree && !selected.has(`${t.tree}:${t.position}`))
+    .sort((a, b) => (a.value < b.value ? -1 : a.value > b.value ? 1 : 0));
+  const commitments = group.shape.commitments + (group.summary.changeValue > 0n ? 0 : 1);
+  const inputs = group.selectedInputs.length;
+  // The most notes a registered shape takes from here (the set is sparse, so check the exact shape).
+  let extra = Math.min(maxInputCountForOutputs(supported, commitments) - inputs, dust.length);
+  while (extra > 0 && !shapeSupported(supported, { nullifiers: inputs + extra, commitments })) extra -= 1;
+  if (extra <= 0) return group;
+
+  const added = dust.slice(0, extra);
+  const addedValue = added.reduce((sum, t) => sum + t.value, 0n);
+  const cover: Cover = {
+    tree,
+    selected: [...group.selectedInputs, ...added],
+    total: group.summary.inputTotal + addedValue,
+    merkleRoot: group.merkleRoot,
+  };
+  return assembleSelection(params, cover, {
+    outputs: group.summary.outputs,
+    ...(group.summary.feeOutput ? { feeOutput: group.summary.feeOutput } : {}),
+    changeValue: group.summary.changeValue + addedValue,
+    ...(group.summary.unshield ? { unshield: group.summary.unshield } : {}),
+  });
 }
 
 /**

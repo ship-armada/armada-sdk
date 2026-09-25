@@ -576,7 +576,11 @@ describe('wallet.consolidate + planTransferAfter (issue #98)', () => {
   const leaf = (n: number): string => n.toString(16).padStart(64, '0');
 
   // A spend-capable wallet whose persisted scan state holds USDC notes of the given values, per tree.
-  async function walletWithNotes(notesByTree: Record<number, bigint[]>, shapes: string[] | null = SHAPES) {
+  async function walletWithNotes(
+    notesByTree: Record<number, bigint[]>,
+    shapes: string[] | null = SHAPES,
+    poolOptions: { sweepNoteThreshold?: number } = {},
+  ) {
     await initPoseidonPromise;
     const store = new MemoryStorageAdapter();
     await store.open({ schemaVersion: 1, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1 });
@@ -596,7 +600,7 @@ describe('wallet.consolidate + planTransferAfter (issue #98)', () => {
     const base = makeConfig();
     const sdk = await createArmadaSdk({
       ...base,
-      pool: { ...base.pool, ...(shapes ? { supportedShapes: shapes } : {}) },
+      pool: { ...base.pool, ...(shapes ? { supportedShapes: shapes } : {}), ...poolOptions },
       storage: store,
       dangerouslyAllowPlaintextStorage: true,
     });
@@ -640,6 +644,27 @@ describe('wallet.consolidate + planTransferAfter (issue #98)', () => {
     await expect(wallet.consolidate({ fee: FEE })).rejects.toThrow(InvalidRequestError);
     await sdk.close();
   });
+
+  describe('sweeping small notes (fragmented wallets)', () => {
+    const transfer = { outputs: [{ to0zk: '0zk_recipient', amount: 5n }], fee: FEE }
+
+    it('by default, a wallet of 5+ notes spends its smallest ones into the change — with their merkle proofs', async () => {
+      const { sdk, wallet } = await walletWithNotes({ 0: [10n, 1n, 1n, 1n, 1n] })
+      const [plan] = await wallet.planTransfer(transfer)
+      expect(plan!.selectedInputs.map((t) => t.value)).toEqual([10n, 1n, 1n, 1n])
+      expect(plan!.merkleProofs).toHaveLength(4)
+      expect(plan!.summary.feeOutput?.value).toBe(1n)
+      expect(plan!.summary.changeValue).toBe(7n)
+      await sdk.close()
+    })
+
+    it('is configurable per pool (0 turns it off)', async () => {
+      const { sdk, wallet } = await walletWithNotes({ 0: [10n, 1n, 1n, 1n, 1n] }, SHAPES, { sweepNoteThreshold: 0 })
+      const [plan] = await wallet.planTransfer(transfer)
+      expect(plan!.selectedInputs.map((t) => t.value)).toEqual([10n])
+      await sdk.close()
+    })
+  })
 
   describe('maxTransferAmount', () => {
     const FEE_3 = { ...FEE, schedule: { transfer: '3' } };

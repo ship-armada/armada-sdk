@@ -107,6 +107,8 @@ interface SdkContext {
   readonly watchers: Set<() => void>;
   /** Circuit shapes the deployment can prove — plan-time fail-fast set, or undefined to skip the check. */
   readonly supportedShapes: ReadonlySet<string> | undefined;
+  /** Spendable-note count from which single-proof spends sweep the tree's smallest notes (issue #108; default 5, 0 = off). */
+  readonly sweepNoteThreshold: number;
   /** Canonical 32-byte hash (no 0x) of USDC — maps owned-note token hashes back to the address. */
   readonly usdcHash: string;
   /** Yield adapter address (lowercased), when configured — an unshield to it marks a yield op. */
@@ -896,6 +898,7 @@ class ArmadaWallet implements Wallet {
       roots,
       chainID: BigInt(this.ctx.chainId),
       ...(this.ctx.supportedShapes !== undefined ? { supportedShapes: this.ctx.supportedShapes } : {}),
+      sweepNoteThreshold: this.ctx.sweepNoteThreshold,
     };
   }
 
@@ -1127,6 +1130,7 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
     autoSyncIntervalMs: config.pool.autoSyncIntervalMs ?? 10_000,
     watchers: new Set<() => void>(),
     supportedShapes: config.pool.supportedShapes !== undefined ? new Set(config.pool.supportedShapes) : undefined,
+    sweepNoteThreshold: config.pool.sweepNoteThreshold ?? 5,
     usdcHash,
     ...(config.pool.wrappers?.yieldAdapter !== undefined
       ? { yieldAdapterAddress: config.pool.wrappers.yieldAdapter.toLowerCase() }
