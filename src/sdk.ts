@@ -36,6 +36,7 @@ import {
 import { EncryptedStore, deriveWalletStorageKey, type StorageAdapter } from './storage/index';
 import { planSpend, planWitnessInputs, prove, proveAll, runPreflight, type Plan, type PlanSelection, type ProofHandle, type PreflightResult, type FeeQuote, type ProveParams } from './tx/index';
 import { planConsolidate, txosAfterConsolidation } from './tx/consolidate';
+import { maxTransferAmount } from './tx/max-transfer';
 import type { PlanTransferParams } from './tx/plan';
 import { planList } from './tx/plan';
 import type { WitnessOutputRequest } from './tx/witness';
@@ -51,6 +52,7 @@ import {
   type WalletFactory,
   type PlanTransferRequest,
   type ConsolidateRequest,
+  type MaxTransferRequest,
   type SpendSigner,
 } from './wallet/index';
 import {
@@ -789,6 +791,13 @@ class ArmadaWallet implements Wallet {
     const roots = this.rootsFor(txos);
     if (!roots.has(currentTree)) roots.set(currentTree, BigInt(`0x${this.scanState.treeRoot(currentTree)}`));
     return planSpend(this.spendParams(request, txos, roots));
+  }
+
+  async maxTransferAmount(request: MaxTransferRequest): Promise<bigint> {
+    this.prunePendingSpends();
+    const txos = this.scanState.spendableTxos(this.keyset.nullifyingKey);
+    // The planner request for a transfer (`transfer` fee tier); the max probes it with its own amounts.
+    return maxTransferAmount(this.spendParams({ ...request, outputs: [] }, txos, this.rootsFor(txos)));
   }
 
   async consolidate(request: ConsolidateRequest): Promise<Plan[]> {

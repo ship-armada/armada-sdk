@@ -640,4 +640,28 @@ describe('wallet.consolidate + planTransferAfter (issue #98)', () => {
     await expect(wallet.consolidate({ fee: FEE })).rejects.toThrow(InvalidRequestError);
     await sdk.close();
   });
+
+  describe('maxTransferAmount', () => {
+    const FEE_3 = { ...FEE, schedule: { transfer: '3' } };
+    const transferOf = (amount: bigint) => ({ outputs: [{ to0zk: '0zk_recipient', amount }], fee: FEE_3 });
+
+    it('is the largest transfer planTransfer accepts, at the per-proof transfer fee', async () => {
+      // Six 10s + a 2: all seven notes split into 2 proofs (62 − 6 = 56), but the six 10s fit ONE proof (60 − 3).
+      const { sdk, wallet } = await walletWithNotes({ 0: [10n, 10n, 10n, 10n, 10n, 10n, 2n] });
+      const max = await wallet.maxTransferAmount({ fee: FEE_3 });
+      expect(max).toBe(57n);
+      await expect(wallet.planTransfer(transferOf(max))).resolves.toHaveLength(1);
+      await expect(wallet.planTransfer(transferOf(max + 1n))).rejects.toThrow();
+      await sdk.close();
+    });
+
+    it('leaves out notes a pending spend holds', async () => {
+      const { sdk, wallet } = await walletWithNotes({ 0: [20n, 10n] });
+      expect(await wallet.maxTransferAmount({ fee: FEE_3 })).toBe(27n); // 30 − 3
+      const pending = await wallet.planTransfer(transferOf(15n)); // spends the 20
+      wallet.markSpendPending(pending, `0x${'ab'.repeat(32)}`);
+      expect(await wallet.maxTransferAmount({ fee: FEE_3 })).toBe(7n); // the 10 − 3
+      await sdk.close();
+    });
+  });
 });

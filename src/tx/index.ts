@@ -211,6 +211,9 @@ export { planTransfer, planSpend, planWitnessInputs } from './plan';
 // Consolidation — merge one token's notes into fewer self-owned notes (old trees first, then smallest).
 export { planConsolidate, txosAfterConsolidation } from './consolidate';
 export type { PlanConsolidateParams } from './consolidate';
+// The largest single-recipient transfer the notes can plan, fee included (a wallet's "Max").
+export { maxTransferAmount } from './max-transfer';
+export type { MaxTransferParams } from './max-transfer';
 export type { PlanTransferParams, TransferOutputRequest, FeeRequest } from './plan';
 
 // transact() calldata serializer (inverse of decodeTransact) — proof G2 swap + Transaction structs.

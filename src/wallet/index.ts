@@ -76,6 +76,15 @@ export interface Wallet {
    */
   planTransferAfter(consolidation: readonly Plan[], request: PlanTransferRequest): Promise<PlanSelection[]>;
   /**
+   * The largest amount a single-recipient private transfer can send right now, fee included — what a
+   * "Max" button should offer (`planTransfer` accepts it). Applies the same rules as `planTransfer`: a
+   * transfer spends ONE tree's notes (so it can be less than the balance minus a fee), a split pays the
+   * quoted per-proof `transfer` fee once per proof, the batch cap limits how many notes one send can
+   * spend, and notes held by a pending spend are left out. Returns 0n when nothing can be sent.
+   * Planning only (no proofs, no RPC); works view-only.
+   */
+  maxTransferAmount(request: MaxTransferRequest): Promise<bigint>;
+  /**
    * Plan a consolidation (issue #98): merge ONE token's notes into fewer notes the wallet owns, as up to
    * 4 proofs submitted atomically in one relayer `transact([...])`. Notes in older merkle trees go first
    * (spending them moves their value into the current tree), then the smallest current-tree notes.
@@ -164,6 +173,13 @@ export interface PlanTransferRequest {
    * (e.g. yield vault shares on redeem) — the wallet scans all pool tokens, so any held balance is
    * spendable. Must match the token of the selected input notes.
    */
+  readonly tokenAddress?: `0x${string}`;
+}
+
+export interface MaxTransferRequest {
+  /** The relayer quote; its `transfer` tier is the per-proof fee. */
+  readonly fee: FeeQuote;
+  /** Token to send. Defaults to the pool's USDC. */
   readonly tokenAddress?: `0x${string}`;
 }
 
