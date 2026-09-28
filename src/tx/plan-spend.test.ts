@@ -7,6 +7,7 @@ import type { TXO } from '../sync/index';
 import { InsufficientBalanceError, TooFragmentedError, UnsupportedCircuitShapeError } from '../errors';
 import { planSpend } from './plan';
 import type { PlanSelection } from './index';
+import { seededRandom } from '../../test/support/seeded-random';
 
 const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' as const;
 const USDC_HASH = getTokenDataHash(getTokenDataERC20(USDC));
@@ -268,14 +269,7 @@ describe('planSpend — sweeping small notes into the change (fragmented wallets
   });
 
   it('never changes what can be spent or what it costs — only adds inputs and change (random wallets)', () => {
-    // Seeded mulberry32 (32-bit integer math, so no float precision loss) so a failure reproduces.
-    let seed = 0x5a1e;
-    const rand = (n: number) => {
-      seed = (seed + 0x6d2b79f5) | 0;
-      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-      return ((t ^ (t >>> 14)) >>> 0) % n;
-    };
+    const rand = seededRandom(0x5a1e);
     const outcome = (run: () => PlanSelection[]) => {
       try {
         return run();
@@ -393,11 +387,11 @@ describe('planSpend — limits', () => {
 
 describe('planSpend — randomized invariants (seeded)', () => {
   it('every plan is conservative, supported, fee-per-proof, change-last, inputs-disjoint', () => {
-    // Deterministic LCG so failures reproduce.
-    let seed = 0x9e3779b9;
-    const rand = (n: number) => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) % n);
+    const rand = seededRandom(0x9e3779b9);
 
     let splitCases = 0;
+    let feeCases = 0;
+    let noFeeCases = 0;
     for (let iter = 0; iter < 400; iter += 1) {
       const noteCount = 1 + rand(20);
       const txos = Array.from({ length: noteCount }, () => txo(BigInt(1 + rand(9))));
@@ -426,6 +420,8 @@ describe('planSpend — randomized invariants (seeded)', () => {
       }
 
       if (groups.length > 1) splitCases += 1;
+      if (fee > 0n) feeCases += 1;
+      else noFeeCases += 1;
       // 1. every group shape supported.
       for (const g of groups) expect(SUPPORTED.has(shapeOf(g))).toBe(true);
       // 2. recipient gets exactly R.
@@ -457,6 +453,10 @@ describe('planSpend — randomized invariants (seeded)', () => {
       expect(new Set(positions).size).toBe(positions.length);
       expect(groups.length).toBeLessThanOrEqual(4);
     }
-    expect(splitCases).toBeGreaterThan(0); // the corpus actually exercised the split path
+    // The corpus actually exercised the split path, and spends both with and without a fee (#110: a degenerate
+    // generator once produced a no-fee spend only once in 400 runs).
+    expect(splitCases).toBeGreaterThan(0);
+    expect(feeCases).toBeGreaterThan(50);
+    expect(noFeeCases).toBeGreaterThan(50);
   });
 });
