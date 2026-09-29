@@ -362,6 +362,32 @@ describe('reconstructHistory (H2 — sends / unshields / yield)', () => {
     expect(usdcLeg.broadcasterFee).toBeUndefined();
   });
 
+  it('yield-withdraw: the share change note\'s self-metadata is carried onto the USDC leg too (#113)', () => {
+    // WHY: a partial withdrawal's change note is a SHARE note, so the self-metadata blob written at prove time
+    // (e.g. the vault APY) lands on the share leg. A consumer that keeps only the USDC leg — as it does for
+    // `shares` and the relayer fee — would otherwise never see it.
+    const WD = tx('e3');
+    const blob = 'y=450';
+    const sharesIn = txo({ tree: 0, position: 8, value: 12_000n, txid: tx('dd'), origin: 'transact', tokenHash: SHARE_HASH, blockNumber: 6 });
+    const shareChange = txo({ tree: 0, position: 10, value: 5_000n, txid: WD, origin: 'transact', tokenHash: SHARE_HASH, blockNumber: 40, memo: encodeSelfMetadata(blob) });
+    const usdcOut = txo({ tree: 0, position: 9, value: 550_000n, txid: WD, origin: 'transact', blockNumber: 40 });
+    const spentWd: SpentNullifier[] = [{ tree: 0, nullifier: TransactNote.getNullifier(NK, 8), txid: WD, blockNumber: 40 }];
+    const shareUnshield = unshield({ to: ADAPTER, txid: WD, amount: 7_000n, tokenData: { tokenType: 0, tokenAddress: SHARE, tokenSubID: '0' } });
+    const entries = reconstructHistory({ ...base, spentNullifiers: spentWd, ownedTxos: [sharesIn, shareChange, usdcOut], unshields: [shareUnshield], yieldAdapterAddress: ADAPTER });
+    expect(entries.find((e) => e.txid === WD && e.tokenHash === USDC_HASH)).toMatchObject({ category: 'yield-withdraw', value: 550_000n, shares: 7_000n, selfMetadata: blob });
+    expect(entries.find((e) => e.txid === WD && e.tokenHash === SHARE_HASH)).toMatchObject({ category: 'yield-withdraw', value: -7_000n, selfMetadata: blob });
+  });
+
+  it('yield-withdraw: a full withdrawal (no share change note) has no self-metadata to carry', () => {
+    const WD = tx('e4');
+    const sharesIn = txo({ tree: 0, position: 8, value: 7_000n, txid: tx('ee'), origin: 'transact', tokenHash: SHARE_HASH, blockNumber: 6 });
+    const usdcOut = txo({ tree: 0, position: 9, value: 500_000n, txid: WD, origin: 'transact', blockNumber: 40 });
+    const spentWd: SpentNullifier[] = [{ tree: 0, nullifier: TransactNote.getNullifier(NK, 8), txid: WD, blockNumber: 40 }];
+    const shareUnshield = unshield({ to: ADAPTER, txid: WD, amount: 7_000n, tokenData: { tokenType: 0, tokenAddress: SHARE, tokenSubID: '0' } });
+    const entries = reconstructHistory({ ...base, spentNullifiers: spentWd, ownedTxos: [sharesIn, usdcOut], unshields: [shareUnshield], yieldAdapterAddress: ADAPTER });
+    expect(entries.find((e) => e.txid === WD && e.tokenHash === USDC_HASH)!.selfMetadata).toBeUndefined();
+  });
+
   it('transfer-sent is dated by the spend block, not the spent input\'s origin block', () => {
     // WHY: the input note was created by an EARLIER transaction (block 5); the send happened at block
     // 30. Dating the send by its input's origin block backdates it — the entry would sort next to, and

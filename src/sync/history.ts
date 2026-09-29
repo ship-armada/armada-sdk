@@ -55,7 +55,8 @@ export interface HistoryEntry {
   /** Sender's 0zk, if they disclosed it (transfer receives). */
   readonly senderShieldedAddress?: string;
   /** Caller metadata recovered from the spend's change-note memo (issue #88 lever 3) — the opaque blob
-   *  passed to `prove({ selfMetadata })`, reproduced on a fresh scan even after local storage is cleared. */
+   *  passed to `prove({ selfMetadata })`, reproduced on a fresh scan even after local storage is cleared. A yield
+   *  withdrawal's change note is a share note; its USDC leg carries the blob too (issue #113). */
   readonly selfMetadata?: string;
   /** Recipient outputs of a send (transfer-sent), recovered sender-side — recipient 0zk + amount + memo. */
   readonly sentOutputs?: readonly SentRecipient[];
@@ -307,6 +308,9 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
     selfMetadata?: string;
   }
   const byKey = new Map<string, Agg>();
+  // Self-metadata per txid, whichever token's change note carried it — a yield withdrawal's is on its SHARE change
+  // note, and its USDC leg carries it too (issue #113).
+  const selfMetadataByTxid = new Map<string, string>();
   const keyOf = (txid: string, tokenHash: string): string => `${txid}::${tokenHash}`;
   const agg = (txid: string, tokenHash: string, blockNumber: number): Agg => {
     const key = keyOf(txid, tokenHash);
@@ -330,7 +334,10 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
       // Recover caller metadata stashed in the change note's memo (issue #88 lever 3). Only the change
       // note carries the tagged blob; a user's self-transfer memo won't match the marker.
       const meta = decodeSelfMetadata(txo.memo);
-      if (meta !== undefined) a.selfMetadata = meta;
+      if (meta !== undefined) {
+        a.selfMetadata = meta;
+        selfMetadataByTxid.set(txo.txid, meta);
+      }
     } else {
       agg(txo.txid, token, txo.blockNumber).receives.push(txo);
     }
@@ -392,18 +399,22 @@ export function reconstructHistory(input: ReconstructHistoryInput): HistoryEntry
     if (toAdapter && a.receives.length > 0) {
       const sum = a.receives.reduce((acc, r) => acc + r.value, 0n);
       if (isUsdc) {
-        // yield-withdraw USDC leg. Attach BOTH pieces the counterpart share leg / re-shield fee would
+        // yield-withdraw USDC leg. Attach the pieces the counterpart share leg / re-shield fee would
         // otherwise strand, so a consumer that keeps only this USDC leg is whole:
         //  - `shares`: the vault shares redeemed = the vault-token unshield to the adapter (this txid's
         //    only adapter-unshield on a withdraw).
         //  - `broadcasterFee`: the relayer's re-shield fee note (GROSS), captured by `shieldRelayerFees`
         //    (issue #92) — the redeem re-shields USDC to the user AND a fee note to the relayer.
+        //  - `selfMetadata`: the caller's blob from the share change note (issue #113). A full withdrawal
+        //    leaves no share change, so there's none to carry.
         const shares = txUnshields.find((u) => u.to.toLowerCase() === yieldAdapter)?.amount;
         const relayerFee = input.shieldRelayerFees?.get(txid);
+        const selfMetadata = selfMetadataByTxid.get(txid);
         entries.push({
           txid, blockNumber: a.blockNumber, category: 'yield-withdraw', tokenHash, tokenAddress, value: sum,
           ...(shares !== undefined ? { shares } : {}),
           ...(relayerFee !== undefined && relayerFee > 0n ? { broadcasterFee: relayerFee } : {}),
+          ...(selfMetadata !== undefined ? { selfMetadata } : {}),
         });
       } else {
         entries.push({ txid, blockNumber: a.blockNumber, category: 'yield-deposit', tokenHash, tokenAddress, value: sum });

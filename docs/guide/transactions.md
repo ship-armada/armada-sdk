@@ -238,7 +238,8 @@ const proof = await wallet.prove(plan, { selfMetadata: 'fee=20000;mode=gasless' 
 ```
 
 It rides in the change note, so it's ignored when the spend has no change (`changeValue === 0`). On
-recovery it surfaces as `selfMetadata` on the transaction's history entry. Keep it compact — it costs
+recovery it surfaces as `selfMetadata` on the transaction's history entry — for a yield withdrawal, whose
+change note is a share note, on both its share and USDC entries. Keep it compact — it costs
 calldata gas, and a non-empty change memo is a faint metadata-presence signal to observers (the content
 stays encrypted).
 
