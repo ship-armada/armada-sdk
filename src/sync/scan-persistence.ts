@@ -7,6 +7,12 @@ import { WalletScanState, type ScanStateSnapshot } from './scan-engine';
 interface PersistedScan {
   readonly snapshot: ScanStateSnapshot;
   readonly syncedThrough: number;
+  /**
+   * Block hash of `syncedThrough` when it was scanned — the reorg check compares it to the chain's current
+   * hash at that height. Optional: records written before it (or when the node didn't return the block)
+   * skip the check once, then gain it on the next save.
+   */
+  readonly syncedThroughHash?: string;
 }
 
 const encoder = new TextEncoder();
@@ -17,14 +23,19 @@ export function scanStateKey(shieldedAddress: string): string {
   return `chain/scan-state/${shieldedAddress}`;
 }
 
-/** Persist a wallet's scan state + the highest synced block. */
+/** Persist a wallet's scan state + the highest synced block (and that block's hash, when known). */
 export async function saveScanState(
   storage: StorageAdapter,
   shieldedAddress: string,
   state: WalletScanState,
   syncedThrough: number,
+  syncedThroughHash?: string,
 ): Promise<void> {
-  const data: PersistedScan = { snapshot: state.snapshot(), syncedThrough };
+  const data: PersistedScan = {
+    snapshot: state.snapshot(),
+    syncedThrough,
+    ...(syncedThroughHash !== undefined ? { syncedThroughHash } : {}),
+  };
   await storage.put(scanStateKey(shieldedAddress), encoder.encode(JSON.stringify(data)));
 }
 
@@ -32,13 +43,13 @@ export async function saveScanState(
  * Load a wallet's persisted scan state, or `undefined` on a first run OR when the stored record is
  * unreadable. Scan state is a chain-derived cache: a corrupt blob (a bit-flip, an interrupted write, an
  * undecryptable record after a key/format change) must degrade to a cache MISS so `sync()` rescans from
- * `creationBlock` — not throw and brick every future sync (the "delete the DB by hand" pitfall §4.3
+ * the pool's deploy block — not throw and brick every future sync (the "delete the DB by hand" pitfall §4.3
  * deletes). The next `saveScanState` overwrites the bad record.
  */
 export async function loadScanState(
   storage: StorageAdapter,
   shieldedAddress: string,
-): Promise<{ state: WalletScanState; syncedThrough: number } | undefined> {
+): Promise<{ state: WalletScanState; syncedThrough: number; syncedThroughHash?: string } | undefined> {
   let raw: Uint8Array | undefined;
   try {
     raw = await storage.get(scanStateKey(shieldedAddress));
@@ -50,7 +61,11 @@ export async function loadScanState(
   try {
     const data = JSON.parse(decoder.decode(raw)) as PersistedScan;
     if (typeof data?.syncedThrough !== 'number' || data.snapshot === undefined) return undefined;
-    return { state: WalletScanState.restore(data.snapshot), syncedThrough: data.syncedThrough };
+    return {
+      state: WalletScanState.restore(data.snapshot),
+      syncedThrough: data.syncedThrough,
+      ...(typeof data.syncedThroughHash === 'string' ? { syncedThroughHash: data.syncedThroughHash } : {}),
+    };
   } catch {
     // Malformed JSON / snapshot shape restore failure — rescan rather than wedge.
     return undefined;

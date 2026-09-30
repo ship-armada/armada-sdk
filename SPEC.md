@@ -458,13 +458,20 @@ Requirements:
 
 Requirements:
 
-- **Event scan from RPC** is the baseline: Shield/Transact/Nullify events from `deployBlock`
-  (or wallet `creationBlock`), building the UTXO merkletree exactly as the pinned core defines.
+- **Event scan from RPC** is the baseline: Shield/Transact/Nullify events from `deployBlock`,
+  building the UTXO merkletree exactly as the pinned core defines. The tree always starts at
+  `deployBlock` (it is append-only from leaf 0); a wallet's `creationBlock` only bounds note discovery.
   The `eth_getLogs` bisecting logic currently monkey-patched into ethers
   (`relayer/lib/rpc-bisecting.ts`, duplicated in the interface) moves **into** the sync module
   as first-class ranged fetching with per-provider range adaptation.
 - **Merkle root verification** against the pool contract after each batch (validator callback
-  equivalent), with typed `RootMismatchError` carrying tree/index context.
+  equivalent), with typed `RootMismatchError` carrying tree/index context. The rebuilt current tree
+  must EQUAL the pool's `(treeNumber, merkleRoot, nextLeafIndex)` read at the scanned block (by hash);
+  earlier trees' roots must be in `rootHistory`. Membership alone is insufficient — every insert leaves
+  a historical root, so truncated logs would pass.
+- **Reorg detection.** The checkpoint stores its block hash; if the chain's hash at that height has
+  changed, the wallet rescans from `deployBlock` (keeping in-flight spend holds). A persisted tree found
+  to be missing leaves is rescanned the same way. Both emit `sync.reorg-recovery` (§8).
 - **Progress + events.** `sdk.sync.status()` and subscription events
   (`scan:started/progress/complete/error`, `balance:updated`, `note:received` — see §5.2)
   replace the single global `setOnBalanceUpdateCallback` multiplexer.
@@ -808,6 +815,11 @@ implement it against the same spec later.
       historical values for back-compat; `reason`/`status` are additive and absent on the served path.
       Lets an operator confirm the indexer is actually serving rather than silently degrading, and see
       *why* a fallback fired. A pure RPC sync emits nothing.
+    - `sync.reorg-recovery` — a wallet discarded its chain-derived state and is rescanning. Payload:
+      `{ fromBlock, reason }` where `reason` is `'checkpoint-reorged'` (the checkpoint block's hash
+      changed), `'missing-leaves'` (the saved tree skipped part of the chain), or
+      `'persisted-root-invalid'` (the saved tree's roots are no longer in `rootHistory`). Block number
+      + enum only — no PII.
 
 ---
 

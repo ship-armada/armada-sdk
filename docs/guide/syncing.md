@@ -97,11 +97,26 @@ flowchart LR
 With both at their default of `0`, a commitment is scanned and spendable as soon as its block is
 reached.
 
+Deeper reorgs are detected rather than prevented. Each sync records the hash of the last block it
+scanned; if the chain's hash at that height has changed by the next sync, the wallet resets its
+chain-derived state and rescans from the pool's deploy block (in-flight spend holds are kept). The
+same rescan runs if the saved state turns out to be missing part of the chain. Both emit
+`sync.reorg-recovery` telemetry with a `reason`. A rescan takes a while on a long chain, so on a chain
+with frequent one-block reorgs a `confirmationDepth` of 1–2 avoids repeated rescans.
+
+Every sync is also verified before it is accepted: the rebuilt merkle tree must match the pool's tree
+(tree number, leaf count, and root) at the scanned block. If an RPC node returns incomplete logs, the
+sync fails without moving the checkpoint, and the next sync retries the same range. Verification
+reads the pool's state at the scanned block, so keep `confirmationDepth` within the RPC node's
+recent-state window (about 128 blocks on a standard, non-archive node).
+
 ## Event sources
 
 By default, syncing reads pool events from the RPC endpoints in `rpc.urls`. You can optionally
 supply an indexer as the primary event source; when set, RPC covers the tail and results are
-verified against the on-chain root. Omit it to sync purely from RPC:
+verified against the on-chain tree, and the value and token of each of your shielded notes must
+match its commitment. A batch that fails either check is discarded and the range rescanned from
+RPC. Omit it to sync purely from RPC:
 
 ```ts
 const sdk = await createArmadaSdk({

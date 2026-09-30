@@ -31,6 +31,9 @@ export interface PoolConfig {
    * shallower can't remove an already-scanned leaf (the append-only tree can't un-append it). Set it to a
    * small value on a fast-finality hub (a few blocks) or the finality depth for zero reorg exposure; the
    * cost is that notes in the last `confirmationDepth` blocks aren't visible/spendable until they're deeper.
+   * A deeper reorg is detected by the checkpoint's block hash and recovered by a rescan. Sync verification
+   * reads pool state at the scanned block, so keep this within the RPC node's recent-state window (~128
+   * blocks on a non-archive node).
    */
   readonly confirmationDepth?: number;
   /**

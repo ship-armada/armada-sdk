@@ -4,16 +4,31 @@
 import { describe, it, expect, beforeAll, vi } from 'vitest';
 
 // Stub ONLY the ethers Provider transport (per-file scope, so the rest of the suite is untouched): a
-// head to scan to and an empty getLogs, so the RPC fallback applies an empty batch and root-verify is
-// vacuous. Everything else — the wallet, IndexerEventSource, RpcEventSource, scan engine — is real.
+// head to scan to, an empty getLogs, and an empty pool tree, so the RPC fallback applies an empty batch
+// and verifies it against the empty pool. Everything else — the wallet, IndexerEventSource,
+// RpcEventSource, scan engine — is real.
+const emptyPool = { root: '' }; // the empty tree's root, filled in beforeAll (needs Poseidon)
 vi.mock('ethers', async (importActual) => {
   const actual = await importActual<typeof import('ethers')>();
+  const poolIface = new actual.Interface([
+    'function treeNumber() view returns (uint256)',
+    'function merkleRoot() view returns (bytes32)',
+    'function nextLeafIndex() view returns (uint256)',
+  ]);
   class MockProvider {
     async getBlockNumber(): Promise<number> {
       return 100;
     }
+    async getBlock(n: number): Promise<{ number: number; hash: string }> {
+      return { number: n, hash: `0x${n.toString(16).padStart(64, '0')}` };
+    }
     async getLogs(): Promise<unknown[]> {
       return [];
+    }
+    async call(tx: { data: string }): Promise<string> {
+      const fn = poolIface.parseTransaction({ data: tx.data })!.name;
+      if (fn === 'merkleRoot') return poolIface.encodeFunctionResult(fn, [`0x${emptyPool.root}`]);
+      return poolIface.encodeFunctionResult(fn, [0]);
     }
     destroy(): void {}
   }
@@ -23,6 +38,7 @@ vi.mock('ethers', async (importActual) => {
 import { createArmadaSdk } from './sdk';
 import { MemoryStorageAdapter } from './storage/index';
 import { initPoseidonPromise } from './core/index';
+import { UTXOMerkletree } from './sync/merkletree';
 import type { ProverAdapter, ArtifactSource, ArtifactSet, Groth16Proof } from './prover/index';
 import type { ArmadaSdkConfig } from './index';
 
@@ -39,6 +55,7 @@ const stubArtifacts: ArtifactSource = {
 describe('quick-sync fallback observability, end to end (#83)', () => {
   beforeAll(async () => {
     await initPoseidonPromise;
+    emptyPool.root = new UTXOMerkletree().root();
   });
 
   it('threads a 404 indexer cause into the emitted sync.quicksync as reason=indexer-http-error + status', async () => {
@@ -62,7 +79,7 @@ describe('quick-sync fallback observability, end to end (#83)', () => {
     const result = await wallet.sync();
     await sdk.close();
 
-    // The sync still succeeds via the RPC fallback (empty pool → nothing to apply, root-verify vacuous).
+    // The sync still succeeds via the RPC fallback (empty pool → nothing to apply; the empty tree matches it).
     expect(result.scanned).toBe(true);
 
     const quicksync = events.filter((e) => e.event === 'sync.quicksync');

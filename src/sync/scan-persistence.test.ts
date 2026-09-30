@@ -78,6 +78,22 @@ describe('scan-state persistence (§4.3/§4.4)', () => {
     expect(loaded!.state.balances(NK, BAL)).toEqual(state.balances(NK, BAL));
   });
 
+  it('round-trips the checkpoint block hash, and loads older records without one (#118)', async () => {
+    const storage = new MemoryStorageAdapter();
+    await storage.open({ schemaVersion: 1, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1 });
+    const state = await buildState();
+    const hash = `0x${'ab'.repeat(32)}`;
+
+    await saveScanState(storage, '0zk_alice', state, 500, hash);
+    expect((await loadScanState(storage, '0zk_alice'))?.syncedThroughHash).toBe(hash);
+
+    // A record written before the hash existed still loads; the reorg check just skips it once.
+    await saveScanState(storage, '0zk_bob', state, 500);
+    const legacy = await loadScanState(storage, '0zk_bob');
+    expect(legacy?.syncedThrough).toBe(500);
+    expect(legacy?.syncedThroughHash).toBeUndefined();
+  });
+
   it('returns undefined for a wallet with no persisted state', async () => {
     const storage = new MemoryStorageAdapter();
     await storage.open({ schemaVersion: 1, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1 });

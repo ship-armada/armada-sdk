@@ -2,9 +2,9 @@
 // ABOUTME: to a receiver is claimed by that receiver, rejected for a stranger, and flows through the scan state.
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { initPoseidonPromise, getTokenDataERC20, getTokenDataHash, ShieldNote, type TokenData } from '../core/index';
+import { initPoseidonPromise, getTokenDataERC20, getTokenDataHash, ShieldNote, TransactNote, type TokenData } from '../core/index';
 import { deriveKeyset, type Keyset } from '../wallet/derive';
-import { tryDecryptShield } from './shield-crypto';
+import { tryDecryptShield, shieldCommitmentMatches } from './shield-crypto';
 import { WalletScanState } from './scan-engine';
 import type { DecodedShieldCommitment } from './event-decoder';
 
@@ -68,6 +68,23 @@ describe('shield-note ownership decryption (§4.4)', () => {
     const commitment = await makeShieldCommitment(receiver);
     const owned = await tryDecryptShield(commitment, receiverKeys(stranger));
     expect(owned).toBeUndefined();
+  });
+
+  it('shieldCommitmentMatches accepts a commitment whose (npk, token, value) hash to its leaf', async () => {
+    const c = await makeShieldCommitment(receiver);
+    const hash = TransactNote.getHash(BigInt(`0x${c.npk}`), getTokenDataHash(tokenData), value).toString(16).padStart(64, '0');
+    expect(shieldCommitmentMatches({ ...c, hash })).toBe(true);
+    expect(shieldCommitmentMatches({ ...c, hash: `0x${hash}` })).toBe(true); // 0x-prefixed leaf too
+  });
+
+  it('shieldCommitmentMatches rejects a misstated value or token (the leaf hash no longer matches)', async () => {
+    // WHY: a quick-sync indexer serves `hash` and the plaintext fields separately; only the hash is bound
+    // by root verification, so an inflated value would otherwise pass straight into balances().
+    const c = await makeShieldCommitment(receiver);
+    const hash = TransactNote.getHash(BigInt(`0x${c.npk}`), getTokenDataHash(tokenData), value).toString(16).padStart(64, '0');
+    expect(shieldCommitmentMatches({ ...c, hash, value: value * 1_000_000n })).toBe(false);
+    const otherToken = getTokenDataERC20('0x' + '77'.repeat(20));
+    expect(shieldCommitmentMatches({ ...c, hash, tokenData: otherToken })).toBe(false);
   });
 
   it('flows through the scan orchestrator as an owned TXO (fills the shield seam)', async () => {

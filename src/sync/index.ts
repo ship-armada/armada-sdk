@@ -85,7 +85,7 @@ export {
 } from './note-crypto';
 
 // Shield-note ownership decryption — the scan-side counterpart for shield commitments.
-export { tryDecryptShield } from './shield-crypto';
+export { tryDecryptShield, shieldCommitmentMatches } from './shield-crypto';
 export type {
   CommitmentCiphertextV2,
   SenderNoteKeys,

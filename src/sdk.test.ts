@@ -12,6 +12,7 @@ import {
   resolveWalletStorage,
   effectiveScanHead,
   shouldRecoverFromReorg,
+  scanStateMissingLeaves,
   buildBalanceUpdate,
   buildReceivedNote,
 } from './sdk';
@@ -193,10 +194,12 @@ describe('createArmadaSdk (§4.1)', () => {
     expect(() => viewOnly.clearSpendPending('0xdef')).not.toThrow();
   });
 
-  it('syncStatus reports the checkpoint (creationBlock-1 fresh) and syncing=false without a sync (P4.6)', async () => {
+  it('syncStatus reports the checkpoint (deployBlock-1 fresh) and syncing=false without a sync (P4.6, #118)', async () => {
     const sdk = await createArmadaSdk(makeConfig());
     const wallet = await sdk.wallet.fromRootSecret(seed(0x66), { creationBlock: 5 });
-    expect(await wallet.syncStatus()).toEqual({ syncedThrough: 4, syncing: false }); // no persisted state yet
+    // No persisted state yet. The tree is always built from the pool's deploy block (1), whatever the
+    // wallet's creationBlock — creationBlock only limits note discovery.
+    expect(await wallet.syncStatus()).toEqual({ syncedThrough: 0, syncing: false });
     await sdk.close();
   });
 
@@ -240,8 +243,8 @@ describe('createArmadaSdk (§4.1)', () => {
 });
 
 describe('planSyncWindow — sync resume decision', () => {
-  it('first run scans from the creation block (syncedThrough starts at creationBlock - 1)', () => {
-    // WHY: a fresh wallet (creationBlock 10 → syncedThrough 9) with head 20 must cover 10..20.
+  it('first run scans from the deploy block (syncedThrough starts at deployBlock - 1)', () => {
+    // WHY: a fresh wallet (deployBlock 10 → syncedThrough 9) with head 20 must cover 10..20.
     expect(planSyncWindow(9, 20)).toEqual({ fromBlock: 10, scanned: true });
   });
 
@@ -436,6 +439,19 @@ describe('effectiveScanHead — stay confirmationDepth blocks behind head (§4.4
     expect(effectiveScanHead(1000, 0)).toBe(1000); // default: scan to head (no behavior change)
     expect(effectiveScanHead(1000, 3)).toBe(997); // stay 3 blocks behind — a ≤3-deep reorg can't poison persisted leaves
     expect(effectiveScanHead(2, 5)).toBe(0); // floored at 0 (planSyncWindow then reports scanned:false)
+  });
+});
+
+describe('scanStateMissingLeaves — a skipped range can only be healed by a rescan (#118)', () => {
+  it('is true only for a POSITION_GAP whose leaf arrived past the next position', () => {
+    // WHY: a tree missing leaves (checkpoint advanced past unapplied events, or a tree started after the
+    // pool's first commitment) fails every retry identically; a re-sent leaf (received < expected) doesn't.
+    expect(scanStateMissingLeaves(new PositionGapError('gap', { expected: 0, received: 3 }))).toBe(true);
+    expect(scanStateMissingLeaves(new PositionGapError('dup', { expected: 3, received: 1 }))).toBe(false);
+    expect(scanStateMissingLeaves(new PositionGapError('no fields'))).toBe(false);
+    expect(scanStateMissingLeaves(new RootMismatchError('root'))).toBe(false);
+    // Keyed on code + fields, not identity: an error-shaped object from another SDK copy still counts.
+    expect(scanStateMissingLeaves({ code: 'POSITION_GAP', expected: 1, received: 2 })).toBe(true);
   });
 });
 

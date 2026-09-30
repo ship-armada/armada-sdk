@@ -85,7 +85,11 @@ const wallet = await sdk.wallet.fromRootSecret(rootSecret, { creationBlock: 21_0
 console.log(wallet.shieldedAddress); // 0zk…
 ```
 
-`creationBlock` is where this wallet's scans start. The other ways to load a wallet — from a
+`creationBlock` is the block the wallet was created at: the SDK looks for the wallet's notes from
+there on. The merkle tree itself is always built from the pool's deploy block, so a later
+`creationBlock` never breaks syncing — it only skips looking for notes before it. If the same root
+secret may already have been used (for example, a user signing in on a new device), pass the pool's
+deploy block instead so no earlier notes are missed. The other ways to load a wallet — from a
 mnemonic, a viewing key, or an ephemeral seed — are covered in [Wallets](./wallets).
 
 ## Sync and read the balance

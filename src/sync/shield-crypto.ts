@@ -1,7 +1,7 @@
 // ABOUTME: Shield-note ownership decryption (SPEC §4.4) — the scan-side counterpart to the transact
 // ABOUTME: ECIES. Recovers `random` from a shield's ciphertext and matches npk to claim owned shields.
 
-import { ShieldNote, getSharedSymmetricKey, getTokenDataHash } from '../core/index';
+import { ShieldNote, TransactNote, getSharedSymmetricKey, getTokenDataHash } from '../core/index';
 import type { DecodedShieldCommitment } from './event-decoder';
 import type { OwnedNote } from './scan-engine';
 import type { ReceiverNoteKeys } from './note-crypto';
@@ -50,4 +50,17 @@ export async function tryDecryptShield(
   }
 
   return { tokenHash: getTokenDataHash(commitment.tokenData), value: commitment.value, random, notePublicKey: npk };
+}
+
+/**
+ * Whether a shield commitment's plaintext `(npk, token, value)` hashes to its leaf `hash` — the
+ * `Poseidon(npk, tokenHash, value)` the pool inserted. The RPC decoder derives `hash` from those same
+ * fields, so this always holds there; a quick-sync indexer serves `hash` and the fields separately, so a
+ * mismatch means the source misstated the note's value or token while keeping the (root-verified) leaf.
+ */
+export function shieldCommitmentMatches(commitment: DecodedShieldCommitment): boolean {
+  const tokenHash = getTokenDataHash({ ...commitment.tokenData, tokenAddress: commitment.tokenData.tokenAddress.toLowerCase() });
+  const npk = BigInt(commitment.npk.startsWith('0x') ? commitment.npk : `0x${commitment.npk}`);
+  const leaf = BigInt(commitment.hash.startsWith('0x') ? commitment.hash : `0x${commitment.hash}`);
+  return TransactNote.getHash(npk, tokenHash, commitment.value) === leaf;
 }

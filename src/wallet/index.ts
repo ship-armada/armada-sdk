@@ -218,6 +218,10 @@ export interface WalletFactory {
    * default) — the SDK derives a `LocalSigner` internally, since the rootSecret already grants spend
    * power. Pass `signer` to attach a different signer (e.g. `ExternalSigner`), or `viewOnly: true` for
    * a view-only wallet from a rootSecret (no spend key held; spend-path calls throw NoSpendCapabilityError).
+   *
+   * `creationBlock` is where the wallet starts looking for its notes; the merkle tree is always built from
+   * the pool's deploy block, so a later value never breaks syncing. Pass the deploy block when the same
+   * rootSecret may already have notes (e.g. a returning user on a new device).
    */
   fromRootSecret(
     rootSecret: Uint8Array,

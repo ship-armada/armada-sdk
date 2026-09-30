@@ -281,7 +281,10 @@ export class WalletScanState {
     }
     const expected = this.nextPosition.get(tree)!;
     if (position !== expected) {
-      throw new PositionGapError(`scan: merkle position gap in tree ${tree}: expected ${expected}, got ${position}`);
+      throw new PositionGapError(`scan: merkle position gap in tree ${tree}: expected ${expected}, got ${position}`, {
+        expected,
+        received: position,
+      });
     }
     merkletree.insert(hash);
     this.nextPosition.set(tree, expected + 1);

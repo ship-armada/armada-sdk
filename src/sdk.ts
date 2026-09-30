@@ -11,6 +11,7 @@ import {
   decryptedCommitmentMatches,
   tryDecryptSentCommitment,
   tryDecryptShield,
+  shieldCommitmentMatches,
   ownedNoteFromTransactNote,
   reconstructHistory,
   newReceivedNotes,
@@ -74,6 +75,7 @@ import {
   NoSpendCapabilityError,
   RootMismatchError,
   InvalidRequestError,
+  QuickSyncSchemaError,
 } from './errors';
 import { startAutoSync } from './sync/auto-sync';
 import type { ArmadaSdk, ArmadaSdkConfig, TelemetrySink } from './index';
@@ -89,11 +91,17 @@ interface SdkContext {
   readonly isKnownRoot: (treeNumber: number, root: bigint) => Promise<boolean>;
   /** Preflight (§4.7): has `(treeNumber, nullifier)` already been spent on-chain? */
   readonly isNullifierSpent: (treeNumber: number, nullifier: bigint) => Promise<boolean>;
+  /** Reorg check (§4.4): the chain's current hash for block `n`, or undefined if the node doesn't return it. */
+  readonly getBlockHash: (n: number) => Promise<string | undefined>;
+  /** Sync verification (§4.4): the pool's current tree number, root, and leaf count as of `blockTag`. */
+  readonly readPoolTree: (
+    blockTag: string | number,
+  ) => Promise<{ treeNumber: number; merkleRoot: bigint; nextLeafIndex: number }>;
   readonly tokenDataGetter: TokenDataGetter;
   readonly chain: Chain;
   readonly chainId: number;
   readonly usdcAddress: `0x${string}`;
-  /** Pool deploy block — the genesis scan floor for wallets with no earlier creationBlock (e.g. ephemeral). */
+  /** Pool deploy block — where every wallet's scan (and merkle tree) starts; a wallet's creationBlock only bounds note discovery. */
   readonly deployBlock: number;
   /** Confirmations before a commitment is spendable vs pending in the balance view (default 0). */
   readonly finalityThreshold: number;
@@ -258,6 +266,18 @@ export function shouldRecoverFromReorg(error: unknown, persistedRootsInvalid: bo
 }
 
 /**
+ * Whether a sync failure means the local tree is MISSING leaves: a leaf arrived beyond the tree's next
+ * position, so part of the chain was skipped — a checkpoint that advanced past unapplied events, or a tree
+ * started after the pool's first commitment. No retry fills that gap; only a rescan can. Keyed on the
+ * error's `code` and fields, not identity (dual-package safe). Pure for testability.
+ */
+export function scanStateMissingLeaves(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const e = error as { code?: unknown; expected?: unknown; received?: unknown };
+  return e.code === 'POSITION_GAP' && typeof e.expected === 'number' && typeof e.received === 'number' && e.received > e.expected;
+}
+
+/**
  * Build a `balance:updated` payload for a token, resolving its address via `resolve`. The payload
  * carries BOTH the canonical `tokenHash` (normalized to the `balances()` join key) and the resolved
  * `tokenAddress`. Returns `undefined` for a hash with no registered token — an address can't be
@@ -336,6 +356,9 @@ const MAX_UNSHIELD_PROBE_RECIPIENT = '0x0000000000000000000000000000000000000001
 class ArmadaWallet implements Wallet {
   private scanState = new WalletScanState();
   private syncedThrough: number;
+  // Hash of block `syncedThrough` when it was scanned — the reorg check compares it with the chain's
+  // current hash at that height. Undefined before the first sync (or when the node didn't return it).
+  private syncedThroughHash: string | undefined;
   private hydrated = false;
   private readonly emitter = new SyncEmitter();
   // Last-emitted per-token balance (keyed by tokenHash, no 0x) so a sync only pushes `balance:updated`
@@ -361,7 +384,10 @@ class ArmadaWallet implements Wallet {
     // the StorageAdapter, so no decrypted note data or seed-derived identity hits disk (SPEC §4.3/§6.5).
     private readonly ephemeral: boolean = false,
   ) {
-    this.syncedThrough = creationBlock - 1;
+    // The tree is always built from the pool's deploy block: it is append-only from leaf 0, so starting
+    // later would hit the first earlier commitment as a position gap. `creationBlock` only limits which
+    // notes the wallet looks for (see `decryptors`).
+    this.syncedThrough = ctx.deployBlock - 1;
     // Per-wallet at-rest encryption is on by default; the raw adapter is auto-wrapped (§4.3).
     this.storage = resolveWalletStorage(ctx.storage, keyset.viewingPrivateKey, ctx.allowPlaintextStorage);
   }
@@ -398,15 +424,20 @@ class ArmadaWallet implements Wallet {
     if (persisted !== undefined && persisted.syncedThrough > this.syncedThrough) {
       this.scanState = persisted.state;
       this.syncedThrough = persisted.syncedThrough;
+      this.syncedThroughHash = persisted.syncedThroughHash;
     }
     this.hydrated = true;
   }
 
-  // Trial-decrypt closures over this wallet's viewing key — shared by the primary + tail applies.
+  // Trial-decrypt closures over this wallet's viewing key — shared by the primary + tail applies. Notes
+  // committed before `creationBlock` are not looked for: the wallet didn't exist yet (the tree still
+  // includes their leaves).
   private decryptors(): WalletDecryptors {
     const receiver = this.receiver();
+    const discovers = (blockNumber: number): boolean => blockNumber >= this.creationBlock;
     return {
       transact: async (c) => {
+        if (!discovers(c.blockNumber)) return undefined;
         const note = await tryDecryptCommitment(c.ciphertext, receiver, this.ctx.tokenDataGetter, this.ctx.chain);
         if (note === undefined) return undefined;
         // Verify the decrypted preimage hashes to the on-chain commitment (engine 9.6.0 fix): drop a
@@ -415,8 +446,19 @@ class ArmadaWallet implements Wallet {
         if (!decryptedCommitmentMatches(note, c.hash)) return undefined;
         return ownedNoteFromTransactNote(note);
       },
-      shield: (c) => tryDecryptShield(c, receiver),
+      shield: async (c) => {
+        if (!discovers(c.blockNumber)) return undefined;
+        const owned = await tryDecryptShield(c, receiver);
+        // The RPC decoder derives the leaf hash from these same fields, so a mismatch can only come from a
+        // quick-sync indexer misstating our note's value or token. Throw (don't drop): the indexer batch is
+        // discarded and the range rescanned from RPC, so the note is recorded with its real value.
+        if (owned !== undefined && !shieldCommitmentMatches(c)) {
+          throw new QuickSyncSchemaError(`quick-sync: shield ${c.tree}:${c.position} value/token does not match its leaf hash`);
+        }
+        return owned;
+      },
       sentTransact: async (c) => {
+        if (!discovers(c.blockNumber)) return undefined;
         const note = await tryDecryptSentCommitment(c.ciphertext, receiver, this.ctx.tokenDataGetter, this.ctx.chain);
         if (note === undefined) return undefined;
         const outputType = note.outputType ?? OutputType.Transfer;
@@ -485,6 +527,53 @@ class ArmadaWallet implements Wallet {
     );
   }
 
+  /**
+   * Verify the tree a sync built is EXACTLY the pool's tree at the scanned block (SPEC §4.4): the pool's
+   * current tree number, leaf count, and root, read pinned to `blockTag`, must match the local tree — and
+   * every earlier tree must still pass `verifyRoots`. Membership alone isn't enough for the current tree:
+   * the pool records a root after every insert, so a log set cut off at an event boundary (a lagging
+   * getLogs backend, an indexer omitting its tail) has a historical root and would pass, letting the
+   * checkpoint skip the missing events.
+   */
+  private async verifySyncedTree(head: number, blockTag: string | number): Promise<void> {
+    await this.verifyRoots(head);
+    const pool = await this.ctx.readPoolTree(blockTag);
+    const localRoot = BigInt(`0x${this.scanState.treeRoot(pool.treeNumber)}`);
+    const localLeaves = this.scanState.treeLength(pool.treeNumber);
+    const aheadOfPool = this.scanState.treeNumbers().some((tree) => tree > pool.treeNumber);
+    if (aheadOfPool || localLeaves !== pool.nextLeafIndex || localRoot !== pool.merkleRoot) {
+      throw new RootMismatchError(
+        `sync: tree ${pool.treeNumber} built locally (${localLeaves} leaves, root 0x${localRoot.toString(16)}) does not match ` +
+          `the pool @block ${head} (${pool.nextLeafIndex} leaves, root 0x${pool.merkleRoot.toString(16)})`,
+      );
+    }
+  }
+
+  /**
+   * Whether the chain was reorganised under the checkpoint: the block hash recorded when `syncedThrough`
+   * was scanned is no longer the chain's hash at that height. A reorg at or below the checkpoint always
+   * changes it — including the commonest shapes (a tx re-included one block later, a same-height
+   * replacement), which otherwise surface as a position gap or as no error at all.
+   */
+  private async checkpointReorged(): Promise<boolean> {
+    if (this.syncedThroughHash === undefined) return false;
+    const canonical = await this.ctx.getBlockHash(this.syncedThrough);
+    return canonical !== undefined && canonical !== this.syncedThroughHash;
+  }
+
+  /**
+   * Reset chain-derived state and rescan from the deploy block (blunt recovery — a surgical per-tree
+   * rebuild is tracked in issue #75). Callers guard against a loop with `recovering`. `reason` goes to
+   * telemetry (SPEC §8-safe: an enum and a block number) so an operator can see why rescans happen.
+   */
+  private async recoverByRescan(
+    reason: 'checkpoint-reorged' | 'missing-leaves' | 'persisted-root-invalid',
+  ): Promise<{ fromBlock: number; syncedThrough: number; scanned: boolean }> {
+    this.ctx.telemetry?.emit('sync.reorg-recovery', { fromBlock: this.ctx.deployBlock, reason });
+    await this.resetChainDerivedState();
+    return this.runSync(true);
+  }
+
   on<K extends keyof SyncEventMap>(event: K, listener: (payload: SyncEventMap[K]) => void): Unsubscribe {
     return this.emitter.on(event, listener);
   }
@@ -533,11 +622,21 @@ class ArmadaWallet implements Wallet {
 
   private async runSync(recovering = false): Promise<{ fromBlock: number; syncedThrough: number; scanned: boolean }> {
     await this.hydrate();
+    // A reorg under the checkpoint (SPEC §4.4) invalidates the persisted tree — the append-only tree can't
+    // un-append an orphaned leaf — so rescan. Checked before the head comparison below: a same-height
+    // reorg leaves the head unchanged but still replaces the checkpoint block.
+    if (!recovering && (await this.checkpointReorged())) return this.recoverByRescan('checkpoint-reorged');
     // Scan only to head − confirmationDepth so a reorg of that depth or shallower can't remove a leaf we
-    // already persisted (§4.4 reorg safety); `confirmationDepth: 0` (default) scans to head.
+    // already persisted (§4.4 reorg safety); `confirmationDepth: 0` (default) scans to head. A deeper
+    // reorg is caught by the checkpoint hash check above.
     const head = effectiveScanHead(await this.ctx.provider.getBlockNumber(), this.ctx.confirmationDepth);
     const { fromBlock, scanned } = planSyncWindow(this.syncedThrough, head);
     if (!scanned) return { fromBlock, syncedThrough: this.syncedThrough, scanned: false };
+    // Pin verification to the exact block scanned — by hash when the node returns it — so the pool state
+    // the tree is checked against is the state the logs came from; a reorg of `head` mid-sync makes the
+    // pinned read fail instead of verifying against a different chain.
+    const headHash = await this.ctx.getBlockHash(head);
+    const blockTag = headHash ?? head;
 
     const from = fromBlock;
     const span = head - from + 1;
@@ -569,7 +668,7 @@ class ArmadaWallet implements Wallet {
           // mismatch — discards the batch and re-scans from RPC (the source of truth), rather than
           // failing the whole sync on a degraded indexer (SPEC §4.4).
           ({ tailCovered } = await this.applyToHead(from, head, decryptors, emitProgress));
-          await this.verifyRoots(head);
+          await this.verifySyncedTree(head, blockTag);
         } catch (err) {
           fellBack = true;
           fallbackCause = err;
@@ -585,7 +684,7 @@ class ArmadaWallet implements Wallet {
       // the provider returned bad/truncated logs. It throws → the outer catch rolls back and refuses to
       // advance the checkpoint, so a retry re-scans the range cleanly instead of persisting a corrupt tree.
       if (finalRootCheckRequired(usingIndexer, fellBack)) {
-        await this.verifyRoots(head);
+        await this.verifySyncedTree(head, blockTag);
       }
 
       // Quick-sync observability (SPEC §8): report whether the configured indexer served a
@@ -598,9 +697,10 @@ class ArmadaWallet implements Wallet {
       if (qs !== null) this.ctx.telemetry?.emit(qs.event, qs.data as unknown as Readonly<Record<string, unknown>>);
 
       this.syncedThrough = head;
+      this.syncedThroughHash = headHash;
       // Ephemeral wallets keep their scan state in memory only — never write note data to disk (SPEC §6.5).
       if (!this.ephemeral) {
-        await saveScanState(this.storage, this.keyset.shieldedAddress, this.scanState, head);
+        await saveScanState(this.storage, this.keyset.shieldedAddress, this.scanState, head, headHash);
       }
       this.emitter.emit('scan:complete', { syncedThrough: head });
       this.emitBalanceUpdates(head);
@@ -609,14 +709,13 @@ class ArmadaWallet implements Wallet {
     } catch (err) {
       // Roll the tree back to the pre-batch snapshot so a poisoned partial state can't wedge later syncs.
       this.scanState = WalletScanState.restore(rollback);
-      // A reorg can remove an already-PERSISTED leaf; the append-only tree can't un-append it, so the
-      // rolled-back (persisted) state itself fails root verification and every later sync would wedge on
-      // RootMismatchError. Self-heal by resetting chain-derived state and rescanning from creationBlock
-      // (blunt recovery — a surgical per-tree rebuild is tracked in issue #75). `recovering` guards a loop.
+      // Two failures no retry can fix, so self-heal by rescanning from the deploy block (`recovering`
+      // guards a loop): (1) the local tree is missing leaves — a leaf arrived past its next position, so part
+      // of the chain was skipped; (2) a reorg removed an already-PERSISTED leaf the hash check couldn't see
+      // (a record saved without a hash), so the rolled-back state itself fails root verification.
+      if (!recovering && scanStateMissingLeaves(err)) return this.recoverByRescan('missing-leaves');
       if (shouldRecoverFromReorg(err, await this.persistedRootsInvalid(head), recovering)) {
-        this.ctx.telemetry?.emit('sync.reorg-recovery', { fromBlock: this.creationBlock, head });
-        await this.resetChainDerivedState();
-        return this.runSync(true);
+        return this.recoverByRescan('persisted-root-invalid');
       }
       this.emitter.emit('scan:error', { error: err instanceof Error ? err : new Error(String(err)) });
       throw err;
@@ -633,10 +732,17 @@ class ArmadaWallet implements Wallet {
     }
   }
 
-  /** Reset chain-derived state (in-memory + persisted record) to rescan from `creationBlock`; keeps identity. */
+  /**
+   * Reset chain-derived state (in-memory + persisted record) to rescan from the deploy block; keeps identity
+   * and the optimistic in-flight spend holds (issue #55) — dropping a hold here would let a follow-up spend
+   * reselect an input whose submission is still in flight.
+   */
   private async resetChainDerivedState(): Promise<void> {
+    const holds = this.scanState.pendingSpends();
     this.scanState = new WalletScanState();
-    this.syncedThrough = this.creationBlock - 1;
+    for (const h of holds) this.scanState.markSpendPending([{ tree: h.tree, nullifier: h.nullifier }], h.txid, h.addedAt);
+    this.syncedThrough = this.ctx.deployBlock - 1;
+    this.syncedThroughHash = undefined;
     this.hydrated = true; // do NOT re-hydrate the poisoned record on the recovery rescan
     this.lastBalances.clear();
     this.seenReceiveKeys.clear();
@@ -1100,6 +1206,9 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
   const rootIface = new Interface([
     'function rootHistory(uint256, bytes32) view returns (bool)',
     'function nullifiers(uint256, bytes32) view returns (bool)',
+    'function treeNumber() view returns (uint256)',
+    'function merkleRoot() view returns (bytes32)',
+    'function nextLeafIndex() view returns (uint256)',
   ]);
   const bytes32 = (n: bigint): string => `0x${n.toString(16).padStart(64, '0')}`;
   const isKnownRoot = async (treeNumber: number, root: bigint): Promise<boolean> => {
@@ -1113,10 +1222,26 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
     return rootIface.decodeFunctionResult('nullifiers', res)[0] as boolean;
   };
 
+  const getBlockHash = async (n: number): Promise<string | undefined> => (await provider.getBlock(n))?.hash ?? undefined;
+  // Read at a pinned block: a hash tag needs only recent state (well within a non-archive node's window for
+  // any sensible confirmationDepth); an orphaned hash fails the read rather than answering from another fork.
+  const readPoolTree = async (
+    blockTag: string | number,
+  ): Promise<{ treeNumber: number; merkleRoot: bigint; nextLeafIndex: number }> => {
+    const read = async (fn: 'treeNumber' | 'merkleRoot' | 'nextLeafIndex'): Promise<unknown> => {
+      const res = await provider.call({ to: config.pool.poolAddress, data: rootIface.encodeFunctionData(fn, []), blockTag });
+      return rootIface.decodeFunctionResult(fn, res)[0];
+    };
+    const [treeNumber, merkleRoot, nextLeafIndex] = await Promise.all([read('treeNumber'), read('merkleRoot'), read('nextLeafIndex')]);
+    return { treeNumber: Number(treeNumber), merkleRoot: BigInt(merkleRoot as string), nextLeafIndex: Number(nextLeafIndex) };
+  };
+
   const ctx: SdkContext = {
     provider,
     isKnownRoot,
     isNullifierSpent,
+    getBlockHash,
+    readPoolTree,
     eventSource,
     rpcEventSource,
     tokenDataGetter,

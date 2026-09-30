@@ -62,9 +62,20 @@ export class IndexerHttpError extends ArmadaError {
  * An append-only merkletree received a leaf whose position isn't the tree's next slot (SPEC §4.3) — a
  * gap that would corrupt every later proof. Typed so the quick-sync fallback classifier reports it as
  * `position-gap` by `code`, not by matching message text.
+ *
+ * `expected`/`received` (when set) tell the two failure shapes apart: `received > expected` means the
+ * local tree is MISSING leaves (it skipped part of the chain — rescan it); `received < expected` means a
+ * leaf arrived that the tree already holds (a re-sent or re-included commitment).
  */
 export class PositionGapError extends ArmadaError {
   readonly code = 'POSITION_GAP';
+  readonly expected?: number;
+  readonly received?: number;
+  constructor(message: string, options?: { expected?: number; received?: number; cause?: unknown }) {
+    super(message, options?.cause !== undefined ? { cause: options.cause } : undefined);
+    if (options?.expected !== undefined) this.expected = options.expected;
+    if (options?.received !== undefined) this.received = options.received;
+  }
 }
 
 /**
