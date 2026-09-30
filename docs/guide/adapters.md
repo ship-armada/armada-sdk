@@ -40,7 +40,26 @@ import { createSnarkjsProver } from '@armada/sdk';
 const prover = createSnarkjsProver();
 ```
 
-Its `close()` releases the prover's workers and is called for you by `sdk.close()`.
+It proves on the calling thread. Its `close()` releases the prover's workers and is called for you
+by `sdk.close()`. snarkjs shares one curve (with its worker threads) across every same-thread prover in
+the process, so the curve is only torn down once the last open prover closes and no proof is running.
+
+In the browser, prove off the main thread with `createWorkerProver`. It takes a function that starts a
+worker, pointed at the SDK's prebuilt worker entry:
+
+```ts
+import { createWorkerProver, webWorkerChannel } from '@armada/sdk';
+
+const prover = createWorkerProver(() =>
+  webWorkerChannel(new Worker(new URL('@armada/sdk/prover/worker', import.meta.url), { type: 'module' })),
+);
+```
+
+The worker is started on the first request. If it crashes (for example, out of memory on a large
+zkey), its in-flight requests reject with `ProverWorkerError`, and the next request starts a fresh
+worker. Cancelling a proof terminates the worker, because snarkjs can't be interrupted mid-proof. Any
+other request running on it also rejects with `ProverWorkerError`, and the next request starts a fresh
+worker.
 
 ## Artifacts
 
@@ -67,6 +86,23 @@ new VerifiedArtifactSource(                                   // wrap any source
 there is no unverified default. The manifest is a build-time trust anchor pinned in your app; it
 should not be fetched from the same origin as the artifacts, or the integrity check is
 self-referential.
+
+`HttpArtifactSource` gives up on a download that takes longer than `timeoutMs` (default 120 000 ms),
+and cancelling a proof also cancels an artifact download that is still in flight.
+
+In the browser, wrap the source in an `IndexedDbArtifactCache` so the multi-MB zkey is downloaded once
+rather than for every proof:
+
+```ts
+import { IndexedDbArtifactCache } from '@armada/sdk';
+
+new IndexedDbArtifactCache(new HttpArtifactSource('https://…', { manifest }), { manifest });
+```
+
+Cache entries are keyed by the artifact digests in the pinned manifest. Shipping new circuits with a
+new manifest is therefore a cache miss, and old artifacts are never served. The cache stores and
+returns only bytes that match the manifest. `clear()` drops every entry, including those left behind
+by earlier manifests.
 
 ## Token identifiers on balances and events
 

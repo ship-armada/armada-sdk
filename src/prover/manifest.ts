@@ -3,7 +3,7 @@
 
 import { sha256 } from '@noble/hashes/sha256';
 import { ArtifactIntegrityError } from '../errors';
-import type { ArtifactSet, ArtifactSource, CircuitShape } from './index';
+import type { ArtifactResolveOptions, ArtifactSet, ArtifactSource, CircuitShape } from './index';
 
 /** SHA-256 (hex) of each artifact file for one circuit shape. `vkey` is optional — older manifests omit it. */
 export interface ArtifactDigest {
@@ -79,8 +79,8 @@ export class VerifiedArtifactSource implements ArtifactSource {
     private readonly manifest: ArtifactManifest,
   ) {}
 
-  async resolve(shape: CircuitShape): Promise<ArtifactSet> {
-    const artifacts = await this.inner.resolve(shape);
+  async resolve(shape: CircuitShape, options?: ArtifactResolveOptions): Promise<ArtifactSet> {
+    const artifacts = await this.inner.resolve(shape, options);
     verifyArtifactIntegrity(shape, artifacts, this.manifest);
     return artifacts;
   }

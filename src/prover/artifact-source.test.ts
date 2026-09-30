@@ -1,5 +1,5 @@
 // ABOUTME: Tests for the concrete ArtifactSource impls (§4.5) — filesystem reads the armada-circuits
-// ABOUTME: build layout from disk; HTTP fetches the same layout (injected fetch), with 404 handling.
+// ABOUTME: build layout from disk; HTTP fetches the same layout (injected fetch), with 404/abort/timeout handling.
 
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { readFileSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
@@ -10,6 +10,7 @@ import { FilesystemArtifactSource, HttpArtifactSource } from './artifact-source'
 import { artifactDigest, shapeKey } from './manifest';
 import type { ArtifactManifest } from './manifest';
 import type { CircuitShape } from './index';
+import { AbortedError } from '../errors';
 
 const fixture = (name: string): string => fileURLToPath(new URL(`../../test/fixtures/prover/${name}`, import.meta.url));
 const WASM = readFileSync(fixture('mul.wasm'));
@@ -91,6 +92,40 @@ describe('ArtifactSource impls (§4.5)', () => {
       fetchFn: (async (): Promise<Response> => ({ ok: false, status: 404 } as unknown as Response)) as unknown as typeof fetch,
     });
     await expect(source.resolve(SHAPE)).rejects.toThrow(/fetch failed \(404\)/);
+  });
+
+  // A fetch that never answers: it settles only by rejecting when its request signal aborts.
+  const hangingFetch = (): typeof fetch =>
+    (async (_url: string, init?: RequestInit): Promise<Response> =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
+      })) as unknown as typeof fetch;
+
+  it('HttpArtifactSource cancels its fetches when the resolve signal aborts', async () => {
+    // WHY: cancelling a proof must also stop a multi-MB artifact download that is still in flight.
+    const source = new HttpArtifactSource('https://cdn.example/artifacts', { manifest, fetchFn: hangingFetch() });
+    const controller = new AbortController();
+    const resolving = source.resolve(SHAPE, { signal: controller.signal });
+    controller.abort();
+    await expect(resolving).rejects.toBeInstanceOf(AbortedError);
+  });
+
+  it('HttpArtifactSource rejects an already-aborted resolve without fetching', async () => {
+    let fetched = 0;
+    const counting = (async (): Promise<Response> => { fetched += 1; return bytesResponse(WASM); }) as unknown as typeof fetch;
+    const source = new HttpArtifactSource('https://cdn.example/artifacts', { manifest, fetchFn: counting });
+    await expect(source.resolve(SHAPE, { signal: AbortSignal.abort() })).rejects.toBeInstanceOf(AbortedError);
+    expect(fetched).toBe(0);
+  });
+
+  it('HttpArtifactSource times out a stalled download instead of hanging the proof forever', async () => {
+    const source = new HttpArtifactSource('https://cdn.example/artifacts', { manifest, fetchFn: hangingFetch(), timeoutMs: 20 });
+    await expect(source.resolve(SHAPE)).rejects.toThrow(/timed out after 20 ms/);
+  });
+
+  it('FilesystemArtifactSource rejects an aborted resolve with AbortedError', async () => {
+    const source = new FilesystemArtifactSource(baseDir);
+    await expect(source.resolve(SHAPE, { signal: AbortSignal.abort() })).rejects.toBeInstanceOf(AbortedError);
   });
 
   describe('default fetch `this` binding', () => {

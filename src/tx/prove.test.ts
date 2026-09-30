@@ -10,8 +10,8 @@ import { createTransferNote } from '../sync/index';
 import { prove, proveAll } from './prove';
 import { buildTransactCalldata, transactionToTuple } from './serialize';
 import { decodeTransact } from './decode';
-import { ProofHandleInvalidatedError, ProofExpiredError, SignerContractViolationError, InvalidRequestError } from '../errors';
-import type { BuildWitnessParams } from './witness';
+import { ProofHandleInvalidatedError, ProofExpiredError, SignerContractViolationError, InvalidRequestError, ProofVerificationError } from '../errors';
+import { hashSpendBoundParams, type BuildWitnessParams } from './witness';
 import type { ArtifactSource, ArtifactSet, ProverAdapter, Groth16Proof, CircuitShape } from '../prover/index';
 import type { PlanSummary } from './index';
 import type { SpendSigner, SpendSignRequest } from '../wallet/index';
@@ -136,6 +136,55 @@ describe('prove() + ProofHandle (§4.6)', () => {
 
     handle.invalidate();
     expect(() => handle.toTransactionData()).toThrow(/invalidated/);
+  });
+
+  it('passes the abort signal to artifact resolution, so cancelling also stops an artifact download', async () => {
+    let seenSignal: AbortSignal | undefined;
+    const artifacts: ArtifactSource = { resolve: async (_shape, opts) => { seenSignal = opts?.signal; return DUMMY_ARTIFACTS; } };
+    const prover: ProverAdapter = { prove: async () => DUMMY_PROOF, verify: async () => true, close: async () => {} };
+    const controller = new AbortController();
+    await prove({ witness: await witnessParams(), artifacts, prover, poolAddress: POOL }, { signal: controller.signal });
+    expect(seenSignal).toBe(controller.signal);
+  });
+
+  describe('proof self-check against the calldata public signals (SPEC §4.5)', () => {
+    const artifacts: ArtifactSource = { resolve: async () => DUMMY_ARTIFACTS };
+
+    it('verifies the proof against [merkleRoot, boundParamsHash, ...nullifiers, ...commitments] of the calldata it returns', async () => {
+      // WHY: the self-check must use the public signals the on-chain verifier will recompute from the
+      // calldata — not the prover's own output — so it catches a proof that would revert on-chain whichever
+      // prover backend produced it (same-thread or worker).
+      let seen: { signals: bigint[]; vkey: object } | undefined;
+      const prover: ProverAdapter = {
+        prove: async () => DUMMY_PROOF,
+        verify: async (_proof, signals, vkey) => { seen = { signals, vkey }; return true; },
+        close: async () => {},
+      };
+      const handle = await prove({ witness: await witnessParams(), artifacts, prover, poolAddress: POOL });
+
+      const [decoded] = decodeTransact(handle.toTransactCalldata().data);
+      expect(seen?.vkey).toBe(DUMMY_ARTIFACTS.vkey);
+      expect(seen?.signals).toEqual([
+        decoded!.merkleRoot,
+        hashSpendBoundParams(decoded!.boundParams, decoded!.commitmentCiphertexts),
+        ...decoded!.nullifiers,
+        ...decoded!.commitments,
+      ]);
+    });
+
+    it('rejects with ProofVerificationError when the proof does not verify', async () => {
+      const prover: ProverAdapter = { prove: async () => DUMMY_PROOF, verify: async () => false, close: async () => {} };
+      await expect(prove({ witness: await witnessParams(), artifacts, prover, poolAddress: POOL }))
+        .rejects.toBeInstanceOf(ProofVerificationError);
+    });
+
+    it('rejects with ProofVerificationError, keeping the cause, when verification itself errors', async () => {
+      const boom = new Error('bad vkey');
+      const prover: ProverAdapter = { prove: async () => DUMMY_PROOF, verify: async () => { throw boom; }, close: async () => {} };
+      const err = await prove({ witness: await witnessParams(), artifacts, prover, poolAddress: POOL }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ProofVerificationError);
+      expect((err as Error).cause).toBe(boom);
+    });
   });
 
   describe('proveAll() — one signing batch for a multi-group spend (SPEC §4.2.1)', () => {

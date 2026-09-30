@@ -3,7 +3,7 @@
 
 import type { ProverAdapter, ArtifactSet, Groth16Proof, ProveOptions, ProofProgress } from './index';
 import { createSnarkjsProver } from './snarkjs-prover';
-import { AbortedError } from '../errors';
+import { AbortedError, ProverWorkerError } from '../errors';
 
 /**
  * Why not worker_threads here: snarkjs/ffjavascript pulls in the `web-worker` polyfill, which fails
@@ -35,7 +35,8 @@ export interface WorkerChannel {
   /**
    * Optional: report a worker-level failure (crash / exit / transport error). Wire it to the Web
    * Worker's `error`/`messageerror` events so an in-flight `prove()` REJECTS instead of hanging forever
-   * when the worker dies (e.g. OOM on a large zkey). Omit it and only close() drains pending requests.
+   * when the worker dies (e.g. OOM on a large zkey), and the next request starts a fresh worker. Omit it
+   * and only close() or an abort drains pending requests.
    */
   onError?(handler: (error: Error) => void): void;
   terminate(): void;
@@ -69,62 +70,95 @@ export function createProverWorkerHandler(
   };
 }
 
+interface PendingRequest {
+  readonly resolve: (reply: ProverWorkerReply) => void;
+  readonly reject: (error: Error) => void;
+  readonly onProgress?: (p: ProofProgress) => void;
+}
+
+// One started worker and the requests it still owes a reply.
+interface LiveWorker {
+  readonly channel: WorkerChannel;
+  readonly pending: Map<number, PendingRequest>;
+}
+
 /**
- * Main-thread `ProverAdapter` over a `WorkerChannel` — proving runs off the main thread in the worker.
- * `close()` posts a close request (so the worker terminates its curve threads) then terminates the channel.
+ * Main-thread `ProverAdapter` over a worker — proving runs off the main thread. `spawn` starts a worker
+ * and returns its channel; it is called lazily on the first request, and again after a worker is lost:
+ *
+ *   - a worker failure (`onError`) rejects that worker's in-flight requests with `ProverWorkerError`;
+ *   - aborting an in-flight request terminates the worker (snarkjs can't be interrupted mid-proof, and a
+ *     retry must not prove alongside the abandoned proof): the aborted request rejects with
+ *     `AbortedError`, any others on that worker with `ProverWorkerError`.
+ *
+ * Either way the next request starts a fresh worker. `close()` rejects in-flight requests, posts a close
+ * request (so the worker terminates its curve threads), terminates the worker, and never spawns another.
  */
-export function createWorkerProver(channel: WorkerChannel): ProverAdapter {
-  const pending = new Map<
-    number,
-    { resolve: (r: ProverWorkerReply) => void; reject: (e: Error) => void; onProgress?: (p: ProofProgress) => void }
-  >();
+export function createWorkerProver(spawn: () => WorkerChannel): ProverAdapter {
+  let live: LiveWorker | undefined;
   let nextId = 0;
   let closed = false;
 
-  // Fail every in-flight request at once — used on close() and on a worker-level error.
-  const rejectAll = (error: Error): void => {
-    for (const p of pending.values()) p.reject(error);
-    pending.clear();
+  // Terminate the live worker and fail every request it still owes a reply. Events from a worker that
+  // is no longer live (a late error, a stale reply) are ignored.
+  const retire = (worker: LiveWorker, error: Error): void => {
+    if (live !== worker) return;
+    live = undefined;
+    const waiting = [...worker.pending.values()];
+    worker.pending.clear();
+    worker.channel.terminate();
+    for (const p of waiting) p.reject(error);
   };
 
-  channel.onMessage((reply) => {
-    const p = pending.get(reply.id);
-    if (p === undefined) return;
-    if ('progress' in reply) {
-      p.onProgress?.(reply.progress); // intermediate — forward, keep the request pending
-      return;
-    }
-    pending.delete(reply.id);
-    if ('error' in reply) p.reject(new Error(reply.error));
-    else p.resolve(reply);
-  });
-  // A worker crash/exit/transport error must reject in-flight requests, not leave them hanging forever.
-  channel.onError?.((error) => rejectAll(error instanceof Error ? error : new Error(String(error))));
+  const liveWorker = (): LiveWorker => {
+    if (live !== undefined) return live;
+    const worker: LiveWorker = { channel: spawn(), pending: new Map() };
+    worker.channel.onMessage((reply) => {
+      const p = worker.pending.get(reply.id);
+      if (p === undefined) return;
+      if ('progress' in reply) {
+        p.onProgress?.(reply.progress); // intermediate — forward, keep the request pending
+        return;
+      }
+      worker.pending.delete(reply.id);
+      if ('error' in reply) p.reject(new Error(reply.error));
+      else p.resolve(reply);
+    });
+    // A worker crash/exit/transport error must reject in-flight requests, not leave them hanging forever.
+    worker.channel.onError?.((error) => {
+      const cause = error instanceof Error ? error : new Error(String(error));
+      retire(worker, new ProverWorkerError(`prover worker failed: ${cause.message}`, { cause }));
+    });
+    live = worker;
+    return worker;
+  };
 
   const request = (msg: RequestPayload, signal?: AbortSignal, onProgress?: (p: ProofProgress) => void): Promise<ProverWorkerReply> => {
     const id = nextId;
     nextId += 1;
     return new Promise<ProverWorkerReply>((resolve, reject) => {
       if (closed) {
-        reject(new Error('worker prover: closed'));
+        reject(new ProverWorkerError('worker prover: closed'));
         return;
       }
       if (signal?.aborted) {
         reject(new AbortedError('prove: aborted before start'));
         return;
       }
+      const worker = liveWorker();
       const onAbort = (): void => {
-        // Drop the pending entry so a later reply is ignored, and reject the caller (no worker respawn —
-        // the worker keeps running the abandoned proof, but the caller is unblocked immediately).
-        if (pending.delete(id)) reject(new AbortedError('prove: aborted'));
+        // Reject the caller now, then stop the worker so it doesn't keep running the abandoned proof.
+        if (!worker.pending.delete(id)) return;
+        reject(new AbortedError('prove: aborted'));
+        retire(worker, new ProverWorkerError('prover worker: terminated to cancel another request — retry'));
       };
-      pending.set(id, {
+      worker.pending.set(id, {
         resolve: (r) => { signal?.removeEventListener('abort', onAbort); resolve(r); },
         reject: (e) => { signal?.removeEventListener('abort', onAbort); reject(e); },
         ...(onProgress !== undefined ? { onProgress } : {}),
       });
       signal?.addEventListener('abort', onAbort, { once: true });
-      channel.post({ ...msg, id } as ProverWorkerRequest);
+      worker.channel.post({ ...msg, id } as ProverWorkerRequest);
     });
   };
 
@@ -145,12 +179,13 @@ export function createWorkerProver(channel: WorkerChannel): ProverAdapter {
     },
     async close(): Promise<void> {
       closed = true;
-      // Reject any in-flight requests so awaiting callers don't hang once the worker is terminated
-      // (terminate() below kills the worker before it can reply to the graceful close op).
-      rejectAll(new Error('worker prover: closed'));
-      channel.post({ op: 'close', id: nextId });
+      if (live === undefined) return;
+      // Ask the worker to terminate its curve threads, then terminate it (retire) — which also rejects
+      // any in-flight requests, since the terminated worker can no longer reply to them.
+      const worker = live;
+      worker.channel.post({ op: 'close', id: nextId });
       nextId += 1;
-      channel.terminate();
+      retire(worker, new ProverWorkerError('worker prover: closed'));
     },
   };
 }
@@ -160,6 +195,7 @@ export interface BrowserWorkerLike {
   postMessage(message: ProverWorkerRequest): void;
   onmessage: ((event: { data: ProverWorkerReply }) => void) | null;
   onerror: ((event: { message?: string }) => void) | null;
+  onmessageerror: ((event: unknown) => void) | null;
   terminate(): void;
 }
 
@@ -167,14 +203,21 @@ export interface BrowserWorkerLike {
  * Wrap a browser `Worker` as a `WorkerChannel`. Pair with the prebuilt worker entry so consumers don't
  * hand-write the glue:
  *
- *   const worker = new Worker(new URL('@armada/sdk/prover/worker', import.meta.url), { type: 'module' });
- *   const prover = createWorkerProver(webWorkerChannel(worker));
+ *   const prover = createWorkerProver(() =>
+ *     webWorkerChannel(new Worker(new URL('@armada/sdk/prover/worker', import.meta.url), { type: 'module' })),
+ *   );
+ *
+ * Both the worker's `error` event (a crash or a failed script load) and its `messageerror` event (a reply
+ * that couldn't be deserialized) are reported through `onError`.
  */
 export function webWorkerChannel(worker: BrowserWorkerLike): WorkerChannel {
   return {
     post: (message) => worker.postMessage(message),
     onMessage: (handler) => { worker.onmessage = (event) => handler(event.data); },
-    onError: (handler) => { worker.onerror = (event) => handler(new Error(event.message ?? 'worker error')); },
+    onError: (handler) => {
+      worker.onerror = (event) => handler(new Error(event.message ?? 'worker error'));
+      worker.onmessageerror = () => handler(new Error('prover worker: a message could not be deserialized'));
+    },
     terminate: () => worker.terminate(),
   };
 }

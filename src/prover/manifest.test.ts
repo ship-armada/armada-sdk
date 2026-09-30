@@ -79,4 +79,12 @@ describe('VerifiedArtifactSource', () => {
     const vs = new VerifiedArtifactSource(sourceReturning({ ...ARTIFACTS, zkey: new Uint8Array([9]) }), MANIFEST);
     await expect(vs.resolve(SHAPE)).rejects.toThrow(ArtifactIntegrityError);
   });
+
+  it('passes the resolve signal through to the wrapped source', async () => {
+    let seen: AbortSignal | undefined;
+    const inner: ArtifactSource = { resolve: async (_shape, opts) => { seen = opts?.signal; return ARTIFACTS; } };
+    const controller = new AbortController();
+    await new VerifiedArtifactSource(inner, MANIFEST).resolve(SHAPE, { signal: controller.signal });
+    expect(seen).toBe(controller.signal);
+  });
 });

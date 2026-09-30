@@ -5,8 +5,9 @@
 // ^ IndexedDB types — this module is browser-only (Node resolves artifacts from the filesystem, which
 //   the OS caches). The tsconfig `lib` is ES2022 (no DOM) since the SDK also targets Node.
 
-import { shapeKey } from './manifest';
-import type { ArtifactSet, ArtifactSource, CircuitShape } from './index';
+import { shapeKey, verifyArtifactIntegrity, type ArtifactManifest } from './manifest';
+import type { ArtifactResolveOptions, ArtifactSet, ArtifactSource, CircuitShape } from './index';
+import { ArtifactIntegrityError } from '../errors';
 
 const STORE = 'artifacts';
 
@@ -30,28 +31,34 @@ function isArtifactSet(v: unknown): v is ArtifactSet {
  * Caches an inner `ArtifactSource`'s resolved sets in IndexedDB (browser). The first resolve for a shape
  * fetches + stores; later resolves read from IndexedDB, so the multi-MB zkey isn't re-downloaded per proof.
  *
- * Wrap the source you want cached — including a `VerifiedArtifactSource`, so only integrity-checked bytes
- * are ever stored. Cache entries are keyed by `(version, shape)`: bump `version` (e.g. the armada-circuits
- * build id) whenever the artifacts change to invalidate stale entries, or call `clear()`.
+ * Entries are keyed by the shape's digests in the pinned `manifest`, so shipping new circuits (a new
+ * manifest) is a cache miss by construction — stale artifacts are never served. Only bytes that match the
+ * manifest are stored or returned (`ArtifactIntegrityError` otherwise), and a shape the manifest doesn't
+ * pin is rejected without resolving it. Old entries stay until `clear()`.
  */
 export class IndexedDbArtifactCache implements ArtifactSource {
   private db: IDBDatabase | undefined;
 
   constructor(
     private readonly inner: ArtifactSource,
-    private readonly opts: { readonly version: string; readonly dbName?: string },
+    private readonly opts: { readonly manifest: ArtifactManifest; readonly dbName?: string },
   ) {}
 
-  async resolve(shape: CircuitShape): Promise<ArtifactSet> {
-    const key = `${this.opts.version}/${shapeKey(shape)}`;
+  async resolve(shape: CircuitShape, options?: ArtifactResolveOptions): Promise<ArtifactSet> {
+    const pinned = this.opts.manifest[shapeKey(shape)];
+    if (pinned === undefined) {
+      throw new ArtifactIntegrityError(`no manifest entry for circuit shape ${shapeKey(shape)}`);
+    }
+    const key = `${shapeKey(shape)}/${pinned.wasm}/${pinned.zkey}/${pinned.vkey ?? ''}`;
     const cached = await this.read(key);
     if (cached !== undefined) return cached;
-    const set = await this.inner.resolve(shape);
+    const set = await this.inner.resolve(shape, options);
+    verifyArtifactIntegrity(shape, set, this.opts.manifest);
     await this.write(key, set);
     return set;
   }
 
-  /** Drop every cached artifact (e.g. on a circuits rebuild without a version bump). */
+  /** Drop every cached artifact, including entries left behind by earlier manifests. */
   async clear(): Promise<void> {
     const db = await this.database();
     const tx = db.transaction(STORE, 'readwrite');

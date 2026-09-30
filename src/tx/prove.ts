@@ -5,7 +5,9 @@ import { buildWitness, prepareWitness, type BuildWitnessParams, type BuiltWitnes
 import { buildTransactCalldata, type TransactionData } from './serialize';
 import type { ArtifactSource, ProverAdapter, ProveOptions } from '../prover/index';
 import type { ProofHandle, TransactCalldata } from './index';
-import { ProofHandleInvalidatedError, ProofExpiredError, SignerContractViolationError, InvalidRequestError } from '../errors';
+import {
+  ProofHandleInvalidatedError, ProofExpiredError, SignerContractViolationError, InvalidRequestError, ProofVerificationError,
+} from '../errors';
 
 export interface ProveParams {
   /** The transfer witness to assemble + prove. */
@@ -120,10 +122,25 @@ function batchProgressOptions(options: ProveOptions | undefined, index: number, 
   return { ...options, onProgress: (p) => onProgress({ ...p, fraction: (index + p.fraction) / count }) };
 }
 
-/** Resolve the shape's artifacts, generate the Groth16 proof, and wrap the calldata in a handle. */
+/**
+ * Resolve the shape's artifacts, generate the Groth16 proof, self-check it, and wrap the calldata in a
+ * handle. The self-check (SPEC §4.5) verifies the proof against the public signals the on-chain verifier
+ * recomputes from this calldata — `[merkleRoot, boundParamsHash, ...nullifiers, ...commitments]` — so a
+ * proof that would revert (a witness-assembly or corrupted-artifact bug) is a `ProofVerificationError`
+ * now, whichever prover backend produced it, not a failed transaction later.
+ */
 async function proveWitness(params: ProveParams, witness: BuiltWitness, options?: ProveOptions): Promise<ProofHandle> {
-  const artifactSet = await params.artifacts.resolve(witness.shape);
+  const artifactSet = await params.artifacts.resolve(witness.shape, options?.signal !== undefined ? { signal: options.signal } : undefined);
   const proof = await params.prover.prove(witness.formattedInputs, artifactSet, options);
+
+  const { merkleRoot, boundParamsHash, nullifiers, commitmentsOut } = witness.publicInputs;
+  let verified: boolean;
+  try {
+    verified = await params.prover.verify(proof, [merkleRoot, boundParamsHash, ...nullifiers, ...commitmentsOut], artifactSet.vkey);
+  } catch (err) {
+    throw new ProofVerificationError('prove: the proof self-check errored', { cause: err });
+  }
+  if (!verified) throw new ProofVerificationError('prove: the generated proof failed its self-check against the verifying key');
 
   const transaction: TransactionData = {
     proof,

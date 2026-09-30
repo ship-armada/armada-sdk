@@ -248,8 +248,18 @@ const proof = await wallet.prove(plan, {
 });
 ```
 
-Cancelling through the signal throws `AbortedError`. With `proveAll`, `onProgress` covers the whole
-batch: the fraction runs from 0 to 1 once across all plans, rather than restarting for each proof.
+Cancelling through the signal throws `AbortedError`, and it also cancels an artifact download that is
+still in flight. The same-thread prover can't interrupt snarkjs inside a phase, so it stops at the next
+phase boundary. The worker prover terminates its worker instead (see [Adapters](./adapters#prover)).
+
+Each progress event carries a `phase` (`'witness'`, then `'proving'`) and a `fraction`. The fraction
+runs from 0 to 1 once over the whole proof: witness calculation covers 0 to 0.5, and proving covers
+0.5 to 1. With `proveAll`, `onProgress` covers the whole batch: the fraction runs from 0 to 1 once
+across all plans, rather than restarting for each proof.
+
+Before returning a handle, the SDK verifies every proof against the public signals the on-chain
+verifier will recompute from its calldata. A proof that would revert, such as one from a corrupted
+artifact, throws `ProofVerificationError` instead of failing on-chain.
 
 A proof never expires on-chain, but the relayer only accepts it while its fee quote is valid. Pass
 `expiresAt` (epoch ms, your clock) to stamp that deadline on the handles; past it, a handle refuses to

@@ -131,6 +131,15 @@ export class AbortedError extends ArmadaError {
   readonly code = 'ABORTED';
 }
 
+/**
+ * The prover worker stopped before replying (SPEC §4.5): it crashed or failed to load, it was terminated
+ * to cancel another in-flight request, or the prover was closed. Unless the prover was closed, the next
+ * request starts a fresh worker, so the operation can be retried.
+ */
+export class ProverWorkerError extends ArmadaError {
+  readonly code = 'PROVER_WORKER';
+}
+
 /** A `ProofHandle` was used after `invalidate()` — re-plan and re-prove. */
 export class ProofHandleInvalidatedError extends ArmadaError {
   readonly code = 'PROOF_HANDLE_INVALIDATED';

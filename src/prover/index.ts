@@ -25,9 +25,19 @@ export interface ArtifactSet {
  * (`ArtifactIntegrityError`). No IPFS, no hash whitelist, no `overrideArtifact`.
  */
 export interface ArtifactSource {
-  resolve(shape: CircuitShape): Promise<ArtifactSet>;
+  resolve(shape: CircuitShape, options?: ArtifactResolveOptions): Promise<ArtifactSet>;
 }
 
+/** Options for one `ArtifactSource.resolve` call. */
+export interface ArtifactResolveOptions {
+  /** Cancels the resolve (e.g. a download still in flight); it then rejects with `AbortedError`. */
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * Proof progress. `fraction` runs 0→1 once across the WHOLE proof (never backwards when the phase
+ * changes); `phase` names the current step — `'witness'` (witness calculation) then `'proving'` (Groth16).
+ */
 export interface ProofProgress {
   readonly phase: string;
   readonly fraction: number;
@@ -60,7 +70,8 @@ export interface ProveOptions {
 
 /**
  * Worker-based prover. `prove()` runs off the main thread; real progress events replace the
- * `yieldToPaint()` hack. `verify()` is available for tests + preflight self-checks.
+ * `yieldToPaint()` hack. `verify()` backs the self-check the SDK's `prove()` runs on every proof, and is
+ * available for tests.
  */
 export interface ProverAdapter {
   prove(formattedInputs: unknown, artifacts: ArtifactSet, options?: ProveOptions): Promise<Groth16Proof>;
