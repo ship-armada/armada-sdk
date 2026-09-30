@@ -25,6 +25,11 @@ const chain = {
   // the new events, so a test can observe what readers see mid-sync. `callEntered` fires on the first wait.
   callGate: undefined as undefined | Promise<void>,
   callEntered: undefined as undefined | (() => void),
+  // What the RPC reports about itself and the pool address — for the config checks (#121).
+  networkChainId: 31337,
+  poolCode: '0x6080' as string,
+  getNetworkCalls: 0,
+  fallbackOptions: undefined as unknown,
   // Pool tree state at a block — installed in beforeAll (the mock factory can't import SDK modules: they
   // load ethers, which is mid-mock when the factory runs).
   treeAt: undefined as undefined | ((block: number) => { root: string; length: number; roots: Set<bigint> }),
@@ -58,6 +63,13 @@ vi.mock('ethers', async (importActual) => {
     async getBlockNumber(): Promise<number> {
       return chain.head;
     }
+    async getNetwork(): Promise<{ chainId: bigint }> {
+      chain.getNetworkCalls += 1;
+      return { chainId: BigInt(chain.networkChainId) };
+    }
+    async getCode(): Promise<string> {
+      return chain.poolCode;
+    }
     async getBlock(n: number): Promise<{ number: number; hash: string; timestamp: number } | null> {
       return n > chain.head ? null : { number: n, hash: blockHash(n), timestamp: n };
     }
@@ -88,7 +100,13 @@ vi.mock('ethers', async (importActual) => {
     }
     destroy(): void {}
   }
-  return { ...actual, JsonRpcProvider: MockProvider, FallbackProvider: MockProvider };
+  class MockFallbackProvider extends MockProvider {
+    constructor(_providers: unknown, _network?: unknown, options?: unknown) {
+      super();
+      chain.fallbackOptions = options;
+    }
+  }
+  return { ...actual, JsonRpcProvider: MockProvider, FallbackProvider: MockFallbackProvider };
 });
 
 import { Interface } from 'ethers';
@@ -254,6 +272,10 @@ beforeEach(() => {
   chain.callBlockTags = [];
   chain.callGate = undefined;
   chain.callEntered = undefined;
+  chain.networkChainId = 31337;
+  chain.poolCode = '0x6080';
+  chain.getNetworkCalls = 0;
+  chain.fallbackOptions = undefined;
 });
 
 describe('SYNC-2: a sync is accepted only if it reproduces the pool tree exactly at the scanned block', () => {
@@ -603,6 +625,69 @@ describe('WS-1: stored record keys never contain the 0zk address', () => {
     expect(keys).toContain(`chain/scan-state/${id}`);
     expect(keys).toContain(`chain/pending-spends/${id}`);
     expect(keys.some((k) => k.includes(keyset.shieldedAddress))).toBe(false);
+    await sdk.close();
+  });
+});
+
+describe('API-2: a consumer telemetry sink can never break the SDK', () => {
+  const throwingSink = { emit: (): void => { throw new Error('sentry transport down'); } };
+
+  it('a sink that throws on every event fails neither a sync nor reorg recovery', async () => {
+    pushTransact(10, [101n]);
+    pushTransact(20, [102n]);
+    chain.head = 20;
+    const sdk = await createArmadaSdk(cfg({ telemetry: throwingSink }));
+    const wallet = await sdk.wallet.fromRootSecret(ROOT_SECRET, { creationBlock: 1 });
+    await expect(wallet.sync()).resolves.toMatchObject({ syncedThrough: 20 });
+
+    reorgFrom(20, 21, () => pushTransact(21, [102n])); // recovery emits sync.reorg-recovery
+    await expect(wallet.sync()).resolves.toMatchObject({ syncedThrough: 21 });
+    await sdk.close();
+  });
+
+  it('a sink that throws on the redeploy-reset event does not fail createArmadaSdk', async () => {
+    const storage = new MemoryStorageAdapter();
+    await storage.open({ schemaVersion: 1, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 99 });
+    // Same store, different deployBlock → the SDK resets chain state and emits storage.chain-reset.
+    await expect(createArmadaSdk(cfg({ storage, telemetry: throwingSink }))).resolves.toBeDefined();
+  });
+});
+
+describe('API-3: the RPC must serve the configured chain and pool before anything is synced', () => {
+  it('an RPC on the wrong chain fails the sync with INVALID_CONFIG and saves no checkpoint', async () => {
+    pushTransact(10, [101n]);
+    chain.head = 10;
+    chain.networkChainId = 1; // pool configured for 31337
+    const sdk = await createArmadaSdk(cfg());
+    const wallet = await sdk.wallet.fromRootSecret(ROOT_SECRET, { creationBlock: 1 });
+    await expect(wallet.sync()).rejects.toMatchObject({ code: 'INVALID_CONFIG' });
+    expect((await wallet.syncStatus()).syncedThrough).toBe(0);
+    await sdk.close();
+  });
+
+  it('a pool address with no contract code fails the sync with INVALID_CONFIG', async () => {
+    chain.head = 10;
+    chain.poolCode = '0x';
+    const sdk = await createArmadaSdk(cfg());
+    const wallet = await sdk.wallet.fromRootSecret(ROOT_SECRET, { creationBlock: 1 });
+    await expect(wallet.sync()).rejects.toMatchObject({ code: 'INVALID_CONFIG' });
+    await sdk.close();
+  });
+
+  it('checks the chain once per instance, not on every sync', async () => {
+    chain.head = 10;
+    const sdk = await createArmadaSdk(cfg());
+    const wallet = await sdk.wallet.fromRootSecret(ROOT_SECRET, { creationBlock: 1 });
+    await wallet.sync();
+    chain.head = 11;
+    await wallet.sync();
+    expect(chain.getNetworkCalls).toBe(1);
+    await sdk.close();
+  });
+
+  it('several RPC URLs fail over (quorum 1) rather than requiring providers to agree', async () => {
+    const sdk = await createArmadaSdk(cfg({ rpc: { urls: ['http://a.example', 'http://b.example', 'http://c.example'] } }));
+    expect(chain.fallbackOptions).toMatchObject({ quorum: 1 });
     await sdk.close();
   });
 });

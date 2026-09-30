@@ -19,6 +19,13 @@ vi.mock('ethers', async (importActual) => {
     async getBlockNumber(): Promise<number> {
       return 100;
     }
+    // The SDK confirms the RPC serves the configured chain and that the pool has code before syncing.
+    async getNetwork(): Promise<{ chainId: bigint }> {
+      return { chainId: 31337n };
+    }
+    async getCode(): Promise<string> {
+      return '0x6080';
+    }
     async getBlock(n: number): Promise<{ number: number; hash: string }> {
       return { number: n, hash: `0x${n.toString(16).padStart(64, '0')}` };
     }

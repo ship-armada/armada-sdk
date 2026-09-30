@@ -50,6 +50,12 @@ export interface ProveOptions {
    * gas (~16 gas/byte) and a non-empty change memo is a faint metadata-presence signal to observers.
    */
   readonly selfMetadata?: string;
+  /**
+   * Policy TTL (epoch ms, local clock) stamped on the returned `ProofHandle`s: past it, the handle refuses
+   * to encode calldata (`ProofExpiredError`). A proof never expires on-chain, so this is for the app — e.g.
+   * the deadline of the fee quote the plan binds, so a proof that outlived its quote isn't submitted.
+   */
+  readonly expiresAt?: number;
 }
 
 /**

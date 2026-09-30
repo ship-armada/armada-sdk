@@ -2,8 +2,15 @@
 // ABOUTME: proof-then-revert failure mode becomes a typed pre-proof finding. Caller decides policy.
 
 import { Interface } from 'ethers';
-import type { Plan } from './index';
+import type { DecodedBoundParams, Plan } from './index';
 import { planList } from './plan';
+import {
+  FeeQuoteExpiredError,
+  InsufficientBalanceError,
+  InvalidRequestError,
+  NoteAlreadySpentError,
+  RootMismatchError,
+} from '../errors';
 
 const shieldPauseIface = new Interface(['function shieldsPaused() view returns (bool)']);
 
@@ -58,8 +65,12 @@ export interface PreflightParams {
   /** The plans' input-note nullifiers `(tree, nullifier)` — the wallet derives these from its key. */
   readonly nullifiers: readonly { readonly tree: number; readonly nullifier: bigint }[];
   readonly queries: PreflightQueries;
-  /** When present, checks the fee quote hasn't expired (a local, no-RPC check). */
-  readonly feeQuote?: { readonly expiresAt: number };
+  /**
+   * When present, checks the quote the plan binds is still usable: a deadline in epoch ms on the LOCAL
+   * clock (e.g. when you fetched the quote + its TTL). Not the relayer's `expiresAt`, which is server
+   * wall-clock — comparing it to the local clock turns clock skew into false expiries.
+   */
+  readonly quoteDeadline?: number;
   /** Current time (ms) — injected for deterministic testing of the expiry check. */
   readonly now: number;
   /**
@@ -117,11 +128,11 @@ export async function runPreflight(params: PreflightParams): Promise<PreflightRe
     );
   }
 
-  if (params.feeQuote !== undefined) {
-    const expired = params.feeQuote.expiresAt <= params.now;
+  if (params.quoteDeadline !== undefined) {
+    const expired = params.quoteDeadline <= params.now;
     findings.push(
       expired
-        ? { check: 'fee-quote-expiry', ok: false, detail: `fee quote expired at ${params.feeQuote.expiresAt}` }
+        ? { check: 'fee-quote-expiry', ok: false, detail: `fee quote deadline ${params.quoteDeadline} has passed` }
         : { check: 'fee-quote-expiry', ok: true },
     );
   }
@@ -157,4 +168,47 @@ export async function runPreflight(params: PreflightParams): Promise<PreflightRe
   }
 
   return { ok: findings.every((f) => f.ok), findings };
+}
+
+/**
+ * Throw the typed error for the first failed finding (no-op when `result.ok`): `root-freshness` →
+ * `RootMismatchError`, `nullifier-unspent` → `NoteAlreadySpentError` (SPEC §6.5: e.g. a claim that lost
+ * the race), `fee-quote-expiry` → `FeeQuoteExpiredError`, `balance-sufficiency` →
+ * `InsufficientBalanceError`, and `cctp-liveness` / `shield-pause` → `InvalidRequestError`. For callers
+ * whose policy is "any failed check stops the spend".
+ */
+export function assertPreflight(result: PreflightResult): void {
+  if (result.ok) return;
+  const failed = result.findings.find((f) => !f.ok);
+  if (failed === undefined) return;
+  const detail = failed.detail ?? `preflight check '${failed.check}' failed`;
+  switch (failed.check) {
+    case 'root-freshness':
+      throw new RootMismatchError(detail);
+    case 'nullifier-unspent':
+      throw new NoteAlreadySpentError(detail);
+    case 'fee-quote-expiry':
+      throw new FeeQuoteExpiredError(detail);
+    case 'balance-sufficiency':
+      throw new InsufficientBalanceError(detail);
+    case 'cctp-liveness':
+    case 'shield-pause':
+      throw new InvalidRequestError(detail);
+  }
+}
+
+const ZERO_ADAPT_PARAMS = BigInt(0);
+
+/**
+ * Whether a plan is a cross-chain (CCTP) unshield, from what its proof commits: an adapt binding
+ * (`adaptParams` non-zero) to anything but the yield adapter. The single classification preflight uses —
+ * it doesn't depend on the caller having passed the decoded binding. With `yieldAdapterAddress` unset, a
+ * yield call counts as cross-chain (configure `pool.wrappers.yieldAdapter` to tell them apart).
+ */
+export function isCrossChainUnshield(
+  boundParams: Pick<DecodedBoundParams, 'adaptContract' | 'adaptParams'>,
+  yieldAdapterAddress: string | undefined,
+): boolean {
+  if (BigInt(boundParams.adaptParams) === ZERO_ADAPT_PARAMS) return false;
+  return yieldAdapterAddress === undefined || boundParams.adaptContract.toLowerCase() !== yieldAdapterAddress.toLowerCase();
 }

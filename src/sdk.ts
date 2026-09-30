@@ -38,7 +38,7 @@ import {
   type TokenBalance,
 } from './sync/index';
 import { EncryptedStore, deriveWalletStorageKey, walletRecordId, type StorageAdapter } from './storage/index';
-import { planSpend, planWitnessInputs, prove, proveAll, runPreflight, type Plan, type PlanSelection, type ProofHandle, type PreflightResult, type FeeQuote, type ProveParams } from './tx/index';
+import { planSpend, planWitnessInputs, prove, proveAll, runPreflight, isCrossChainUnshield, type Plan, type PlanSelection, type ProofHandle, type PreflightResult, type ProveParams } from './tx/index';
 import { planConsolidate, txosAfterConsolidation } from './tx/consolidate';
 import { maxTransferAmount, maxUnshieldAmount } from './tx/max-transfer';
 import type { PlanTransferParams } from './tx/plan';
@@ -78,8 +78,10 @@ import {
   NoSpendCapabilityError,
   RootMismatchError,
   InvalidRequestError,
+  InvalidConfigError,
   QuickSyncSchemaError,
 } from './errors';
+import { validateConfig } from './config';
 import { startAutoSync } from './sync/auto-sync';
 import type { ArmadaSdk, ArmadaSdkConfig, TelemetrySink } from './index';
 
@@ -94,6 +96,12 @@ interface SdkContext {
   readonly isKnownRoot: (treeNumber: number, root: bigint) => Promise<boolean>;
   /** Preflight (§4.7): has `(treeNumber, nullifier)` already been spent on-chain? */
   readonly isNullifierSpent: (treeNumber: number, nullifier: bigint) => Promise<boolean>;
+  /**
+   * Resolves once the RPC is confirmed to serve `pool.chainId` and `pool.poolAddress` has code (checked once
+   * per instance; a transient RPC failure is retried next call). Rejects with `InvalidConfigError` on a
+   * mismatch. Awaited before any sync or preflight, so no checkpoint from the wrong chain is ever saved.
+   */
+  readonly ensureChain: () => Promise<void>;
   /** Reorg check (§4.4): the chain's current hash for block `n`, or undefined if the node doesn't return it. */
   readonly getBlockHash: (n: number) => Promise<string | undefined>;
   /** Sync verification (§4.4): the pool's current tree number, root, and leaf count as of `blockTag`. */
@@ -133,7 +141,10 @@ interface SdkContext {
   readonly storage: StorageAdapter;
   /** When true, wallets persist through the raw adapter unencrypted — the §4.3 escape hatch. */
   readonly allowPlaintextStorage: boolean;
-  /** Optional operational telemetry sink (SPEC §8) — emits quick-sync outcomes when an indexer is used. */
+  /**
+   * Optional operational telemetry sink (SPEC §8), wrapped by `safeTelemetry` — a consumer's sink that throws
+   * can never affect the SDK.
+   */
   readonly telemetry?: TelemetrySink;
 }
 
@@ -312,29 +323,6 @@ export function buildReceivedNote(txo: TXO, resolve: TokenAddressResolver): Sync
     ...(txo.memo !== undefined ? { memo: txo.memo } : {}),
     ...(txo.senderShieldedAddress !== undefined ? { senderShieldedAddress: txo.senderShieldedAddress } : {}),
   };
-}
-
-/**
- * Pick the `/fees` schedule key whose tier matches the plan's operation, so the in-band fee note
- * commits the amount the relayer will actually require (SPEC §4.6.1). The relayer prices per
- * submission selector (`relayer/modules/privacy-relay.ts::advertisedFeeForSelector`):
- *   - bare `transact()` transfer/unshield → priced as MIN(transfer, unshield); either tier satisfies it,
- *   - yield redeem (unshield whose adaptContract is the yield adapter) → `redeemAndShield` → `crossContract`,
- *   - cross-chain unshield (CCTP adaptParams, non-yield adaptContract) → `atomicCrossChainUnshield` → `crossChainUnshield`.
- * Pure so the mapping is unit-testable without a wallet. Binding the wrong (lower) tier makes the
- * relayer reject the transaction after the user already proved for ~30s.
- */
-export function feeScheduleKey(
-  request: Pick<PlanTransferRequest, 'unshield'>,
-  yieldAdapterAddress: string | undefined,
-): 'transfer' | 'unshield' | 'crossChainUnshield' | 'crossContract' {
-  if (!request.unshield) return 'transfer';
-  const adaptContract = request.unshield.adaptContract?.toLowerCase();
-  if (adaptContract !== undefined && yieldAdapterAddress !== undefined && adaptContract === yieldAdapterAddress) {
-    return 'crossContract';
-  }
-  if (request.unshield.adaptParams !== undefined) return 'crossChainUnshield';
-  return 'unshield';
 }
 
 /**
@@ -635,6 +623,8 @@ class ArmadaWallet implements Wallet {
   }
 
   private async runSync(recovering = false): Promise<{ fromBlock: number; syncedThrough: number; scanned: boolean }> {
+    // Never scan (and so never save a checkpoint) from an RPC that doesn't serve the configured chain/pool.
+    await this.ctx.ensureChain();
     // A reorg under the checkpoint (SPEC §4.4) invalidates the persisted tree — the append-only tree can't
     // un-append an orphaned leaf — so rescan. Checked before the head comparison below: a same-height
     // reorg leaves the head unchanged but still replaces the checkpoint block.
@@ -836,16 +826,17 @@ class ArmadaWallet implements Wallet {
       .map((txo) => ({ tree: txo.tree, nullifier: TransactNote.getNullifier(this.keyset.nullifyingKey, txo.position) }));
   }
 
-  async preflight(plan: Plan | readonly Plan[], options?: { feeQuote?: FeeQuote }): Promise<PreflightResult> {
+  async preflight(plan: Plan | readonly Plan[], options?: { quoteDeadline?: number }): Promise<PreflightResult> {
     // Cheap pre-proof checks (SPEC §4.7): the proved root must still be accepted by the pool, no input
-    // note may already be spent on-chain, and (if a quote is given) it must be unexpired — turning the
-    // 30-second-proof-then-revert failure into a typed finding. Nullifiers are derived from THIS plan's
-    // selected inputs (not the whole wallet), so it works view-only too.
+    // note may already be spent on-chain, and (if a deadline is given) the fee quote must still be usable —
+    // turning the 30-second-proof-then-revert failure into a typed finding. Nullifiers are derived from
+    // THIS plan's selected inputs (not the whole wallet), so it works view-only too.
+    await this.ctx.ensureChain();
     const plans = planList(plan);
     const nullifiers = this.planNullifiers(plans);
     // Cross-chain unshield (a CCTP adaptParams binding) → add a messenger-liveness check when configured.
     const messenger = this.ctx.cctpMessenger;
-    const isCrossChain = plans.some((p) => p.boundParams.decodedAdaptParams !== undefined);
+    const isCrossChain = plans.some((p) => isCrossChainUnshield(p.boundParams, this.ctx.yieldAdapterAddress));
     const cctpLiveness =
       isCrossChain && messenger !== undefined
         ? async (): Promise<boolean> => (await this.ctx.provider.getCode(messenger)) !== '0x'
@@ -854,7 +845,7 @@ class ArmadaWallet implements Wallet {
       plan,
       nullifiers,
       queries: { isKnownRoot: this.ctx.isKnownRoot, isNullifierSpent: this.ctx.isNullifierSpent },
-      ...(options?.feeQuote !== undefined ? { feeQuote: options.feeQuote } : {}),
+      ...(options?.quoteDeadline !== undefined ? { quoteDeadline: options.quoteDeadline } : {}),
       ...(cctpLiveness !== undefined ? { cctpLiveness } : {}),
       now: Date.now(),
     });
@@ -930,12 +921,12 @@ class ArmadaWallet implements Wallet {
   async maxUnshieldAmount(request: MaxUnshieldRequest): Promise<bigint> {
     this.prunePendingSpends();
     const txos = this.scanState.spendableTxos(this.keyset.nullifyingKey, this.holds.list());
-    // The planner request for this unshield (its binding picks the fee tier); the max probes its value.
+    // The planner request for this unshield (at the caller's per-proof fee); the max probes its value.
     const destination = request.unshield ?? { recipient: MAX_UNSHIELD_PROBE_RECIPIENT };
     const params = this.spendParams(
       {
         outputs: [],
-        fee: request.fee,
+        ...(request.fee !== undefined ? { fee: request.fee } : {}),
         ...(request.tokenAddress !== undefined ? { tokenAddress: request.tokenAddress } : {}),
         unshield: { ...destination, amount: 0n },
       },
@@ -955,16 +946,16 @@ class ArmadaWallet implements Wallet {
     const txos = this.scanState.spendableTxos(this.keyset.nullifyingKey, this.holds.list());
     // A consolidation is a bare transact() self-spend, priced by the relayer at the `transfer` tier, PER
     // PROOF, always in USDC (the only token the relayer counts).
-    const feeValue = BigInt(request.fee.schedule['transfer'] ?? '0');
+    const fee = request.fee;
     return this.withMerkleProofs(
       planConsolidate({
         txos,
         tokenAddress: request.tokenAddress ?? this.ctx.usdcAddress,
-        ...(feeValue > 0n
+        ...(fee !== undefined && fee.perProof > 0n
           ? {
               fee: {
-                broadcasterShieldedAddress: request.fee.broadcasterShieldedAddress,
-                value: feeValue,
+                broadcasterShieldedAddress: fee.broadcasterShieldedAddress,
+                value: fee.perProof,
                 tokenAddress: this.ctx.usdcAddress,
               },
             }
@@ -994,17 +985,15 @@ class ArmadaWallet implements Wallet {
 
   // The planner request for a transfer/unshield over `txos`.
   private spendParams(request: PlanTransferRequest, txos: readonly TXO[], roots: ReadonlyMap<number, bigint>): PlanTransferParams {
-    // Bind the fee tier that matches this plan's op, falling back to `transfer` for an older relayer
-    // schedule that predates the per-op keys, then to 0 (no fee note) if even that is absent. The quoted
-    // fee is PER PROOF: a split spend pays it once per group (planSpend scales it).
-    const scheduleKey = feeScheduleKey(request, this.ctx.yieldAdapterAddress);
-    const feeValue = BigInt(request.fee.schedule[scheduleKey] ?? request.fee.schedule['transfer'] ?? '0');
+    // The caller's fee is PER PROOF: a split spend pays it once per group (planSpend scales it). No fee
+    // (or zero) means no fee note.
+    const fee = request.fee;
     return {
       txos,
       // Defaults to USDC; a caller can spend any pool token (e.g. yield vault shares on redeem).
       tokenAddress: request.tokenAddress ?? this.ctx.usdcAddress,
       outputs: request.outputs.map((o) => ({ toShieldedAddress: o.to0zk, value: o.amount, ...(o.memo !== undefined ? { memo: o.memo } : {}) })),
-      ...(feeValue > 0n ? { fee: { broadcasterShieldedAddress: request.fee.broadcasterShieldedAddress, value: feeValue } } : {}),
+      ...(fee !== undefined && fee.perProof > 0n ? { fee: { broadcasterShieldedAddress: fee.broadcasterShieldedAddress, value: fee.perProof } } : {}),
       ...(request.unshield
         ? {
             unshield: {
@@ -1100,6 +1089,7 @@ class ArmadaWallet implements Wallet {
       artifacts: this.ctx.artifacts,
       prover: this.ctx.prover,
       poolAddress: this.ctx.poolAddress,
+      ...(options?.expiresAt !== undefined ? { expiresAt: options.expiresAt } : {}),
       // The public unshield preimage the contract pays out on (npk = recipient EVM address).
       ...(plan.summary.unshield
         ? {
@@ -1166,6 +1156,24 @@ class ArmadaWallet implements Wallet {
 }
 
 /**
+ * Wrap a consumer's telemetry sink so a throwing sink (an uninitialized Sentry, a failing transport, a bad
+ * serializer) can never fail a sync, block reorg recovery, or fail `createArmadaSdk`. Telemetry is
+ * observation only; losing an event is always better than changing what the SDK does.
+ */
+export function safeTelemetry(sink: TelemetrySink | undefined): TelemetrySink | undefined {
+  if (sink === undefined) return undefined;
+  return {
+    emit(event, data) {
+      try {
+        sink.emit(event, data);
+      } catch {
+        // Deliberately swallowed: see above.
+      }
+    },
+  };
+}
+
+/**
  * Construct an SDK instance — replaces `startRailgunEngine` + `loadProvider` + NETWORK_CONFIG patching.
  * Multiple instances per process are supported; all state is instance-scoped. `close()` releases the
  * prover's workers.
@@ -1181,18 +1189,43 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
   // passes, but decryption can silently yield nothing). Awaiting both makes "ready" an explicit contract.
   await Promise.all([initPoseidonPromise, initCurve25519Promise]);
 
+  // Fail fast on a malformed config (no network) — before opening storage or dialing anything.
+  validateConfig(config);
+  const telemetry = safeTelemetry(config.telemetry);
+
   // Namespace the store by (schema, chain, pool, deployBlock); a mismatch resets chain-derived state.
   const { reset } = await config.storage.open({ schemaVersion: 1, chainId: config.pool.chainId, poolAddress: config.pool.poolAddress, deployBlock: config.pool.deployBlock });
   if (reset) {
     // Surface redeploy resets so an operator can see chain-derived state being wiped (SPEC §8-safe:
     // public chain config only, no keys/addresses/amounts).
-    config.telemetry?.emit('storage.chain-reset', { chainId: config.pool.chainId, deployBlock: config.pool.deployBlock });
+    telemetry?.emit('storage.chain-reset', { chainId: config.pool.chainId, deployBlock: config.pool.deployBlock });
   }
 
+  // Several URLs fail over (quorum 1): ethers' default quorum of ceil(n/2) makes one node lagging near head
+  // fail getLogs/call outright instead of falling through to a healthy one.
   const provider: Provider =
     config.rpc.urls.length > 1
-      ? new FallbackProvider(config.rpc.urls.map((u) => new JsonRpcProvider(u)))
+      ? new FallbackProvider(config.rpc.urls.map((u) => new JsonRpcProvider(u)), undefined, { quorum: 1 })
       : new JsonRpcProvider(config.rpc.urls[0]);
+
+  // Checked lazily (creating an SDK stays offline-capable) and once per instance. A failed RPC read isn't
+  // remembered — only a confirmed match is — so a transient outage is retried on the next sync/preflight.
+  let chainConfirmed: Promise<void> | undefined;
+  const ensureChain = (): Promise<void> => {
+    chainConfirmed ??= (async () => {
+      const network = await provider.getNetwork();
+      if (Number(network.chainId) !== config.pool.chainId) {
+        throw new InvalidConfigError(`rpc serves chain ${network.chainId}, but pool.chainId is ${config.pool.chainId}`);
+      }
+      if ((await provider.getCode(config.pool.poolAddress)) === '0x') {
+        throw new InvalidConfigError(`pool.poolAddress ${config.pool.poolAddress} has no contract code on chain ${config.pool.chainId}`);
+      }
+    })().catch((err: unknown) => {
+      chainConfirmed = undefined;
+      throw err;
+    });
+    return chainConfirmed;
+  };
 
   const iface = new Interface(POOL_V2_EVENT_ABI as unknown as string[]);
   const getLogs = async (fromBlock: number, toBlock: number): Promise<ParsedPoolLog[]> => {
@@ -1268,6 +1301,7 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
     provider,
     isKnownRoot,
     isNullifierSpent,
+    ensureChain,
     getBlockHash,
     readPoolTree,
     eventSource,
@@ -1294,7 +1328,7 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
     artifacts: config.artifacts,
     storage: config.storage,
     allowPlaintextStorage: config.dangerouslyAllowPlaintextStorage === true,
-    ...(config.telemetry !== undefined ? { telemetry: config.telemetry } : {}),
+    ...(telemetry !== undefined ? { telemetry } : {}),
   };
 
   // Every wallet is returned with its saved state already loaded (scan checkpoint + spend holds).

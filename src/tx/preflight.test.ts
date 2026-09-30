@@ -3,7 +3,8 @@
 
 import { describe, it, expect } from 'vitest';
 import { AbiCoder } from 'ethers';
-import { runPreflight, readShieldsPaused, type PreflightQueries } from './preflight';
+import { runPreflight, readShieldsPaused, assertPreflight, isCrossChainUnshield, type PreflightQueries, type PreflightResult } from './preflight';
+import { FeeQuoteExpiredError, InsufficientBalanceError, InvalidRequestError, NoteAlreadySpentError, RootMismatchError } from '../errors';
 import type { Plan } from './index';
 
 const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' as const;
@@ -30,7 +31,7 @@ const NOW = 1_000_000;
 
 describe('runPreflight (§4.7)', () => {
   it('passes when the root is fresh, no input is spent, the fee quote is unexpired, and balances suffice', async () => {
-    const res = await runPreflight({ plan: plan(), nullifiers, queries: allGood, feeQuote: { expiresAt: NOW + 1 }, now: NOW });
+    const res = await runPreflight({ plan: plan(), nullifiers, queries: allGood, quoteDeadline: NOW + 1, now: NOW });
     expect(res.ok).toBe(true);
     expect(res.findings.map((f) => f.check)).toEqual([
       'root-freshness', 'nullifier-unspent', 'nullifier-unspent', 'fee-quote-expiry', 'balance-sufficiency',
@@ -98,8 +99,8 @@ describe('runPreflight (§4.7)', () => {
     expect(nf.map((f) => f.ok)).toEqual([true, false]);
   });
 
-  it('flags an expired fee quote, and omits the check entirely when no quote is given', async () => {
-    const expired = await runPreflight({ plan: plan(), nullifiers, queries: allGood, feeQuote: { expiresAt: NOW }, now: NOW });
+  it('flags a passed quote deadline, and omits the check entirely when no deadline is given', async () => {
+    const expired = await runPreflight({ plan: plan(), nullifiers, queries: allGood, quoteDeadline: NOW, now: NOW });
     expect(expired.ok).toBe(false);
     expect(expired.findings.find((f) => f.check === 'fee-quote-expiry')).toMatchObject({ ok: false });
 
@@ -121,5 +122,51 @@ describe('readShieldsPaused (§4.7 shield-pause reader)', () => {
     };
     expect(await readShieldsPaused(ethCall, CONTROLLER)).toBe(true);
     expect(await readShieldsPaused(async () => coder.encode(['bool'], [false]), CONTROLLER)).toBe(false);
+  });
+});
+
+describe('assertPreflight — failed findings become typed errors (#121)', () => {
+  const failing = (check: PreflightResult['findings'][number]['check']): PreflightResult => ({
+    ok: false,
+    findings: [{ check: 'root-freshness', ok: true }, { check, ok: false, detail: `${check} failed` }],
+  });
+
+  it('passes silently when every finding is ok', () => {
+    expect(() => assertPreflight({ ok: true, findings: [{ check: 'root-freshness', ok: true }] })).not.toThrow();
+  });
+
+  it('maps each failed check to the matching error', () => {
+    // WHY: SPEC §6.5 needs the claim race (an input already spent) to surface as NoteAlreadySpentError,
+    // and consumers match errors on `code` — the mapping belongs in the SDK, not re-derived per app.
+    expect(() => assertPreflight(failing('root-freshness'))).toThrow(RootMismatchError);
+    expect(() => assertPreflight(failing('nullifier-unspent'))).toThrow(NoteAlreadySpentError);
+    expect(() => assertPreflight(failing('fee-quote-expiry'))).toThrow(FeeQuoteExpiredError);
+    expect(() => assertPreflight(failing('balance-sufficiency'))).toThrow(InsufficientBalanceError);
+    expect(() => assertPreflight(failing('cctp-liveness'))).toThrow(InvalidRequestError);
+    expect(() => assertPreflight(failing('shield-pause'))).toThrow(InvalidRequestError);
+    expect(() => assertPreflight(failing('nullifier-unspent'))).toThrow('nullifier-unspent failed');
+  });
+});
+
+describe('isCrossChainUnshield — one classification from what the proof commits (#121)', () => {
+  const ZERO_PARAMS = `0x${'00'.repeat(32)}` as const;
+  const ZERO_ADDR = `0x${'00'.repeat(20)}` as const;
+  const YIELD = `0x${'ab'.repeat(20)}` as const;
+  const WRAPPER = `0x${'cd'.repeat(20)}` as const;
+  const bp = (adaptContract: `0x${string}`, adaptParams: `0x${string}`) => ({ adaptContract, adaptParams });
+
+  it('a plain transfer or unshield (no adapt binding) is not cross-chain', () => {
+    expect(isCrossChainUnshield(bp(ZERO_ADDR, ZERO_PARAMS), YIELD)).toBe(false);
+  });
+
+  it('a binding to the yield adapter is a yield op, not cross-chain', () => {
+    expect(isCrossChainUnshield(bp(YIELD, `0x${'11'.repeat(32)}`), YIELD.toUpperCase().replace('0X', '0x'))).toBe(false);
+  });
+
+  it('any other adapt binding is cross-chain — whether or not the caller passed the decoded binding', () => {
+    // WHY: preflight used to key on `decodedAdaptParams` (only present when the caller passed
+    // `adaptBinding`), so a CCTP unshield planned with just `adaptParams` skipped the liveness check.
+    expect(isCrossChainUnshield(bp(WRAPPER, `0x${'11'.repeat(32)}`), YIELD)).toBe(true);
+    expect(isCrossChainUnshield(bp(WRAPPER, `0x${'11'.repeat(32)}`), undefined)).toBe(true);
   });
 });

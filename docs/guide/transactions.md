@@ -22,24 +22,32 @@ flowchart TD
 
 ## Fees
 
-Planning requires a fee quote. A quote is issued by the broadcaster that will submit your
-transaction, and the SDK consumes it as-is:
+A spend that a broadcaster (relayer) submits pays it a fee inside the proof. Pass it as `fee`: the
+amount per proof, in USDC base units (6dp), and the broadcaster's shielded address:
 
 ```ts
-interface FeeQuote {
-  schedule: Record<string, string>;    // per-operation fees, USDC base units (6dp), as strings
-  broadcasterShieldedAddress: string;
-  feesCacheId: string;
-  expiresAt: number;                    // unix seconds
-}
+const fee = { perProof: 25_000n, broadcasterShieldedAddress: '0zk…' };
 ```
 
-`schedule` is keyed by operation (`transfer`, `unshield`, …). How you obtain a quote is specific to
-your deployment's broadcaster.
+Omit `fee` for a spend with no in-proof fee — one you submit yourself, or a yield redeem, whose fee the
+adapter pays from the redeemed USDC.
 
-Each scheduled fee is charged **per proof**. Most spends are a single proof and pay it once; a
+The fee is charged **per proof**. Most spends are a single proof and pay it once; a
 [split spend](#fragmented-wallets-split-spends) of k proofs pays it k times, because every proof costs
 the broadcaster its own verification gas.
+
+The relayer prices each way of submitting differently. If you have its fee quote (`GET /fees`, shaped
+`{ schedule, broadcasterShieldedAddress, feesCacheId, expiresAt }`), `feeForOperation` reads the tier
+for how the spend will be submitted, and throws if the quote has no such tier rather than guessing:
+
+```ts
+import { feeForOperation } from '@armada/sdk';
+
+const fee = feeForOperation(quote, 'transfer'); // or 'unshield' | 'crossChainUnshield' | 'crossContract'
+```
+
+The quote's `feesCacheId` and `expiresAt` are for submitting to the relayer; planning doesn't use
+them.
 
 ## Plan a transfer
 
@@ -49,7 +57,7 @@ proof. Each output is a shielded address, an amount in the token's base units, a
 ```ts
 const plans = await wallet.planTransfer({
   outputs: [{ to0zk: '0zk…', amount: 1_000_000n, memo: 'invoice-42' }],
-  fee: feeQuote,
+  fee,
 });
 ```
 
@@ -106,15 +114,18 @@ amount you can send is not simply the balance minus one fee. `maxTransferAmount`
 the same rules `planTransfer` uses, so `planTransfer` accepts the amount it returns:
 
 ```ts
-const max = await wallet.maxTransferAmount({ fee: feeQuote }); // USDC by default; 0n if nothing can be sent
+const max = await wallet.maxTransferAmount({ fee }); // USDC by default; 0n if nothing can be sent
 ```
 
 Unshields have their own max. An unshield is never split, so it is limited to what one plan can
-spend, less one fee at the tier its destination selects:
+spend, less one fee — pass the fee for the unshield's destination:
 
 ```ts
-await wallet.maxUnshieldAmount({ fee: feeQuote }); // a plain unshield
-await wallet.maxUnshieldAmount({ fee: feeQuote, unshield: { recipient: pool, adaptParams } }); // cross-chain
+await wallet.maxUnshieldAmount({ fee: feeForOperation(quote, 'unshield') }); // a plain unshield
+await wallet.maxUnshieldAmount({
+  fee: feeForOperation(quote, 'crossChainUnshield'),
+  unshield: { recipient: pool, adaptParams },
+}); // cross-chain
 ```
 
 Notes held by a pending spend are left out of both, as they are for `planTransfer`.
@@ -134,16 +145,16 @@ less often. Split and folded plans are not swept.
 transaction of up to four proofs. Prove and submit it like any other spend:
 
 ```ts
-const plans = await wallet.consolidate({ fee: feeQuote }); // USDC by default
-// or: wallet.consolidate({ tokenAddress: vaultShares, fee: feeQuote })
+const plans = await wallet.consolidate({ fee }); // USDC by default
+// or: wallet.consolidate({ tokenAddress: vaultShares, fee })
 const proofs = await wallet.proveAll(plans);
 ```
 
 - **Order.** Notes in older merkle trees go first. Spending them moves their value into the pool's
   current tree, so a balance split across trees becomes one balance again. Then the smallest notes
   in the current tree.
-- **Fee.** Every proof pays the quoted `transfer` fee, in USDC. When consolidating another token,
-  one extra USDC plan pays the fee for the whole batch.
+- **Fee.** Every proof pays `fee.perProof` (the relayer's `transfer` tier), in USDC. When consolidating
+  another token, one extra USDC plan pays the fee for the whole batch.
 - **What's left alone.** A lone note in the current tree (merging it changes nothing), and dust
   worth no more than the fee it would cost to merge. When nothing is worth merging, `consolidate`
   throws `NothingToConsolidateError`.
@@ -153,7 +164,7 @@ Before paying for a merge, check whether it unblocks a spend. `planTransferAfter
 against the wallet as it will be once the consolidation confirms:
 
 ```ts
-const merge = await wallet.consolidate({ fee: feeQuote });
+const merge = await wallet.consolidate({ fee });
 await wallet.planTransferAfter(merge, unshieldRequest); // throws if it still won't work
 ```
 
@@ -169,7 +180,7 @@ plan:
 const [plan] = await wallet.planTransfer({
   outputs: [],
   unshield: { recipient: '0x…', amount: 1_000_000n },
-  fee: feeQuote,
+  fee: feeForOperation(quote, 'unshield'),
 });
 ```
 
@@ -185,7 +196,7 @@ split spend is checked as the one transaction it submits as. It returns an overa
 finding per check — it never proceeds on its own, so the caller decides what to do:
 
 ```ts
-const { ok, findings } = await wallet.preflight(plans, { feeQuote });
+const { ok, findings } = await wallet.preflight(plans, { quoteDeadline: quoteFetchedAt + QUOTE_TTL_MS });
 
 if (!ok) {
   for (const finding of findings.filter((f) => !f.ok)) {
@@ -195,7 +206,21 @@ if (!ok) {
 ```
 
 Each finding's `check` is one of `root-freshness`, `nullifier-unspent`, `fee-quote-expiry`,
-`balance-sufficiency`, `cctp-liveness`, or `shield-pause`. Preflight works on view-only wallets too.
+`balance-sufficiency`, `cctp-liveness`, or `shield-pause`. `fee-quote-expiry` runs only when you pass
+`quoteDeadline` — a time on your own clock, such as when you fetched the quote plus its TTL. It isn't
+the relayer's `expiresAt`, which is on the relayer's clock; clock skew between the two would read as
+expiry. `cctp-liveness` runs for a cross-chain unshield when `pool.cctp` is configured. Preflight works
+on view-only wallets too.
+
+If any failed check should stop the spend, `assertPreflight` throws the matching typed error —
+`RootMismatchError`, `NoteAlreadySpentError` (for example a claim that lost the race),
+`FeeQuoteExpiredError`, `InsufficientBalanceError`, or `InvalidRequestError`:
+
+```ts
+import { assertPreflight } from '@armada/sdk';
+
+assertPreflight(await wallet.preflight(plans));
+```
 
 ## Prove
 
@@ -225,6 +250,14 @@ const proof = await wallet.prove(plan, {
 
 Cancelling through the signal throws `AbortedError`. With `proveAll`, `onProgress` covers the whole
 batch: the fraction runs from 0 to 1 once across all plans, rather than restarting for each proof.
+
+A proof never expires on-chain, but the relayer only accepts it while its fee quote is valid. Pass
+`expiresAt` (epoch ms, your clock) to stamp that deadline on the handles; past it, a handle refuses to
+produce calldata and throws `ProofExpiredError`, so a proof that outlived its quote isn't submitted:
+
+```ts
+const proofs = await wallet.proveAll(plans, { expiresAt: quoteFetchedAt + QUOTE_TTL_MS });
+```
 
 ### Persisting recoverable metadata
 
@@ -269,7 +302,7 @@ For wrapper calls — cross-chain unshields and yield flows — use `toTransacti
 proved transaction struct to embed in the wrapper call instead of the bare `transact()` calldata.
 
 A handle can be invalidated once used: `invalidate()` marks it spent, `isValid` reflects its state,
-and `expiresAt` is set when the proof has a validity window.
+and `expiresAt` is set when you proved with an `expiresAt` deadline.
 
 ## Tracking in-flight spends
 

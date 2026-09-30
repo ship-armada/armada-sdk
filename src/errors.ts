@@ -146,6 +146,15 @@ export class InvalidRequestError extends ArmadaError {
   readonly code = 'INVALID_REQUEST';
 }
 
+/**
+ * The SDK configuration is invalid: a malformed field caught at `createArmadaSdk`, or an RPC that doesn't
+ * serve the configured chain / pool, caught before the first sync or preflight (so no checkpoint from the
+ * wrong chain is ever saved).
+ */
+export class InvalidConfigError extends ArmadaError {
+  readonly code = 'INVALID_CONFIG';
+}
+
 /** A `SpendSigner` violated its contract (wrong signature count, or returned none). */
 export class SignerContractViolationError extends ArmadaError {
   readonly code = 'SIGNER_CONTRACT_VIOLATION';

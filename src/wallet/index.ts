@@ -1,7 +1,7 @@
 // ABOUTME: Wallet-layer contracts (SPEC §4.2) — the SpendSigner custody boundary, enrollment factory,
 // ABOUTME: and view-only wallets. Implementations land in Phase 2; the interfaces are FROZEN here.
 
-import type { Plan, PlanSelection, ProofHandle, FeeQuote, SpendIntentContext, CctpBinding, PreflightResult } from '../tx/index';
+import type { Plan, PlanSelection, ProofHandle, SpendFee, SpendIntentContext, CctpBinding, PreflightResult } from '../tx/index';
 import type { ProveOptions } from '../prover/index';
 import type { TokenBalance, HistoryEntry, SyncEventMap, Unsubscribe } from '../sync/index';
 
@@ -112,11 +112,13 @@ export interface Wallet {
   consolidate(request: ConsolidateRequest): Promise<Plan[]>;
   /**
    * Cheap pre-proof checks over a plan — or every group of a split spend — (SPEC §4.7): root freshness,
-   * input nullifiers unspent, and (if a `feeQuote` is passed) quote freshness. Returns a finding per
-   * check; the caller decides policy. Works view-only. Turns the 30s-proof-then-revert failure into a
-   * typed, pre-proof result.
+   * input nullifiers unspent, CCTP messenger liveness for a cross-chain unshield (when `pool.cctp` is
+   * configured), and — if you pass `quoteDeadline`, epoch ms on the LOCAL clock — that the fee quote the
+   * plan binds is still usable. Returns a finding per check; the caller decides policy, or passes the
+   * result to `assertPreflight` to throw the matching typed error. Works view-only. Turns the
+   * 30s-proof-then-revert failure into a typed, pre-proof result.
    */
-  preflight(plan: Plan | readonly Plan[], options?: { feeQuote?: FeeQuote }): Promise<PreflightResult>;
+  preflight(plan: Plan | readonly Plan[], options?: { quoteDeadline?: number }): Promise<PreflightResult>;
   /** Requests signatures from the attached SpendSigner during witness assembly, then proves. */
   prove(plan: Plan, options?: ProveOptions): Promise<ProofHandle>;
   /**
@@ -185,7 +187,13 @@ export interface PlanTransferRequest {
     /** Decoded CCTP binding matching `adaptParams` — surfaced to the signer for destination inspection (§4.2.1). */
     adaptBinding?: CctpBinding;
   };
-  readonly fee: FeeQuote;
+  /**
+   * The broadcaster fee, per proof (a split spend of k proofs pays it k times). Omit it for no in-proof fee
+   * note — a self-submitted spend, or a yield redeem whose fee the adapter pays contract-side. Pick the
+   * relayer tier that matches how the spend will be submitted; `feeForOperation(quote, op)` reads it from a
+   * relayer quote and throws if the tier is missing.
+   */
+  readonly fee?: SpendFee;
   /**
    * Token being spent. Defaults to the pool's USDC. Set it to spend a non-USDC shielded balance
    * (e.g. yield vault shares on redeem) — the wallet scans all pool tokens, so any held balance is
@@ -195,15 +203,15 @@ export interface PlanTransferRequest {
 }
 
 export interface MaxTransferRequest {
-  /** The relayer quote; its `transfer` tier is the per-proof fee. */
-  readonly fee: FeeQuote;
+  /** The broadcaster fee per proof (the relayer's `transfer` tier); omit for none. */
+  readonly fee?: SpendFee;
   /** Token to send. Defaults to the pool's USDC. */
   readonly tokenAddress?: `0x${string}`;
 }
 
 export interface MaxUnshieldRequest {
-  /** The relayer quote; the fee tier follows the unshield's binding, as for `planTransfer`. */
-  readonly fee: FeeQuote;
+  /** The broadcaster fee for this unshield's one proof (the tier matching its submission path); omit for none. */
+  readonly fee?: SpendFee;
   /** Token to unshield. Defaults to the pool's USDC. */
   readonly tokenAddress?: `0x${string}`;
   /** Where the unshield goes (its adapter / CCTP binding), without the amount. Omit for a plain unshield. */
@@ -213,8 +221,11 @@ export interface MaxUnshieldRequest {
 export interface ConsolidateRequest {
   /** Token to consolidate. Defaults to the pool's USDC; any pool token works (e.g. yield vault shares). */
   readonly tokenAddress?: `0x${string}`;
-  /** The relayer's quote; its `transfer` tier is the per-proof fee. */
-  readonly fee: FeeQuote;
+  /**
+   * The broadcaster fee per proof (the relayer's `transfer` tier), always paid in USDC — a non-USDC run adds
+   * a USDC fee group. Omit for a self-submitted consolidation with no fee notes.
+   */
+  readonly fee?: SpendFee;
 }
 
 /** Enrollment factory (SPEC §4.2). rootSecret is the canonical identity; no mnemonic intermediary. */

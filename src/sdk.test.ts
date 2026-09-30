@@ -7,7 +7,6 @@ import {
   planSyncWindow,
   quickSyncTelemetry,
   classifyQuickSyncReason,
-  feeScheduleKey,
   finalRootCheckRequired,
   resolveWalletStorage,
   effectiveScanHead,
@@ -22,6 +21,7 @@ import { saveScanState, WalletScanState } from './sync/index';
 import { MemoryStorageAdapter, walletRecordId } from './storage/index';
 import { NoSpendCapabilityError, InvalidKeyMaterialError, InvalidRequestError, UnsupportedCircuitShapeError } from './errors';
 import { initPoseidonPromise, Mnemonic, getTokenDataERC20, getTokenDataHash } from './core/index';
+import { feeForOperation } from './tx/index';
 import type { ProverAdapter, ArtifactSource, ArtifactSet, Groth16Proof } from './prover/index';
 import type { ArmadaSdkConfig } from './index';
 import type { Plan } from './tx/index';
@@ -165,8 +165,7 @@ describe('createArmadaSdk (§4.1)', () => {
     expect(viewOnly.canSpend).toBe(false);
 
     // Spend-path calls on a view-only wallet throw NoSpendCapabilityError.
-    const fee = { schedule: { transfer: '0' }, broadcasterShieldedAddress: '0zk', feesCacheId: 'x', expiresAt: 0 };
-    await expect(viewOnly.planTransfer({ outputs: [{ to0zk: '0zk', amount: 1n }], fee })).rejects.toThrow(NoSpendCapabilityError);
+    await expect(viewOnly.planTransfer({ outputs: [{ to0zk: '0zk', amount: 1n }] })).rejects.toThrow(NoSpendCapabilityError);
     await expect(viewOnly.proveAll([])).rejects.toThrow(NoSpendCapabilityError);
   });
 
@@ -366,37 +365,63 @@ describe('classifyQuickSyncReason — map a fallback cause to a telemetry reason
   });
 });
 
-describe('feeScheduleKey — bind the fee tier matching the plan op (SPEC §4.6.1)', () => {
-  const YIELD = `0x${'ab'.repeat(20)}` as const;
-  const CCTP = `0x${'cd'.repeat(20)}` as const;
+describe('feeForOperation — the relayer tier for an operation, strictly (SPEC §4.6.1, #121)', () => {
+  const QUOTE = {
+    schedule: { transfer: '10', unshield: '20', crossChainUnshield: '30', crossContract: '40' },
+    broadcasterShieldedAddress: '0zk_relayer',
+  };
 
-  it('a plain transfer (no unshield) binds the transfer tier', () => {
-    expect(feeScheduleKey({}, undefined)).toBe('transfer');
+  it('returns the per-proof fee and fee recipient for each operation', () => {
+    expect(feeForOperation(QUOTE, 'transfer')).toEqual({ perProof: 10n, broadcasterShieldedAddress: '0zk_relayer' });
+    expect(feeForOperation(QUOTE, 'unshield').perProof).toBe(20n);
+    expect(feeForOperation(QUOTE, 'crossChainUnshield').perProof).toBe(30n);
+    expect(feeForOperation(QUOTE, 'crossContract').perProof).toBe(40n);
   });
 
-  it('a bare unshield (no adapt) binds the unshield tier', () => {
-    expect(feeScheduleKey({ unshield: { recipient: CCTP, amount: 1n } }, undefined)).toBe('unshield');
+  it('throws instead of falling back when the quote has no tier for the operation', () => {
+    // WHY: the old fallback (missing tier → transfer → '0') silently bound a lower fee or none at all, so
+    // the relayer rejected the transaction only after the user had proved for ~30s.
+    const partial = { schedule: { transfer: '10' }, broadcasterShieldedAddress: '0zk_relayer' };
+    expect(() => feeForOperation(partial, 'crossChainUnshield')).toThrow(InvalidRequestError);
   });
 
-  it('a cross-chain unshield (CCTP adaptParams) binds the crossChainUnshield tier', () => {
-    // WHY: the relayer submits this through atomicCrossChainUnshield → crossChainUnshield fee. Binding
-    // the (lower) transfer tier makes the relayer reject the tx AFTER the user proved for ~30s.
-    expect(
-      feeScheduleKey(
-        { unshield: { recipient: CCTP, amount: 1n, adaptParams: '0xdead', adaptContract: CCTP } },
-        YIELD.toLowerCase(),
-      ),
-    ).toBe('crossChainUnshield');
+  it('rejects a malformed tier value', () => {
+    for (const bad of ['', 'abc', '-1', '1.5']) {
+      expect(() => feeForOperation({ schedule: { transfer: bad }, broadcasterShieldedAddress: '0zk' }, 'transfer')).toThrow(InvalidRequestError);
+    }
   });
+});
 
-  it('a yield redeem (unshield to the yield adapter) binds the crossContract tier', () => {
-    // WHY: redeemAndShield → crossContract fee; the yield adapter is the tell, not the presence of adaptParams.
-    expect(
-      feeScheduleKey(
-        { unshield: { recipient: YIELD, amount: 1n, adaptParams: '0xbeef', adaptContract: YIELD } },
-        YIELD.toLowerCase(),
-      ),
-    ).toBe('crossContract');
+describe('createArmadaSdk config validation — fails fast with INVALID_CONFIG, no network (#121)', () => {
+  const bad: [string, (c: ArmadaSdkConfig) => ArmadaSdkConfig][] = [
+    ['no RPC URLs', (c) => ({ ...c, rpc: { urls: [] } })],
+    ['a malformed RPC URL', (c) => ({ ...c, rpc: { urls: ['not a url'] } })],
+    ['a non-positive chainId', (c) => ({ ...c, pool: { ...c.pool, chainId: 0 } })],
+    ['a malformed pool address', (c) => ({ ...c, pool: { ...c.pool, poolAddress: '0x1234' } })],
+    ['a malformed USDC address', (c) => ({ ...c, pool: { ...c.pool, usdcAddress: 'usdc' as `0x${string}` } })],
+    ['a negative deployBlock', (c) => ({ ...c, pool: { ...c.pool, deployBlock: -1 } })],
+    ['a fractional confirmationDepth', (c) => ({ ...c, pool: { ...c.pool, confirmationDepth: 1.5 } })],
+    ['a negative finalityThreshold', (c) => ({ ...c, pool: { ...c.pool, finalityThreshold: -1 } })],
+    ['a negative sweepNoteThreshold', (c) => ({ ...c, pool: { ...c.pool, sweepNoteThreshold: -1 } })],
+    ['a negative pendingSpendTtlMs', (c) => ({ ...c, pool: { ...c.pool, pendingSpendTtlMs: -1 } })],
+    ['a zero autoSyncIntervalMs', (c) => ({ ...c, pool: { ...c.pool, autoSyncIntervalMs: 0 } })],
+    ['a malformed circuit shape', (c) => ({ ...c, pool: { ...c.pool, supportedShapes: ['2x'] } })],
+    ['a malformed yield adapter address', (c) => ({ ...c, pool: { ...c.pool, wrappers: { yieldAdapter: '0xabc' } } })],
+    ['a malformed CCTP messenger address', (c) => ({ ...c, pool: { ...c.pool, cctp: { domain: 0, messenger: '0xabc' } } })],
+  ];
+
+  for (const [name, mutate] of bad) {
+    it(`rejects ${name}`, async () => {
+      await expect(createArmadaSdk(mutate(makeConfig()))).rejects.toMatchObject({ code: 'INVALID_CONFIG' });
+    });
+  }
+
+  it('accepts a valid config', async () => {
+    const sdk = await createArmadaSdk({
+      ...makeConfig(),
+      pool: { ...makeConfig().pool, confirmationDepth: 1, finalityThreshold: 1, supportedShapes: ['1x2', '8x4'] },
+    });
+    await sdk.close();
   });
 });
 
@@ -600,7 +625,7 @@ describe('wallet.consolidate + planTransferAfter (issue #98)', () => {
   const SHAPES = ['1x1', '1x2', '1x3', '2x1', '2x2', '2x3', '3x1', '3x2', '3x3', '4x1', '4x2', '4x3',
     '5x1', '5x2', '6x1', '6x2', '7x1', '8x1', '8x4'];
   const USDC_HASH = getTokenDataHash(getTokenDataERC20(USDC));
-  const FEE = { schedule: { transfer: '1' }, broadcasterShieldedAddress: '0zk_broadcaster', feesCacheId: 'c', expiresAt: 0 };
+  const FEE = { perProof: 1n, broadcasterShieldedAddress: '0zk_broadcaster' };
   const leaf = (n: number): string => n.toString(16).padStart(64, '0');
 
   // A spend-capable wallet whose persisted scan state holds USDC notes of the given values, per tree.
@@ -694,7 +719,7 @@ describe('wallet.consolidate + planTransferAfter (issue #98)', () => {
   })
 
   describe('maxTransferAmount', () => {
-    const FEE_3 = { ...FEE, schedule: { transfer: '3' } };
+    const FEE_3 = { ...FEE, perProof: 3n };
     const transferOf = (amount: bigint) => ({ outputs: [{ to0zk: '0zk_recipient', amount }], fee: FEE_3 });
 
     it('is the largest transfer planTransfer accepts, at the per-proof transfer fee', async () => {
@@ -707,10 +732,10 @@ describe('wallet.consolidate + planTransferAfter (issue #98)', () => {
       await sdk.close();
     });
 
-    it('maxUnshieldAmount: one proof (unshields never split), at the unshield fee tier', async () => {
+    it('maxUnshieldAmount: one proof (unshields never split), at the given per-proof fee', async () => {
       // Seven 10s: a transfer could split, but an unshield's largest no-change proof is 6x2 → 60 − 3.
       const { sdk, wallet } = await walletWithNotes({ 0: Array.from({ length: 7 }, () => 10n) })
-      const fee = { ...FEE, schedule: { transfer: '1', unshield: '3' } }
+      const fee = { ...FEE, perProof: 3n }
       const recipient = `0x${'ab'.repeat(20)}` as const
       const max = await wallet.maxUnshieldAmount({ fee })
       expect(max).toBe(57n)
@@ -720,9 +745,9 @@ describe('wallet.consolidate + planTransferAfter (issue #98)', () => {
       await sdk.close()
     })
 
-    it('maxUnshieldAmount: a CCTP-bound unshield is priced at the cross-chain tier', async () => {
+    it('maxUnshieldAmount: a CCTP-bound unshield at its (cross-chain) per-proof fee', async () => {
       const { sdk, wallet } = await walletWithNotes({ 0: Array.from({ length: 7 }, () => 10n) })
-      const fee = { ...FEE, schedule: { transfer: '1', unshield: '3', crossChainUnshield: '5' } }
+      const fee = { ...FEE, perProof: 5n }
       const unshield = { recipient: `0x${'ab'.repeat(20)}` as const, adaptParams: `0x${'cd'.repeat(32)}` as const }
       expect(await wallet.maxUnshieldAmount({ fee, unshield })).toBe(55n) // 60 − 5
       await sdk.close()
@@ -734,6 +759,34 @@ describe('wallet.consolidate + planTransferAfter (issue #98)', () => {
       const pending = await wallet.planTransfer(transferOf(15n)); // spends the 20
       await wallet.markSpendPending(pending, `0x${'ab'.repeat(32)}`);
       expect(await wallet.maxTransferAmount({ fee: FEE_3 })).toBe(7n); // the 10 − 3
+      await sdk.close();
+    });
+  });
+
+  describe('fee input (#121)', () => {
+    it('with no fee, a plan carries no fee note (e.g. a yield redeem paid contract-side, or self-submission)', async () => {
+      const { sdk, wallet } = await walletWithNotes({ 0: [20n] });
+      const [plan] = await wallet.planTransfer({ outputs: [{ to0zk: '0zk_recipient', amount: 5n }] });
+      expect(plan!.summary.feeOutput).toBeUndefined();
+      expect(plan!.summary.changeValue).toBe(15n);
+      await sdk.close();
+    });
+
+    it('with a fee, the plan pays exactly `perProof` to the broadcaster', async () => {
+      const { sdk, wallet } = await walletWithNotes({ 0: [20n] });
+      const [plan] = await wallet.planTransfer({ outputs: [{ to0zk: '0zk_recipient', amount: 5n }], fee: { perProof: 3n, broadcasterShieldedAddress: '0zk_broadcaster' } });
+      expect(plan!.summary.feeOutput).toMatchObject({ toShieldedAddress: '0zk_broadcaster', value: 3n });
+      await sdk.close();
+    });
+  });
+
+  describe('prove expiresAt (#121)', () => {
+    it('stamps the policy TTL onto every handle proveAll returns', async () => {
+      const { sdk, wallet } = await walletWithNotes({ 0: [20n] });
+      const plans = await wallet.planTransfer({ outputs: [{ to0zk: (await deriveKeyset(seed(0x66))).shieldedAddress, amount: 5n }] });
+      const deadline = Date.now() + 60_000;
+      const handles = await wallet.proveAll(plans, { expiresAt: deadline });
+      expect(handles.map((h) => h.expiresAt)).toEqual([deadline]);
       await sdk.close();
     });
   });

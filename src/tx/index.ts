@@ -6,7 +6,11 @@ import type { CommitmentCiphertextV2, ReceiverNoteKeys, TXO } from '../sync/inde
 import type { TokenDataGetter, Chain } from '../core/index';
 import type { TransactionData } from './serialize';
 
-/** Mirrors the relayer `GET /fees` response. */
+/**
+ * Mirrors the relayer `GET /fees` response. Planning doesn't take a quote — it takes an explicit
+ * `SpendFee`; use `feeForOperation(quote, op)` to read one tier from a quote. `feesCacheId` and
+ * `expiresAt` are for submitting to the relayer (server clock), which the consumer owns.
+ */
 export interface FeeQuote {
   /** Per-operation fees, USDC raw (6dp) as strings, keyed by op (transfer, unshield, shield, ...). */
   readonly schedule: Readonly<Record<string, string>>;
@@ -224,8 +228,12 @@ export type { TransactionData, TransactionBoundParams } from './serialize';
 export { prove, proveAll } from './prove';
 export type { ProveParams } from './prove';
 
-// Preflight — cheap pre-proof checks over a Plan (SPEC §4.7).
-export { runPreflight, readShieldsPaused } from './preflight';
+// Preflight — cheap pre-proof checks over a Plan (SPEC §4.7), and failed findings as typed errors.
+export { runPreflight, readShieldsPaused, assertPreflight, isCrossChainUnshield } from './preflight';
+
+// The broadcaster fee a spend pays — explicit per-proof amount; strict tier lookup from a relayer quote.
+export { feeForOperation } from './spend-fee';
+export type { SpendFee, FeeOperation } from './spend-fee';
 export type { PreflightCheck, PreflightFinding, PreflightResult, PreflightQueries, PreflightParams } from './preflight';
 
 // Shield-request builder — the ShieldRequest struct for privacyPool.shield() (#410).

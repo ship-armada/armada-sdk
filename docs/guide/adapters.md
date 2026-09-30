@@ -85,6 +85,5 @@ for (const { tokenHash, tokenAddress, spendable, pending } of await wallet.balan
 ```
 
 The wallet scans, reports, and reconstructs history for **any pool ERC20** — you don't pre-register
-tokens (the `additionalTokens` config is deprecated and ignored). `tokenAddress` resolves for every
-ERC20 balance; it is typed optional only to guard a non-ERC20 (e.g. NFT) hash, which is out of scope
-and never returns a hidden balance.
+tokens. `tokenAddress` resolves for every ERC20 balance; it is typed optional only to guard a
+non-ERC20 (e.g. NFT) hash, which is out of scope and never returns a hidden balance.

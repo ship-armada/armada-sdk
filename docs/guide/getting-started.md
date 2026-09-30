@@ -67,6 +67,12 @@ const sdk = await createArmadaSdk({
 artifact manifest are specific to your deployment. The adapters are covered in
 [Adapters](./adapters); everything else has a documented optional field on the config type.
 
+`createArmadaSdk` rejects a malformed config — an empty or invalid RPC URL, a bad address, a negative
+block number — with `InvalidConfigError`, without touching the network. Before the first sync or
+preflight it also checks that the RPC serves `pool.chainId` and that `pool.poolAddress` has contract
+code, so a wrong RPC fails loudly instead of syncing an empty wallet. With several `rpc.urls`, the SDK
+fails over between them.
+
 Instances are self-contained — there is no global state, and you can run more than one in a single
 process. When you are done, `close()` releases the prover's workers:
 

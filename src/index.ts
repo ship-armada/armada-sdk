@@ -11,12 +11,15 @@ export interface PoolConfig {
   readonly deployBlock: number;
   readonly usdcAddress: `0x${string}`;
   /**
-   * @deprecated No longer required. ERC20 token hashes are self-describing (the hash is the padded
-   * address), so the SDK scans, reports, and reconstructs history for ANY pool ERC20 without
-   * pre-registration (issue #90). Retained for backward compatibility; currently ignored.
+   * Wrapper contracts. `yieldAdapter` classifies yield ops (history categories; preflight tells a yield
+   * call apart from a cross-chain unshield). `gaslessShield` is not read by the SDK yet — the gasless
+   * builders take the wrapper address as an argument (see #115).
    */
-  readonly additionalTokens?: readonly `0x${string}`[];
   readonly wrappers?: { gaslessShield?: `0x${string}`; yieldAdapter?: `0x${string}` };
+  /**
+   * CCTP config. `messenger` drives preflight's cross-chain liveness check. `domain` is not read by the
+   * SDK yet (the Phase 4 cross-chain lifecycle will use it).
+   */
   readonly cctp?: { domain: number; messenger: `0x${string}` };
   /**
    * Confirmations a commitment needs before it counts as **spendable** rather than **pending** in
@@ -70,8 +73,12 @@ export interface PoolConfig {
 }
 
 export interface RpcConfig {
+  /**
+   * One or more RPC endpoints for the pool's chain. With several, the SDK fails over between them
+   * (quorum 1) rather than requiring them to agree. Before the first sync or preflight the SDK checks
+   * the RPC reports `pool.chainId` and that `pool.poolAddress` has code (`InvalidConfigError` otherwise).
+   */
   readonly urls: readonly string[];
-  readonly pollIntervalMs?: number;
 }
 
 /** Injected telemetry (SPEC §8). MUST NOT receive key material, seeds, memo plaintext, or 0zk addresses. */

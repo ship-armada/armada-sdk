@@ -296,7 +296,7 @@ them entirely — no POI code exists to stub:
 ```ts
 const sdk = await createArmadaSdk({
   pool: PoolConfig,
-  rpc: { urls: string[], pollIntervalMs?: number },
+  rpc: { urls: string[] },          // several URLs fail over (quorum 1)
   storage: StorageAdapter,          // §4.3
   prover: ProverAdapter,            // §4.5
   artifacts: ArtifactSource,        // §4.5
@@ -513,7 +513,7 @@ explicit pipeline. UTXO selection and calldata serialization are vendored core b
 const plans = await wallet.planTransfer({
   outputs: [{ to0zk, amount, memo? }],
   unshield?: { recipient, amount, adaptParams? },   // adaptParams: CCTP binding, yield binding
-  fee: FeeQuote,                                    // §4.6.1
+  fee?: SpendFee,                                   // §4.6.1 — { perProof, broadcasterShieldedAddress }
 });
 // plans: one Plan per proof — selected TXOs, change output, shape, fee output — inspectable before proving
 
@@ -586,12 +586,17 @@ const tx = buildTransactCalldata(handles.map((h) => h.toTransactionData()), pool
 
 #### 4.6.1 Fee binding
 
-`FeeQuote` is a typed object mirroring the relayer's `/fees` response (schedule, broadcaster 0zk
-address, `feesCacheId`, TTL). Fees are bound in-band on both paths:
+Planning takes an explicit `SpendFee` — `{ perProof, broadcasterShieldedAddress }` — or none (a
+self-submitted spend, or a yield redeem whose fee the adapter pays contract-side). `FeeQuote` is a typed
+object mirroring the relayer's `/fees` response (schedule, broadcaster 0zk address, `feesCacheId`, TTL);
+`feeForOperation(quote, op)` reads the tier for a submission path (`transfer`, `unshield`,
+`crossChainUnshield`, `crossContract`) and throws if the quote has none — never a silent fallback to
+another tier or to zero. The quote's `feesCacheId` / `expiresAt` belong to relay submission (server
+clock), which the consumer owns. Fees are bound in-band on both paths:
 
 - **Transact path:** `planTransfer` computes the fee output note to the broadcaster's 0zk
-  address from the quote and includes it in the plan; the proof then commits it. The quoted fee
-  is **per proof**: a split spend of k proofs pays k × the quoted fee (each proof costs the
+  address from the `SpendFee` and includes it in the plan; the proof then commits it. The fee
+  is **per proof**: a split spend of k proofs pays k × `perProof` (each proof costs the
   relayer its own verification gas), carried by fee notes in the leading plans. The relayer sums
   the fee notes across the batch.
 - **Shield path (#410):** `buildRequest` computes the relayer fee note (§4.6 Shield) with
@@ -610,12 +615,15 @@ parallel formula).
 - merkle root of the plan still accepted by the pool (root freshness),
 - no input nullifier already spent on-chain,
 - shield-pause controller state (for shield plans),
-- fee quote unexpired and consistent with current fee-module state,
-- CCTP domain/messenger liveness for cross-chain plans,
+- fee quote still usable — against a caller-supplied `quoteDeadline` on the local clock (the relayer's
+  `expiresAt` is server wall-clock; comparing it to the client clock turns skew into false expiries),
+- CCTP messenger liveness for cross-chain plans (an adapt binding to anything but the yield adapter),
 - balance sufficiency including fee output.
 
 Callers decide policy; the SDK never silently proceeds past a failed check it was asked to run.
-The 30-second-proof-then-revert failure mode becomes a pre-proof typed error.
+`assertPreflight(result)` throws the matching typed error for callers whose policy is "any failure
+stops the spend" (`NoteAlreadySpentError`, `RootMismatchError`, `FeeQuoteExpiredError`, …). The
+30-second-proof-then-revert failure mode becomes a pre-proof typed error.
 
 ---
 
