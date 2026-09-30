@@ -280,21 +280,22 @@ two spends issued in quick succession can select the same note, and the second r
 
 After you submit, call `markSpendPending` with the plans and the transaction hash. The wallet holds
 their input notes out of selection and out of the `spendable` balance until the spend confirms. Pass
-the whole array, so a split spend holds every plan's notes:
+the whole array, so a split spend holds every plan's notes. It resolves once the hold is saved to
+storage, so from then on the hold survives a reload:
 
 ```ts
 const proofs = await wallet.proveAll(plans);
 const { to, data, value } = buildTransactCalldata(proofs.map((p) => p.toTransactionData()), poolAddress);
 const txid = await submit({ to, data, value }); // your provider / broadcaster
 
-wallet.markSpendPending(plans, txid); // a rapid follow-up planTransfer now skips these notes
+await wallet.markSpendPending(plans, txid); // a rapid follow-up planTransfer now skips these notes
 ```
 
 The hold is released automatically when the spend's `Nullified` event is scanned. If the transaction
 is dropped or reverts, release the notes immediately so they can be respent:
 
 ```ts
-wallet.clearSpendPending(txid);
+await wallet.clearSpendPending(txid);
 ```
 
 As a safety net, holds also expire after `pool.pendingSpendTtlMs` (default 5 minutes), so a submission

@@ -20,9 +20,15 @@ const { fromBlock, syncedThrough, scanned } = await wallet.sync();
 
 ## Checkpoints and resume
 
-Scan state persists through the [storage adapter](./adapters). A later `sync()` resumes from the
-last checkpoint rather than rescanning from the pool's deploy block, so repeat syncs only cover new
-blocks.
+Scan state persists through the [storage adapter](./adapters). A wallet loads its saved state when
+you create it, so `balances()`, `history()`, and planning work straight away after a reload, before
+any sync. A later `sync()` resumes from the last checkpoint rather than rescanning from the pool's
+deploy block, so repeat syncs only cover new blocks.
+
+Each sync builds its result on a copy of the wallet's state and switches over only once the result is
+verified and saved. Reads made while a sync is running — `balances()`, `history()`, `planTransfer` —
+see the last completed sync, never a half-applied one, and a sync that fails leaves the checkpoint
+where it was.
 
 `syncStatus()` is a cheap read of that state — the persisted checkpoint and whether a sync is
 currently in flight. It does no network calls and changes nothing:
@@ -149,6 +155,10 @@ The events and their payloads:
 | `scan:error` | `{ error }` |
 | `note:received` | `{ tokenHash, tokenAddress, value, memo?, senderShieldedAddress? }` |
 | `balance:updated` | `{ tokenHash, tokenAddress, spendable, pending }` |
+
+`note:received` fires once for each incoming transfer a sync picks up — including transfers that
+arrived while the app was closed, which the first sync after a reload reports. A wallet with no saved
+state doesn't replay its history as received on its first sync.
 
 Both token events carry the same pair of identifiers `balances()` returns: `tokenHash` — the
 canonical 32-byte hash, without a `0x` prefix — and `tokenAddress`, its ERC-20 address. Join a live

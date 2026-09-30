@@ -70,6 +70,9 @@ export type { WalletDecryptors, Decryptor, OwnedNote, SentOutput, ApplyResult, S
 // Scan-state persistence — resume sync from the last synced block instead of rescanning from genesis.
 export { saveScanState, loadScanState, scanStateKey } from './scan-persistence';
 
+// Optimistic in-flight spend holds (issue #55) — kept apart from scan state, with their own durable record.
+export { PendingSpends, savePendingSpends, loadPendingSpends, pendingSpendsKey } from './pending-spends';
+
 // UTXO merkletree.
 export { UTXOMerkletree } from './merkletree';
 export type { MerkleProof } from './merkletree';

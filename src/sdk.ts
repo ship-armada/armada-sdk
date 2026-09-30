@@ -18,6 +18,9 @@ import {
   saveScanState,
   loadScanState,
   scanStateKey,
+  PendingSpends,
+  loadPendingSpends,
+  savePendingSpends,
   tokenHashKey,
   erc20AddressFromHash,
   withTokenAddresses,
@@ -34,7 +37,7 @@ import {
   type ReceiverNoteKeys,
   type TokenBalance,
 } from './sync/index';
-import { EncryptedStore, deriveWalletStorageKey, type StorageAdapter } from './storage/index';
+import { EncryptedStore, deriveWalletStorageKey, walletRecordId, type StorageAdapter } from './storage/index';
 import { planSpend, planWitnessInputs, prove, proveAll, runPreflight, type Plan, type PlanSelection, type ProofHandle, type PreflightResult, type FeeQuote, type ProveParams } from './tx/index';
 import { planConsolidate, txosAfterConsolidation } from './tx/consolidate';
 import { maxTransferAmount, maxUnshieldAmount } from './tx/max-transfer';
@@ -359,18 +362,20 @@ class ArmadaWallet implements Wallet {
   // Hash of block `syncedThrough` when it was scanned — the reorg check compares it with the chain's
   // current hash at that height. Undefined before the first sync (or when the node didn't return it).
   private syncedThroughHash: string | undefined;
-  private hydrated = false;
+  // Optimistic in-flight spend holds (issue #55) — the wallet's own intent, kept apart from the chain-derived
+  // scan state (which a sync replaces wholesale) and written durably whenever a hold changes.
+  private holds = new PendingSpends();
   private readonly emitter = new SyncEmitter();
   // Last-emitted per-token balance (keyed by tokenHash, no 0x) so a sync only pushes `balance:updated`
   // for tokens that actually changed — the diff that lets consumers avoid redundant re-reads.
   private readonly lastBalances = new Map<string, { spendable: bigint; pending: bigint }>();
-  // Received-transfer keys already emitted as `note:received`. The first sync seeds this as a baseline
-  // WITHOUT emitting (so a fresh load doesn't replay all past transfers as "received"); later syncs
-  // emit only genuinely-new incoming notes.
+  // Received-transfer keys already emitted as `note:received`. A loaded wallet seeds this from its saved
+  // notes; a wallet with no saved state seeds it on its first sync WITHOUT emitting (so a fresh wallet
+  // doesn't replay its history as "received"). Later syncs emit only genuinely-new incoming notes.
   private readonly seenReceiveKeys = new Set<string>();
   private receiveBaselined = false;
-  // The in-flight sync run, if any — concurrent sync() calls coalesce onto it instead of both mutating
-  // the shared append-only scan state (which would double-apply a range and throw a position gap).
+  // The in-flight sync run, if any — concurrent sync() calls coalesce onto it instead of both building on
+  // the same committed state (which would double-apply a range and throw a position gap).
   private syncInFlight: Promise<{ fromBlock: number; syncedThrough: number; scanned: boolean }> | undefined;
   // The active auto-sync unsubscribe (issue #59), if this wallet is watching — one loop per wallet.
   private watchStop: Unsubscribe | undefined;
@@ -380,7 +385,7 @@ class ArmadaWallet implements Wallet {
     private readonly creationBlock: number,
     private readonly signer: SpendSigner | undefined,
     private readonly ctx: SdkContext,
-    // Ephemeral (claimable-payment) wallets are in-memory only: they never hydrate from or write to
+    // Ephemeral (claimable-payment) wallets are in-memory only: they never load from or write to
     // the StorageAdapter, so no decrypted note data or seed-derived identity hits disk (SPEC §4.3/§6.5).
     private readonly ephemeral: boolean = false,
   ) {
@@ -390,10 +395,13 @@ class ArmadaWallet implements Wallet {
     this.syncedThrough = ctx.deployBlock - 1;
     // Per-wallet at-rest encryption is on by default; the raw adapter is auto-wrapped (§4.3).
     this.storage = resolveWalletStorage(ctx.storage, keyset.viewingPrivateKey, ctx.allowPlaintextStorage);
+    this.recordId = walletRecordId(keyset.viewingPrivateKey);
   }
 
   // This wallet's storage handle — an EncryptedStore wrapping the shared adapter unless plaintext is allowed.
   private readonly storage: StorageAdapter;
+  // Opaque id naming this wallet's records at rest — never the 0zk address (record keys are plaintext, §4.3).
+  private readonly recordId: string;
 
   get shieldedAddress(): string {
     return this.keyset.shieldedAddress;
@@ -412,21 +420,26 @@ class ArmadaWallet implements Wallet {
     };
   }
 
-  // Restore persisted scan state on first use so we resume instead of rescanning from genesis.
-  private async hydrate(): Promise<void> {
-    if (this.hydrated) return;
-    // Ephemeral wallets never touch storage — there is nothing persisted to restore (SPEC §6.5).
-    if (this.ephemeral) {
-      this.hydrated = true;
-      return;
-    }
-    const persisted = await loadScanState(this.storage, this.keyset.shieldedAddress);
+  /**
+   * Load this wallet's saved state — scan checkpoint and spend holds — so a sync resumes instead of
+   * rescanning. The factory calls this once before returning the wallet, so every read (including the
+   * synchronous ones) sees the saved state from the start. Ephemeral wallets never touch storage (§6.5).
+   */
+  async load(): Promise<void> {
+    if (this.ephemeral) return;
+    const persisted = await loadScanState(this.storage, this.recordId);
     if (persisted !== undefined && persisted.syncedThrough > this.syncedThrough) {
       this.scanState = persisted.state;
       this.syncedThrough = persisted.syncedThrough;
       this.syncedThroughHash = persisted.syncedThroughHash;
+      // The saved notes are already known: seed the receive baseline from them, so the first sync reports
+      // exactly the notes that arrived since the checkpoint (e.g. while the app was closed).
+      newReceivedNotes(this.scanState.ownedTxos(), this.scanState.spentNullifiers(), this.keyset.nullifyingKey, this.seenReceiveKeys);
+      this.receiveBaselined = true;
     }
-    this.hydrated = true;
+    this.holds = await loadPendingSpends(this.storage, this.recordId);
+    // A hold whose spend the saved state already confirms is done.
+    this.holds.releaseConfirmed(this.scanState.spentNullifiers());
   }
 
   // Trial-decrypt closures over this wallet's viewing key — shared by the primary + tail applies. Notes
@@ -479,6 +492,7 @@ class ArmadaWallet implements Wallet {
   // Apply a source's batch for [from, to] and report how far it covered. `onProgress` is threaded into
   // the fetch, so it fires per block-window as the source chunks the range — driving granular progress.
   private async applyBatch(
+    state: WalletScanState,
     source: EventSource,
     from: number,
     to: number,
@@ -486,7 +500,7 @@ class ArmadaWallet implements Wallet {
     onProgress?: (coveredThroughBlock: number) => void,
   ): Promise<number> {
     const batch = await source.getEvents(from, to, onProgress);
-    await this.scanState.apply(batch.events, decryptors);
+    await state.apply(batch.events, decryptors);
     return batch.syncedThroughBlock;
   }
 
@@ -494,14 +508,15 @@ class ArmadaWallet implements Wallet {
   // Returns `tailCovered` — true when the primary (indexer) source stopped short of head and RPC
   // covered the remainder, for quick-sync observability.
   private async applyToHead(
+    state: WalletScanState,
     from: number,
     head: number,
     decryptors: WalletDecryptors,
     onProgress?: (coveredThroughBlock: number) => void,
   ): Promise<{ tailCovered: boolean }> {
-    const covered = await this.applyBatch(this.ctx.eventSource, from, head, decryptors, onProgress);
+    const covered = await this.applyBatch(state, this.ctx.eventSource, from, head, decryptors, onProgress);
     if (covered < head) {
-      await this.applyBatch(this.ctx.rpcEventSource, covered + 1, head, decryptors, onProgress);
+      await this.applyBatch(state, this.ctx.rpcEventSource, covered + 1, head, decryptors, onProgress);
       return { tailCovered: true };
     }
     return { tailCovered: false };
@@ -514,11 +529,11 @@ class ArmadaWallet implements Wallet {
    * dropped/reordered/extra commitment in any tree. `rootHistory` is cumulative, so the current tree's
    * live root is a member too. `head` is informational (the check is against current chain state).
    */
-  private async verifyRoots(head: number): Promise<void> {
-    const trees = this.scanState.treeNumbers();
+  private async verifyRoots(state: WalletScanState, head: number): Promise<void> {
+    const trees = state.treeNumbers();
     await Promise.all(
       trees.map(async (tree) => {
-        const computed = this.scanState.treeRoot(tree);
+        const computed = state.treeRoot(tree);
         const root = BigInt(computed.startsWith('0x') ? computed : `0x${computed}`);
         if (!(await this.ctx.isKnownRoot(tree, root))) {
           throw new RootMismatchError(`sync: tree ${tree} root ${computed} not in pool rootHistory @block ${head}`);
@@ -535,12 +550,12 @@ class ArmadaWallet implements Wallet {
    * getLogs backend, an indexer omitting its tail) has a historical root and would pass, letting the
    * checkpoint skip the missing events.
    */
-  private async verifySyncedTree(head: number, blockTag: string | number): Promise<void> {
-    await this.verifyRoots(head);
+  private async verifySyncedTree(state: WalletScanState, head: number, blockTag: string | number): Promise<void> {
+    await this.verifyRoots(state, head);
     const pool = await this.ctx.readPoolTree(blockTag);
-    const localRoot = BigInt(`0x${this.scanState.treeRoot(pool.treeNumber)}`);
-    const localLeaves = this.scanState.treeLength(pool.treeNumber);
-    const aheadOfPool = this.scanState.treeNumbers().some((tree) => tree > pool.treeNumber);
+    const localRoot = BigInt(`0x${state.treeRoot(pool.treeNumber)}`);
+    const localLeaves = state.treeLength(pool.treeNumber);
+    const aheadOfPool = state.treeNumbers().some((tree) => tree > pool.treeNumber);
     if (aheadOfPool || localLeaves !== pool.nextLeafIndex || localRoot !== pool.merkleRoot) {
       throw new RootMismatchError(
         `sync: tree ${pool.treeNumber} built locally (${localLeaves} leaves, root 0x${localRoot.toString(16)}) does not match ` +
@@ -601,15 +616,14 @@ class ArmadaWallet implements Wallet {
   }
 
   async syncStatus(): Promise<{ syncedThrough: number; syncing: boolean }> {
-    // Cheap status (SPEC §4.4): the persisted checkpoint + whether a sync is in flight. Hydrates once so
-    // the checkpoint reflects storage even before the first sync (no getLogs / no state mutation).
-    await this.hydrate();
+    // Cheap status (SPEC §4.4): the checkpoint (loaded from storage when the wallet was created) + whether
+    // a sync is in flight. No getLogs, no state change.
     return { syncedThrough: this.syncedThrough, syncing: this.syncInFlight !== undefined };
   }
 
   async sync(): Promise<{ fromBlock: number; syncedThrough: number; scanned: boolean }> {
-    // Coalesce concurrent syncs (UI poll + manual refresh) onto one run: two calls both mutating the
-    // shared append-only tree would double-apply a range and throw a merkle position gap.
+    // Coalesce concurrent syncs (UI poll + manual refresh) onto one run: two runs both building on the
+    // same committed tree would double-apply a range and throw a merkle position gap.
     if (this.syncInFlight !== undefined) return this.syncInFlight;
     const run = this.runSync();
     this.syncInFlight = run;
@@ -621,7 +635,6 @@ class ArmadaWallet implements Wallet {
   }
 
   private async runSync(recovering = false): Promise<{ fromBlock: number; syncedThrough: number; scanned: boolean }> {
-    await this.hydrate();
     // A reorg under the checkpoint (SPEC §4.4) invalidates the persisted tree — the append-only tree can't
     // un-append an orphaned leaf — so rescan. Checked before the head comparison below: a same-height
     // reorg leaves the head unchanged but still replaces the checkpoint block.
@@ -629,7 +642,8 @@ class ArmadaWallet implements Wallet {
     // Scan only to head − confirmationDepth so a reorg of that depth or shallower can't remove a leaf we
     // already persisted (§4.4 reorg safety); `confirmationDepth: 0` (default) scans to head. A deeper
     // reorg is caught by the checkpoint hash check above.
-    const head = effectiveScanHead(await this.ctx.provider.getBlockNumber(), this.ctx.confirmationDepth);
+    const chainHead = await this.ctx.provider.getBlockNumber();
+    const head = effectiveScanHead(chainHead, this.ctx.confirmationDepth);
     const { fromBlock, scanned } = planSyncWindow(this.syncedThrough, head);
     if (!scanned) return { fromBlock, syncedThrough: this.syncedThrough, scanned: false };
     // Pin verification to the exact block scanned — by hash when the node returns it — so the pool state
@@ -650,10 +664,11 @@ class ArmadaWallet implements Wallet {
 
     const decryptors = this.decryptors();
     const usingIndexer = this.ctx.eventSource !== this.ctx.rpcEventSource;
-    // Snapshot BEFORE applying so ANY failure below — a partial apply mid-batch, a root mismatch, a save
-    // error — rolls the in-memory tree back to its pre-batch state. A half-applied append-only tree would
-    // otherwise wedge every later sync with a permanent position gap (the in-process form of §4.3's pitfall).
-    const rollback = this.scanState.snapshot();
+    // Apply the batch to a COPY of the committed state; it replaces the live state only once it is verified
+    // and saved. Readers (planning, balances, history) never see a half-applied or unverified batch, and
+    // ANY failure below — a partial apply, a root mismatch, a save error — just discards the copy: the
+    // committed state and checkpoint were never touched, so a retry re-scans the range cleanly.
+    let next = this.scanState.clone();
     try {
       let tailCovered = false;
       let fellBack = false;
@@ -667,24 +682,24 @@ class ArmadaWallet implements Wallet {
           // inside this try so ANY failure — malformed/garbage response, HTTP error, position gap, root
           // mismatch — discards the batch and re-scans from RPC (the source of truth), rather than
           // failing the whole sync on a degraded indexer (SPEC §4.4).
-          ({ tailCovered } = await this.applyToHead(from, head, decryptors, emitProgress));
-          await this.verifySyncedTree(head, blockTag);
+          ({ tailCovered } = await this.applyToHead(next, from, head, decryptors, emitProgress));
+          await this.verifySyncedTree(next, head, blockTag);
         } catch (err) {
           fellBack = true;
           fallbackCause = err;
-          this.scanState = WalletScanState.restore(rollback);
-          await this.applyBatch(this.ctx.rpcEventSource, from, head, decryptors, emitProgress);
+          next = this.scanState.clone();
+          await this.applyBatch(next, this.ctx.rpcEventSource, from, head, decryptors, emitProgress);
         }
       } else {
-        ({ tailCovered } = await this.applyToHead(from, head, decryptors, emitProgress));
+        ({ tailCovered } = await this.applyToHead(next, from, head, decryptors, emitProgress));
       }
 
       // Final guard (SPEC §4.4): the accepted tree — RPC baseline or post-fallback RPC rescan — must
       // reproduce the on-chain root. This is the ONLY verification on the pure-RPC path; a mismatch means
-      // the provider returned bad/truncated logs. It throws → the outer catch rolls back and refuses to
-      // advance the checkpoint, so a retry re-scans the range cleanly instead of persisting a corrupt tree.
+      // the provider returned bad/truncated logs. It throws → the copy is discarded and the checkpoint
+      // doesn't advance, so a retry re-scans the range cleanly instead of persisting a corrupt tree.
       if (finalRootCheckRequired(usingIndexer, fellBack)) {
-        await this.verifySyncedTree(head, blockTag);
+        await this.verifySyncedTree(next, head, blockTag);
       }
 
       // Quick-sync observability (SPEC §8): report whether the configured indexer served a
@@ -696,23 +711,26 @@ class ArmadaWallet implements Wallet {
       // (the interface has no index signature, so the double-cast is the sanctioned boundary widening).
       if (qs !== null) this.ctx.telemetry?.emit(qs.event, qs.data as unknown as Readonly<Record<string, unknown>>);
 
-      this.syncedThrough = head;
-      this.syncedThroughHash = headHash;
       // Ephemeral wallets keep their scan state in memory only — never write note data to disk (SPEC §6.5).
       if (!this.ephemeral) {
-        await saveScanState(this.storage, this.keyset.shieldedAddress, this.scanState, head, headHash);
+        await saveScanState(this.storage, this.recordId, next, head, headHash);
       }
+      // Commit: only now — verified and saved — does the new state become the one readers see, and the
+      // checkpoint advance. A save failure above leaves both where they were.
+      this.scanState = next;
+      this.syncedThrough = head;
+      this.syncedThroughHash = headHash;
+      await this.releaseConfirmedHolds();
       this.emitter.emit('scan:complete', { syncedThrough: head });
-      this.emitBalanceUpdates(head);
+      // Balance events use the chain head, as `balances()` does, so both agree on spendable vs pending.
+      this.emitBalanceUpdates(chainHead);
       this.emitReceivedNotes();
       return { fromBlock, syncedThrough: head, scanned: true };
     } catch (err) {
-      // Roll the tree back to the pre-batch snapshot so a poisoned partial state can't wedge later syncs.
-      this.scanState = WalletScanState.restore(rollback);
       // Two failures no retry can fix, so self-heal by rescanning from the deploy block (`recovering`
       // guards a loop): (1) the local tree is missing leaves — a leaf arrived past its next position, so part
       // of the chain was skipped; (2) a reorg removed an already-PERSISTED leaf the hash check couldn't see
-      // (a record saved without a hash), so the rolled-back state itself fails root verification.
+      // (a record saved without a hash), so the committed state itself fails root verification.
       if (!recovering && scanStateMissingLeaves(err)) return this.recoverByRescan('missing-leaves');
       if (shouldRecoverFromReorg(err, await this.persistedRootsInvalid(head), recovering)) {
         return this.recoverByRescan('persisted-root-invalid');
@@ -722,10 +740,10 @@ class ArmadaWallet implements Wallet {
     }
   }
 
-  /** True if the current (rolled-back = persisted) tree state fails on-chain root verification. */
+  /** True if the committed (= persisted) tree state fails on-chain root verification. */
   private async persistedRootsInvalid(head: number): Promise<boolean> {
     try {
-      await this.verifyRoots(head);
+      await this.verifyRoots(this.scanState, head);
       return false;
     } catch (err) {
       return err instanceof RootMismatchError;
@@ -733,27 +751,24 @@ class ArmadaWallet implements Wallet {
   }
 
   /**
-   * Reset chain-derived state (in-memory + persisted record) to rescan from the deploy block; keeps identity
-   * and the optimistic in-flight spend holds (issue #55) — dropping a hold here would let a follow-up spend
-   * reselect an input whose submission is still in flight.
+   * Reset chain-derived state (in-memory + persisted record) to rescan from the deploy block. Identity and
+   * the spend holds (issue #55) live outside the scan state, so they survive — dropping a hold here would
+   * let a follow-up spend reselect an input whose submission is still in flight.
    */
   private async resetChainDerivedState(): Promise<void> {
-    const holds = this.scanState.pendingSpends();
     this.scanState = new WalletScanState();
-    for (const h of holds) this.scanState.markSpendPending([{ tree: h.tree, nullifier: h.nullifier }], h.txid, h.addedAt);
     this.syncedThrough = this.ctx.deployBlock - 1;
     this.syncedThroughHash = undefined;
-    this.hydrated = true; // do NOT re-hydrate the poisoned record on the recovery rescan
     this.lastBalances.clear();
     this.seenReceiveKeys.clear();
     this.receiveBaselined = false;
-    // Delete the poisoned record so a crash mid-rescan can't re-hydrate it.
-    if (!this.ephemeral) await this.storage.del(scanStateKey(this.keyset.shieldedAddress));
+    // Delete the poisoned record so a crash mid-rescan can't load it again.
+    if (!this.ephemeral) await this.storage.del(scanStateKey(this.recordId));
   }
 
   // Push `note:received` for incoming transfers discovered since the last sync (`newReceivedNotes`
-  // handles the classification + `tree:position` de-dup, mutating `seenReceiveKeys`). The first sync
-  // seeds the baseline WITHOUT emitting, so a fresh load doesn't replay history as "received".
+  // handles the classification + `tree:position` de-dup, mutating `seenReceiveKeys`). A wallet with no
+  // saved state seeds the baseline on its first sync WITHOUT emitting, so it doesn't replay history.
   private emitReceivedNotes(): void {
     const fresh = newReceivedNotes(
       this.scanState.ownedTxos(),
@@ -777,7 +792,7 @@ class ArmadaWallet implements Wallet {
   // (unknown hash → no address) are skipped. First sync after load emits the baseline for held tokens.
   private emitBalanceUpdates(head: number): void {
     this.prunePendingSpends();
-    const balances = this.scanState.balances(this.keyset.nullifyingKey, { currentBlock: head, finalityThreshold: this.ctx.finalityThreshold });
+    const balances = this.scanState.balances(this.keyset.nullifyingKey, { currentBlock: head, finalityThreshold: this.ctx.finalityThreshold }, this.holds.list());
     const seen = new Set<string>();
     for (const b of balances) {
       seen.add(b.tokenHash);
@@ -811,13 +826,13 @@ class ArmadaWallet implements Wallet {
   async balances(): Promise<TokenBalance[]> {
     this.prunePendingSpends();
     const head = await this.ctx.provider.getBlockNumber();
-    const raw = this.scanState.balances(this.keyset.nullifyingKey, { currentBlock: head, finalityThreshold: this.ctx.finalityThreshold });
+    const raw = this.scanState.balances(this.keyset.nullifyingKey, { currentBlock: head, finalityThreshold: this.ctx.finalityThreshold }, this.holds.list());
     return withTokenAddresses(raw, (h) => this.resolveTokenAddress(h));
   }
 
   spendableNullifiers(): readonly { readonly tree: number; readonly nullifier: bigint }[] {
     return this.scanState
-      .spendableTxos(this.keyset.nullifyingKey)
+      .spendableTxos(this.keyset.nullifyingKey, this.holds.list())
       .map((txo) => ({ tree: txo.tree, nullifier: TransactNote.getNullifier(this.keyset.nullifyingKey, txo.position) }));
   }
 
@@ -884,7 +899,7 @@ class ArmadaWallet implements Wallet {
   async planTransfer(request: PlanTransferRequest): Promise<Plan[]> {
     if (!this.canSpend) throw new NoSpendCapabilityError('planTransfer: wallet has no SpendSigner');
     this.prunePendingSpends();
-    const txos = this.scanState.spendableTxos(this.keyset.nullifyingKey);
+    const txos = this.scanState.spendableTxos(this.keyset.nullifyingKey, this.holds.list());
     // A fragmented transfer yields >1 group, submitted atomically as one transact([...]); each group is
     // an independent Plan proved separately (the caller proves all, then combines the calldata).
     return this.withMerkleProofs(planSpend(this.spendParams(request, txos, this.rootsFor(txos))));
@@ -896,7 +911,7 @@ class ArmadaWallet implements Wallet {
     // tree). Planning only — the hypothetical notes can't be proved, so no merkle proofs are captured.
     const currentTree = this.currentTree();
     const txos = txosAfterConsolidation(
-      this.scanState.spendableTxos(this.keyset.nullifyingKey),
+      this.scanState.spendableTxos(this.keyset.nullifyingKey, this.holds.list()),
       consolidation,
       currentTree,
     );
@@ -907,14 +922,14 @@ class ArmadaWallet implements Wallet {
 
   async maxTransferAmount(request: MaxTransferRequest): Promise<bigint> {
     this.prunePendingSpends();
-    const txos = this.scanState.spendableTxos(this.keyset.nullifyingKey);
+    const txos = this.scanState.spendableTxos(this.keyset.nullifyingKey, this.holds.list());
     // The planner request for a transfer (`transfer` fee tier); the max probes it with its own amounts.
     return maxTransferAmount(this.spendParams({ ...request, outputs: [] }, txos, this.rootsFor(txos)));
   }
 
   async maxUnshieldAmount(request: MaxUnshieldRequest): Promise<bigint> {
     this.prunePendingSpends();
-    const txos = this.scanState.spendableTxos(this.keyset.nullifyingKey);
+    const txos = this.scanState.spendableTxos(this.keyset.nullifyingKey, this.holds.list());
     // The planner request for this unshield (its binding picks the fee tier); the max probes its value.
     const destination = request.unshield ?? { recipient: MAX_UNSHIELD_PROBE_RECIPIENT };
     const params = this.spendParams(
@@ -937,7 +952,7 @@ class ArmadaWallet implements Wallet {
       throw new InvalidRequestError('consolidate: pool.supportedShapes is required (it sizes the merge groups)');
     }
     this.prunePendingSpends();
-    const txos = this.scanState.spendableTxos(this.keyset.nullifyingKey);
+    const txos = this.scanState.spendableTxos(this.keyset.nullifyingKey, this.holds.list());
     // A consolidation is a bare transact() self-spend, priced by the relayer at the `transfer` tier, PER
     // PROOF, always in USDC (the only token the relayer counts).
     const feeValue = BigInt(request.fee.schedule['transfer'] ?? '0');
@@ -1100,9 +1115,10 @@ class ArmadaWallet implements Wallet {
     };
   }
 
-  markSpendPending(plan: Plan | readonly Plan[], txid: string): void {
+  async markSpendPending(plan: Plan | readonly Plan[], txid: string): Promise<void> {
     if (!this.canSpend) throw new NoSpendCapabilityError('markSpendPending: wallet has no SpendSigner');
-    this.scanState.markSpendPending(this.planNullifiers(planList(plan)), txid, Date.now());
+    this.holds.mark(this.planNullifiers(planList(plan)), txid, Date.now(), this.scanState.spentNullifiers());
+    await this.saveHolds();
   }
 
   // The (tree, nullifier) of every input note the plans spend.
@@ -1115,14 +1131,26 @@ class ArmadaWallet implements Wallet {
     );
   }
 
-  clearSpendPending(txid: string): void {
-    this.scanState.clearSpendPending(txid);
+  async clearSpendPending(txid: string): Promise<void> {
+    if (this.holds.clear(txid)) await this.saveHolds();
+  }
+
+  // Write the holds record — awaited, so a resolved markSpendPending/clearSpendPending is durable.
+  private async saveHolds(): Promise<void> {
+    if (!this.ephemeral) await savePendingSpends(this.storage, this.recordId, this.holds);
+  }
+
+  // After a sync commits, holds whose spend it confirmed (their `Nullified` event is in) are done.
+  private async releaseConfirmedHolds(): Promise<void> {
+    if (this.holds.releaseConfirmed(this.scanState.spentNullifiers())) await this.saveHolds();
   }
 
   // Release optimistic in-flight spend holds past their TTL (issue #55) before any read that depends on
   // spendability — the safety net for a submission that never confirmed (dropped/reverted/app crash).
   private prunePendingSpends(): void {
-    this.scanState.prunePendingSpends(Date.now() - this.ctx.pendingSpendTtlMs);
+    // In memory only: the saved record is pruned by the same TTL whenever it's loaded, and rewritten on
+    // the next hold change.
+    this.holds.prune(Date.now() - this.ctx.pendingSpendTtlMs);
   }
 
   async exportDisclosure(): Promise<Uint8Array> {
@@ -1269,6 +1297,12 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
     ...(config.telemetry !== undefined ? { telemetry: config.telemetry } : {}),
   };
 
+  // Every wallet is returned with its saved state already loaded (scan checkpoint + spend holds).
+  const loaded = async (w: ArmadaWallet): Promise<ArmadaWallet> => {
+    await w.load();
+    return w;
+  };
+
   const wallet: WalletFactory = {
     async fromRootSecret(rootSecret, opts) {
       const keyset = await deriveKeyset(rootSecret);
@@ -1276,7 +1310,7 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
       // else auto-derive a LocalSigner (the rootSecret already grants spend power, so withholding it
       // buys no security — the least-privilege path is a view-only wallet from a viewing key).
       const signer = opts.signer ?? (opts.viewOnly === true ? undefined : await LocalSigner.fromRootSecret(rootSecret));
-      return new ArmadaWallet(keyset, opts.creationBlock, signer, ctx);
+      return loaded(new ArmadaWallet(keyset, opts.creationBlock, signer, ctx));
     },
     async fromMnemonic(mnemonic, opts) {
       const index = opts.derivationIndex ?? 0;
@@ -1284,7 +1318,7 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
       // fromRootSecret): explicit signer wins, `viewOnly` opts out, else auto-derive a LocalSigner.
       const keyset = await deriveKeysetFromMnemonic(mnemonic, index);
       const signer = opts.signer ?? (opts.viewOnly === true ? undefined : await LocalSigner.fromMnemonic(mnemonic, index));
-      return new ArmadaWallet(keyset, opts.creationBlock, signer, ctx);
+      return loaded(new ArmadaWallet(keyset, opts.creationBlock, signer, ctx));
     },
     // Ephemeral (claimable payments, SPEC §6): in-memory, never persisted, auto-attaches a signer so
     // the claiming flow can spend. `seed` is the claim's 32-byte root; scans from the pool's deploy
@@ -1292,7 +1326,7 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
     async ephemeralFromSeed(seed) {
       const keyset = await deriveKeyset(seed);
       const signer = await LocalSigner.fromRootSecret(seed);
-      return new ArmadaWallet(keyset, config.pool.deployBlock, signer, ctx, true);
+      return loaded(new ArmadaWallet(keyset, config.pool.deployBlock, signer, ctx, true));
     },
     async viewOnlyFromViewingKey(shareableViewingKey, opts) {
       const { viewingPrivateKey, spendingPublicKey } = decodeShareableViewingKey(shareableViewingKey);
@@ -1307,7 +1341,7 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
         masterPublicKey: identity.masterPublicKey,
         shieldedAddress: identity.shieldedAddress,
       };
-      return new ArmadaWallet(keyset, opts.creationBlock, undefined, ctx);
+      return loaded(new ArmadaWallet(keyset, opts.creationBlock, undefined, ctx));
     },
   };
 

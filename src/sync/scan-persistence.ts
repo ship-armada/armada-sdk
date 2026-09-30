@@ -19,14 +19,16 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 // `chain/` prefix → chain-derived, so resetChainState() wipes it on redeploy (keeps identity records).
-export function scanStateKey(shieldedAddress: string): string {
-  return `chain/scan-state/${shieldedAddress}`;
+// `recordId` is the wallet's opaque id (`walletRecordId`) — never the 0zk address: keys are stored in
+// plaintext even when values are encrypted (SPEC §4.3).
+export function scanStateKey(recordId: string): string {
+  return `chain/scan-state/${recordId}`;
 }
 
 /** Persist a wallet's scan state + the highest synced block (and that block's hash, when known). */
 export async function saveScanState(
   storage: StorageAdapter,
-  shieldedAddress: string,
+  recordId: string,
   state: WalletScanState,
   syncedThrough: number,
   syncedThroughHash?: string,
@@ -36,7 +38,7 @@ export async function saveScanState(
     syncedThrough,
     ...(syncedThroughHash !== undefined ? { syncedThroughHash } : {}),
   };
-  await storage.put(scanStateKey(shieldedAddress), encoder.encode(JSON.stringify(data)));
+  await storage.put(scanStateKey(recordId), encoder.encode(JSON.stringify(data)));
 }
 
 /**
@@ -48,11 +50,11 @@ export async function saveScanState(
  */
 export async function loadScanState(
   storage: StorageAdapter,
-  shieldedAddress: string,
+  recordId: string,
 ): Promise<{ state: WalletScanState; syncedThrough: number; syncedThroughHash?: string } | undefined> {
   let raw: Uint8Array | undefined;
   try {
-    raw = await storage.get(scanStateKey(shieldedAddress));
+    raw = await storage.get(scanStateKey(recordId));
   } catch {
     // e.g. an EncryptedStore GCM auth failure on a corrupted/foreign blob — treat as a cache miss.
     return undefined;

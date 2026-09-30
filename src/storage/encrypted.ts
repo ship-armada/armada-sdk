@@ -12,6 +12,8 @@ const enc = new TextEncoder();
 const STORAGE_KEY_SALT = enc.encode(DOMAIN_TAGS.storage.salt);
 const STORAGE_KEY_INFO = enc.encode(DOMAIN_TAGS.storage.info);
 const STORAGE_KEY_INFO_WALLET = enc.encode(DOMAIN_TAGS.storage.infoWallet);
+const RECORD_ID_INFO = enc.encode(DOMAIN_TAGS.storage.infoRecordId);
+const RECORD_ID_BYTES = 16;
 const NONCE_BYTES = 12;
 const KEY_BYTES = 32;
 
@@ -37,6 +39,18 @@ export function deriveStorageKey(rootSecret: Uint8Array): Uint8Array {
  */
 export function deriveWalletStorageKey(viewingPrivateKey: Uint8Array): Uint8Array {
   return hkdf(sha256, viewingPrivateKey, STORAGE_KEY_SALT, STORAGE_KEY_INFO_WALLET, KEY_BYTES);
+}
+
+/**
+ * The opaque per-wallet id that names this wallet's records at rest (scan state, spend holds). Record
+ * KEYS are stored in plaintext even when values are encrypted, so they must never contain the 0zk
+ * address (SPEC §4.3: a disk reader learns nothing about which shielded identities are present). Derived
+ * from the viewing private key — present on every wallet type — so it's stable across reloads; a
+ * distinct HKDF `info` keeps it independent of the storage key. 32 hex chars.
+ */
+export function walletRecordId(viewingPrivateKey: Uint8Array): string {
+  const id = hkdf(sha256, viewingPrivateKey, STORAGE_KEY_SALT, RECORD_ID_INFO, RECORD_ID_BYTES);
+  return Array.from(id, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 function randomNonce(): Uint8Array {

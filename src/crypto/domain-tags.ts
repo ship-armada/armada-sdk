@@ -8,11 +8,13 @@
  */
 export const DOMAIN_TAGS = {
   /** At-rest storage-key derivation (§4.3). `info` for the rootSecret path; `infoWallet` for the
-   *  per-wallet path keyed by the viewing private key. */
+   *  per-wallet path keyed by the viewing private key; `infoRecordId` for the opaque per-wallet id that
+   *  names records at rest (never the 0zk address — record keys are stored in plaintext). */
   storage: {
     salt: 'armada/sdk/storage/v1',
     info: 'at-rest-encryption',
     infoWallet: 'at-rest-encryption/wallet-v1',
+    infoRecordId: 'record-id/wallet-v1',
   },
   // claimSeed: { salt: 'armada/claim-seed/v1' }  // reserved (§6.2) — lands with claimable payments.
 } as const;

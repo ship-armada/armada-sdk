@@ -6,6 +6,7 @@ import { initPoseidonPromise, getTokenDataERC20, TransactNote, type TokenData } 
 import { deriveKeyset } from '../wallet/derive';
 import { UTXOMerkletree } from './merkletree';
 import { WalletScanState, ownedNoteFromTransactNote, type WalletDecryptors, type OwnedNote } from './scan-engine';
+import { PendingSpends } from './pending-spends';
 import type { DecodedPoolEvents, DecodedTransactCommitment, DecodedShieldCommitment } from './event-decoder';
 import { createTransferNote, encryptNoteToReceiver, tryDecryptCommitment, type CommitmentCiphertextV2 } from './note-crypto';
 import { RootMismatchError, PositionGapError } from '../errors';
@@ -288,7 +289,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
     expect(state.shieldRelayerFees().size).toBe(0);
   });
 
-  describe('optimistic in-flight spend tracking (issue #55)', () => {
+  describe('optimistic in-flight spend holds (issue #55) — kept outside the scan state', () => {
     const nf = (position: number, tree = 0) => ({ tree, nullifier: TransactNote.getNullifier(NK, position) });
     const BAL = { currentBlock: 200, finalityThreshold: 10 };
 
@@ -301,80 +302,123 @@ describe('wallet scan orchestrator (§4.4)', () => {
       return state;
     }
 
-    it('excludes a pending-spent note from spendableTxos so it is not reselected', async () => {
+    it('excludes a held note from spendableTxos so it is not reselected', async () => {
       const state = await twoNoteState();
-      state.markSpendPending([nf(0)], TXID, 1000);
-      const spendable = state.spendableTxos(NK);
+      const holds = new PendingSpends();
+      holds.mark([nf(0)], TXID, 1000, state.spentNullifiers());
+      const spendable = state.spendableTxos(NK, holds.list());
       expect(spendable).toHaveLength(1);
       expect(spendable[0]!.position).toBe(1);
     });
 
-    it('reflects the pending spend in balances (out of spendable, into pendingSpent)', async () => {
+    it('reflects the hold in balances (out of spendable, into pendingSpent)', async () => {
       const state = await twoNoteState();
-      state.markSpendPending([nf(0)], TXID, 1000);
-      expect(state.balances(NK, BAL)).toEqual([{ tokenHash: TOKEN, spendable: 100n, spendableNotes: 1, pending: 0n, pendingSpent: 100n }]);
+      const holds = new PendingSpends();
+      holds.mark([nf(0)], TXID, 1000, state.spentNullifiers());
+      expect(state.balances(NK, BAL, holds.list())).toEqual([
+        { tokenHash: TOKEN, spendable: 100n, spendableNotes: 1, pending: 0n, pendingSpent: 100n },
+      ]);
     });
 
-    it('a confirmed Nullified event supersedes the optimistic hold (no double bookkeeping)', async () => {
+    it('a confirmed Nullified event releases the hold (no double bookkeeping)', async () => {
       const state = await twoNoteState();
-      state.markSpendPending([nf(0)], TXID, 1000);
-      expect(state.pendingSpends()).toHaveLength(1);
+      const holds = new PendingSpends();
+      holds.mark([nf(0)], TXID, 1000, state.spentNullifiers());
       // The real spend confirms on-chain — the same nullifier arrives in a scan batch.
       await state.apply(
         { ...noEvents(), nullifiers: [{ ...nf(0), blockNumber: 1, txid: TXID }] },
         { transact: async () => undefined },
       );
-      expect(state.pendingSpends()).toHaveLength(0); // optimistic entry dropped — confirmed set is authoritative
-      const spendable = state.spendableTxos(NK);
-      expect(spendable).toHaveLength(1);
-      expect(spendable[0]!.position).toBe(1);
+      expect(holds.releaseConfirmed(state.spentNullifiers())).toBe(true);
+      expect(holds.list()).toHaveLength(0); // confirmed set is authoritative
+      const spendable = state.spendableTxos(NK, holds.list());
+      expect(spendable.map((t) => t.position)).toEqual([1]);
       // Position 0 is now genuinely spent → out of balances entirely (not lingering as pendingSpent).
-      expect(state.balances(NK, BAL)).toEqual([{ tokenHash: TOKEN, spendable: 100n, spendableNotes: 1, pending: 0n }]);
+      expect(state.balances(NK, BAL, holds.list())).toEqual([{ tokenHash: TOKEN, spendable: 100n, spendableNotes: 1, pending: 0n }]);
     });
 
-    it('markSpendPending ignores a note already confirmed-spent (confirmed set wins)', async () => {
+    it('mark ignores a note already confirmed-spent (confirmed set wins)', async () => {
       const state = await twoNoteState();
       await state.apply(
         { ...noEvents(), nullifiers: [{ ...nf(0), blockNumber: 1, txid: TXID }] },
         { transact: async () => undefined },
       );
-      state.markSpendPending([nf(0)], '0xother', 1000);
-      expect(state.pendingSpends()).toHaveLength(0);
+      const holds = new PendingSpends();
+      holds.mark([nf(0)], '0xother', 1000, state.spentNullifiers());
+      expect(holds.list()).toHaveLength(0);
     });
 
-    it('clearSpendPending releases a submission by txid (dropped/reverted tx)', async () => {
+    it('clear releases a submission by txid (dropped/reverted tx)', async () => {
       const state = await twoNoteState();
-      state.markSpendPending([nf(0)], TXID, 1000);
-      state.markSpendPending([nf(1)], '0xother', 1000);
-      state.clearSpendPending(TXID);
+      const holds = new PendingSpends();
+      holds.mark([nf(0)], TXID, 1000, []);
+      holds.mark([nf(1)], '0xother', 1000, []);
+      expect(holds.clear(TXID)).toBe(true);
       // Only the other submission's hold remains.
-      expect(state.pendingSpends().map((p) => p.txid)).toEqual(['0xother']);
-      expect(state.spendableTxos(NK).map((t) => t.position)).toEqual([0]);
+      expect(holds.list().map((p) => p.txid)).toEqual(['0xother']);
+      expect(state.spendableTxos(NK, holds.list()).map((t) => t.position)).toEqual([0]);
+      expect(holds.clear('0xnone')).toBe(false);
     });
 
-    it('prunePendingSpends drops holds older than the cutoff, keeps newer ones', async () => {
+    it('prune drops holds older than the cutoff, keeps newer ones', async () => {
       const state = await twoNoteState();
-      state.markSpendPending([nf(0)], '0xstale', 1000);
-      state.markSpendPending([nf(1)], '0xfresh', 5000);
-      state.prunePendingSpends(3000); // cutoff between the two addedAt timestamps
-      expect(state.pendingSpends().map((p) => p.txid)).toEqual(['0xfresh']);
-      expect(state.spendableTxos(NK).map((t) => t.position)).toEqual([0]);
-    });
-
-    it('persists pending holds across a snapshot/restore round-trip', async () => {
-      const state = await twoNoteState();
-      state.markSpendPending([nf(0)], TXID, 1000);
-      const restored = WalletScanState.restore(state.snapshot());
-      expect(restored.spendableTxos(NK).map((t) => t.position)).toEqual([1]);
-      expect(restored.pendingSpends()).toEqual(state.pendingSpends());
+      const holds = new PendingSpends();
+      holds.mark([nf(0)], '0xstale', 1000, []);
+      holds.mark([nf(1)], '0xfresh', 5000, []);
+      expect(holds.prune(3000)).toBe(true); // cutoff between the two addedAt timestamps
+      expect(holds.list().map((p) => p.txid)).toEqual(['0xfresh']);
+      expect(state.spendableTxos(NK, holds.list()).map((t) => t.position)).toEqual([0]);
     });
 
     it('is tree-scoped: a hold in tree 0 does not touch the same position in tree 1', async () => {
       const state = new WalletScanState();
       await state.apply({ ...noEvents(), transacts: [mkTransact(0, 0, leafHex(80))] }, { transact: async () => owned(TOKEN, 100n) });
       await state.apply({ ...noEvents(), transacts: [mkTransact(1, 0, leafHex(81))] }, { transact: async () => owned(TOKEN, 200n) });
-      state.markSpendPending([nf(0, 0)], TXID, 1000); // hold tree-0 position-0 only
-      expect(state.spendableTxos(NK).map((t) => ({ tree: t.tree, position: t.position }))).toEqual([{ tree: 1, position: 0 }]);
+      const holds = new PendingSpends();
+      holds.mark([nf(0, 0)], TXID, 1000, []); // hold tree-0 position-0 only
+      expect(state.spendableTxos(NK, holds.list()).map((t) => ({ tree: t.tree, position: t.position }))).toEqual([{ tree: 1, position: 0 }]);
+    });
+  });
+
+  describe('clone — a sync builds on an independent copy (#119)', () => {
+    it('applying to the clone leaves the original untouched', async () => {
+      const original = new WalletScanState();
+      await original.apply({ ...noEvents(), transacts: [mkTransact(0, 0, leafHex(80))] }, { transact: async () => owned(TOKEN, 100n) });
+      const rootBefore = original.treeRoot(0);
+
+      const copy = original.clone();
+      await copy.apply({ ...noEvents(), transacts: [mkTransact(0, 1, leafHex(81))] }, { transact: async () => owned(TOKEN, 200n) });
+
+      expect(copy.treeLength(0)).toBe(2);
+      expect(copy.txoCount).toBe(2);
+      expect(original.treeLength(0)).toBe(1);
+      expect(original.txoCount).toBe(1);
+      expect(original.treeRoot(0)).toBe(rootBefore);
+      // The copy continues the same append-only tree (no position gap) and matches a direct build.
+      const direct = new WalletScanState();
+      await direct.apply(
+        { ...noEvents(), transacts: [mkTransact(0, 0, leafHex(80)), mkTransact(0, 1, leafHex(81))] },
+        { transact: async () => undefined },
+      );
+      expect(copy.treeRoot(0)).toBe(direct.treeRoot(0));
+    });
+  });
+
+  describe('snapshot — every TXO field survives a round-trip (#119)', () => {
+    it('keeps memo, disclosed sender, and shield fee', async () => {
+      const state = new WalletScanState();
+      await state.apply(
+        { ...noEvents(), transacts: [mkTransact(0, 0, leafHex(80))], shields: [{ ...mkShield(0, 1, leafHex(81), 500n), fee: 3n }] },
+        {
+          transact: async () => ({ ...owned(TOKEN, 100n), memo: 'thanks for lunch', senderShieldedAddress: '0zk1sender' }),
+          shield: async () => owned(TOKEN, 500n),
+        },
+      );
+      const restored = WalletScanState.restore(JSON.parse(JSON.stringify(state.snapshot())));
+      const [transfer, shield] = restored.ownedTxos();
+      expect(transfer).toMatchObject({ memo: 'thanks for lunch', senderShieldedAddress: '0zk1sender' });
+      expect(shield?.shieldFee).toBe(3n);
+      expect(restored.ownedTxos()).toEqual(state.ownedTxos());
     });
   });
 });

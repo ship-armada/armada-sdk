@@ -19,7 +19,7 @@ import {
 import { RootMismatchError, QuickSyncSchemaError, IndexerHttpError, PositionGapError } from './errors';
 import { deriveKeyset, LocalSigner } from './wallet/index';
 import { saveScanState, WalletScanState } from './sync/index';
-import { MemoryStorageAdapter } from './storage/index';
+import { MemoryStorageAdapter, walletRecordId } from './storage/index';
 import { NoSpendCapabilityError, InvalidKeyMaterialError, InvalidRequestError, UnsupportedCircuitShapeError } from './errors';
 import { initPoseidonPromise, Mnemonic, getTokenDataERC20, getTokenDataHash } from './core/index';
 import type { ProverAdapter, ArtifactSource, ArtifactSet, Groth16Proof } from './prover/index';
@@ -182,16 +182,16 @@ describe('createArmadaSdk (§4.1)', () => {
     const plan = { selectedInputs: [{ tree: 0, position: 0 }] } as unknown as Plan;
 
     // View-only wallets can't spend, so they can't have an in-flight spend to track.
-    expect(() => viewOnly.markSpendPending(plan, '0xabc')).toThrow(NoSpendCapabilityError);
-    // Spend-capable: marking + clearing are synchronous and don't throw.
-    expect(() => full.markSpendPending(plan, '0xabc')).not.toThrow();
+    await expect(viewOnly.markSpendPending(plan, '0xabc')).rejects.toThrow(NoSpendCapabilityError);
+    // Spend-capable: marking + clearing resolve once the hold record is written.
+    await expect(full.markSpendPending(plan, '0xabc')).resolves.toBeUndefined();
     // A split spend marks every group's inputs in one call.
     const group2 = { selectedInputs: [{ tree: 0, position: 1 }] } as unknown as Plan;
-    expect(() => full.markSpendPending([plan, group2], '0xabc')).not.toThrow();
-    expect(() => viewOnly.markSpendPending([plan, group2], '0xabc')).toThrow(NoSpendCapabilityError);
-    expect(() => full.clearSpendPending('0xabc')).not.toThrow();
+    await expect(full.markSpendPending([plan, group2], '0xabc')).resolves.toBeUndefined();
+    await expect(viewOnly.markSpendPending([plan, group2], '0xabc')).rejects.toThrow(NoSpendCapabilityError);
+    await expect(full.clearSpendPending('0xabc')).resolves.toBeUndefined();
     // clearSpendPending is a no-op safe call even with nothing pending / on a view-only wallet.
-    expect(() => viewOnly.clearSpendPending('0xdef')).not.toThrow();
+    await expect(viewOnly.clearSpendPending('0xdef')).resolves.toBeUndefined();
   });
 
   it('syncStatus reports the checkpoint (deployBlock-1 fresh) and syncing=false without a sync (P4.6, #118)', async () => {
@@ -203,11 +203,11 @@ describe('createArmadaSdk (§4.1)', () => {
     await sdk.close();
   });
 
-  it('syncStatus hydrates the persisted checkpoint from storage (P4.6)', async () => {
+  it('a wallet loads its persisted checkpoint from storage when created (P4.6, #119)', async () => {
     const store = new MemoryStorageAdapter();
     await store.open({ schemaVersion: 1, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1 });
-    const address = (await deriveKeyset(seed(0x77))).shieldedAddress;
-    await saveScanState(store, address, new WalletScanState(), 500); // pre-seed a checkpoint at block 500
+    const recordId = walletRecordId((await deriveKeyset(seed(0x77))).viewingPrivateKey);
+    await saveScanState(store, recordId, new WalletScanState(), 500); // pre-seed a checkpoint at block 500
 
     // Plaintext storage so the wallet reads the raw adapter we seeded (bypasses the per-wallet key).
     const sdk = await createArmadaSdk({ ...makeConfig(), storage: store, dangerouslyAllowPlaintextStorage: true });
@@ -413,6 +413,18 @@ describe('ephemeral wallets are in-memory only (SPEC §4.2/§4.3/§6.5)', () => 
     expect(enrolled.persists).toBe(true);
     await sdk.close();
   });
+
+  it('an ephemeral wallet keeps its spend holds in memory — nothing is written to storage (#119)', async () => {
+    const storage = new MemoryStorageAdapter();
+    const sdk = await createArmadaSdk({ ...makeConfig(), storage });
+    const eph = await sdk.wallet.ephemeralFromSeed(seed(7));
+    await eph.markSpendPending({ selectedInputs: [{ tree: 0, position: 0 }] } as unknown as Plan, '0xclaim');
+
+    const keys: string[] = [];
+    for await (const { key } of storage.list('')) keys.push(key);
+    expect(keys.filter((k) => !k.startsWith('identity/'))).toEqual([]); // only the namespace marker
+    await sdk.close();
+  });
 });
 
 describe('finalRootCheckRequired — every sync verifies the accepted tree against chain (SPEC §4.4)', () => {
@@ -600,7 +612,7 @@ describe('wallet.consolidate + planTransferAfter (issue #98)', () => {
     await initPoseidonPromise;
     const store = new MemoryStorageAdapter();
     await store.open({ schemaVersion: 1, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1 });
-    const address = (await deriveKeyset(seed(0x55))).shieldedAddress;
+    const recordId = walletRecordId((await deriveKeyset(seed(0x55))).viewingPrivateKey);
     const trees = Object.entries(notesByTree).map(([tree, values]) => ({
       tree: Number(tree),
       leaves: values.map((_, i) => leaf(Number(tree) * 1000 + i + 1)),
@@ -612,7 +624,7 @@ describe('wallet.consolidate + planTransferAfter (issue #98)', () => {
       })),
     );
     const state = WalletScanState.restore({ trees, txos, spent: [], unshields: [], sent: [] });
-    await saveScanState(store, address, state, 500);
+    await saveScanState(store, recordId, state, 500);
     const base = makeConfig();
     const sdk = await createArmadaSdk({
       ...base,
@@ -620,8 +632,7 @@ describe('wallet.consolidate + planTransferAfter (issue #98)', () => {
       storage: store,
       dangerouslyAllowPlaintextStorage: true,
     });
-    const wallet = await sdk.wallet.fromRootSecret(seed(0x55), { creationBlock: 1 });
-    await wallet.syncStatus(); // hydrate the persisted scan state
+    const wallet = await sdk.wallet.fromRootSecret(seed(0x55), { creationBlock: 1 }); // loads the saved scan state
     return { sdk, wallet };
   }
 
@@ -721,7 +732,7 @@ describe('wallet.consolidate + planTransferAfter (issue #98)', () => {
       const { sdk, wallet } = await walletWithNotes({ 0: [20n, 10n] });
       expect(await wallet.maxTransferAmount({ fee: FEE_3 })).toBe(27n); // 30 − 3
       const pending = await wallet.planTransfer(transferOf(15n)); // spends the 20
-      wallet.markSpendPending(pending, `0x${'ab'.repeat(32)}`);
+      await wallet.markSpendPending(pending, `0x${'ab'.repeat(32)}`);
       expect(await wallet.maxTransferAmount({ fee: FEE_3 })).toBe(7n); // the 10 − 3
       await sdk.close();
     });

@@ -9,7 +9,9 @@ Each wallet's persisted data — notes, balances, and scan state — is encrypte
 storage adapter. Values are AES-256-GCM encrypted under a per-wallet key derived from the wallet's
 viewing key with HKDF-SHA-256, using a fresh random nonce per record. Your
 [storage adapter](./adapters) only ever sees ciphertext; it stores and retrieves bytes and never
-handles keys.
+handles keys. Record names (the keys your adapter stores values under) are stored as-is, so they never
+contain a wallet's `0zk` address: each wallet's records are named by an opaque id derived from its
+viewing key.
 
 This is on by default and wraps whatever adapter you pass, so plaintext note data never reaches
 disk.

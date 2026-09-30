@@ -50,7 +50,8 @@ export interface Wallet {
   sync(): Promise<{ fromBlock: number; syncedThrough: number; scanned: boolean }>;
   /**
    * Current sync state (SPEC §4.4 `sdk.sync.status`) — the persisted checkpoint block and whether a sync
-   * is in flight. Cheap: hydrates the checkpoint from storage once, does no getLogs and no state change.
+   * is in flight. Cheap: the checkpoint was loaded from storage when the wallet was created; this does no
+   * getLogs and no state change.
    */
   syncStatus(): Promise<{ syncedThrough: number; syncing: boolean }>;
   /** Per-token spendable/pending balances over the synced TXO set. */
@@ -133,11 +134,16 @@ export interface Wallet {
    * released automatically when the spend confirms (its `Nullified` event supersedes it), by
    * `clearSpendPending(txid)` on a known drop/revert, or by the `pendingSpendTtlMs` safety-net TTL.
    * Pass every group of a split spend (the whole `planTransfer` array) so none of its inputs stay
-   * selectable. Requires spend capability.
+   * selectable. Requires spend capability (rejects with `NoSpendCapabilityError`). Resolves once the hold
+   * is written to storage, so it survives a reload from then on — await it before treating the
+   * submission as recorded.
    */
-  markSpendPending(plan: Plan | readonly Plan[], txid: string): void;
-  /** Release the optimistic holds for a submission that will not confirm (dropped/reverted tx). */
-  clearSpendPending(txid: string): void;
+  markSpendPending(plan: Plan | readonly Plan[], txid: string): Promise<void>;
+  /**
+   * Release the optimistic holds for a submission that will not confirm (dropped/reverted tx). Resolves
+   * once the release is written to storage.
+   */
+  clearSpendPending(txid: string): Promise<void>;
   /** Verifiable single-note disclosure receipt (SPEC §5.3). Available on view-only wallets too. */
   exportDisclosure(txoRef: string): Promise<Uint8Array>;
   /** Export this wallet's shareable viewing key (Railgun wire format) — grants view-only capability. */

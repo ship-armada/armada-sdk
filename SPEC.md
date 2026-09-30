@@ -448,7 +448,9 @@ Requirements:
   history caches are AEAD-encrypted under a storage key derived from the wallet's rootSecret
   (HKDF, domain-separated). Chain-public data (merkle nodes, commitment ciphertexts as seen
   on-chain) may be stored in plaintext. Locking a wallet = dropping the storage key; there is no
-  plaintext to scrub, so tab crash leaks nothing.
+  plaintext to scrub, so tab crash leaks nothing. Record keys are stored in plaintext, so they never
+  contain a wallet's 0zk address — a wallet's records are named by an opaque id derived from its
+  viewing key.
 - **Multi-instance safe.** No process-wide lock files. Browser: one IndexedDB per
   (pool, origin); Node: per-instance path from config with advisory locking and a clear typed
   error on conflict.
@@ -633,7 +635,9 @@ Structured memo content (invoice/request ids, refund 0zk address) is a versioned
 The sync module emits `note:received` with the decrypted note (amount, token, memo content,
 sender 0zk if disclosed) as a first-class typed event when scanning registers a new TXO for a
 loaded wallet — replacing the interface's inference-from-balance-change
-(`useIncomingTransferDetector`).
+(`useIncomingTransferDetector`). This includes notes that arrived while the app was closed: the first
+sync after a reload reports everything new since the saved checkpoint, while a wallet with no saved
+state does not replay its history.
 
 ### 5.3 Receipts (selective disclosure)
 
