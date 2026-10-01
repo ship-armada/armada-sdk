@@ -1,10 +1,11 @@
 // ABOUTME: Guards the bundled root `dist/index.d.ts` export surface — the note-crypto/keyset/token
 // ABOUTME: helpers node10 (classic moduleResolution) consumers import from the package root (#facade-removal).
 
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
+import { distAvailable } from '../test/dist-guard';
 
 /**
  * WHY: a bare `export *` from this multi-entry tsup build silently drops symbols the dts bundler
@@ -36,6 +37,9 @@ const REQUIRED_ROOT_EXPORTS = [
   'TokenDataGetter',
   'Chain',
   'AddressData',
+  // 0zk address codec — on the root so consumers needn't load /core for it (#116)
+  'decodeAddress',
+  'encodeAddress',
   'Ciphertext',
   // scan/balance event surface (sync) — consumed via wallet.on()
   'SyncEventMap',
@@ -44,13 +48,8 @@ const REQUIRED_ROOT_EXPORTS = [
 
 describe('root .d.ts export surface (node10 consumer contract)', () => {
   it('re-exports the note-crypto / keyset / token helpers on the package root', (ctx) => {
-    // Guards the BUILT type surface, so it needs `dist/`. `npm test`'s pretest builds the vendored
-    // engine but not tsup, so on a fresh tree (pre-build) the dist may be absent — soft-skip there;
-    // `prepare`/CI always build first, which is where this contract actually matters.
-    if (!existsSync(ROOT_DTS)) {
-      ctx.skip();
-      return;
-    }
+    // Guards the BUILT type surface, so it needs `dist/` (skipped on an unbuilt local tree; required in CI).
+    if (!distAvailable(ctx)) return;
     const dts = readFileSync(ROOT_DTS, 'utf8');
     for (const symbol of REQUIRED_ROOT_EXPORTS) {
       expect(

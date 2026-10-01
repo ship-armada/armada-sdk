@@ -6,6 +6,7 @@
     "src/core/index.ts",
     "src/wallet/index.ts",
     "src/prover/index.ts",
+    "src/node/index.ts",
     "src/tx/index.ts",
     "src/sync/index.ts",
     "src/storage/index.ts"

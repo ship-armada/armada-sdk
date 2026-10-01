@@ -87,8 +87,8 @@ try {
 ```
 
 Match SDK errors on their `code`, not with `instanceof` or on the message. Every SDK error carries a
-stable `code`, while `instanceof` can be false when the error class was loaded from a different
-entry point (for example `@armada/sdk` and `@armada/sdk/core`).
+stable `code`, while `instanceof` can be false when the SDK is loaded twice — for example once as an
+ES module and once as CommonJS.
 
 ## Signers
 

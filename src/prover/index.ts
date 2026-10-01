@@ -88,7 +88,8 @@ export { createSnarkjsProver } from './snarkjs-prover';
 export { createWorkerProver, createProverWorkerHandler, webWorkerChannel } from './worker-prover';
 export type { WorkerChannel, ProverWorkerRequest, ProverWorkerReply, BrowserWorkerLike } from './worker-prover';
 
-// Concrete artifact sources — resolve compiled circuit artifacts by shape (filesystem / HTTP).
-export { FilesystemArtifactSource, HttpArtifactSource } from './artifact-source';
+// Concrete artifact source — resolves compiled circuit artifacts by shape over HTTP. (The Node filesystem
+// source is on the `@armada/sdk/node` entry, so browser bundles never see `node:fs`.)
+export { HttpArtifactSource } from './artifact-source';
 // IndexedDB artifact cache (browser) — wrap a source so the zkey is downloaded once, not per proof.
 export { IndexedDbArtifactCache } from './artifact-cache';

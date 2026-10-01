@@ -1,12 +1,10 @@
-// ABOUTME: Tests for the concrete ArtifactSource impls (§4.5) — filesystem reads the armada-circuits
-// ABOUTME: build layout from disk; HTTP fetches the same layout (injected fetch), with 404/abort/timeout handling.
+// ABOUTME: Tests for HttpArtifactSource (§4.5) — fetches the armada-circuits build layout over HTTP (injected
+// ABOUTME: fetch), verified against a pinned manifest, with 404/abort/timeout handling.
 
-import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
-import { readFileSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { FilesystemArtifactSource, HttpArtifactSource } from './artifact-source';
+import { HttpArtifactSource } from './artifact-source';
 import { artifactDigest, shapeKey } from './manifest';
 import type { ArtifactManifest } from './manifest';
 import type { CircuitShape } from './index';
@@ -18,33 +16,7 @@ const ZKEY = readFileSync(fixture('mul.zkey'));
 const VKEY_RAW = readFileSync(fixture('mul.vkey.json'), 'utf8');
 const SHAPE: CircuitShape = { nullifiers: 1, commitments: 1 }; // "1x1"
 
-// Lay the mul fixture out as a build/<N>x<M>/ directory the filesystem source expects.
-let baseDir: string;
-beforeAll(() => {
-  baseDir = join(tmpdir(), `armada-artifacts-${WASM.length}`);
-  mkdirSync(join(baseDir, '1x1', 'main_1x1_js'), { recursive: true });
-  writeFileSync(join(baseDir, '1x1', 'main_1x1_js', 'main_1x1.wasm'), WASM);
-  writeFileSync(join(baseDir, '1x1', 'final.zkey'), ZKEY);
-  writeFileSync(join(baseDir, '1x1', 'vkey.json'), VKEY_RAW);
-});
-afterAll(() => {
-  rmSync(baseDir, { recursive: true, force: true });
-});
-
-describe('ArtifactSource impls (§4.5)', () => {
-  it('FilesystemArtifactSource resolves the build layout from disk', async () => {
-    const source = new FilesystemArtifactSource(baseDir);
-    const set = await source.resolve(SHAPE);
-    expect(Array.from(set.wasm)).toEqual(Array.from(WASM));
-    expect(Array.from(set.zkey)).toEqual(Array.from(ZKEY));
-    expect(set.vkey).toEqual(JSON.parse(VKEY_RAW));
-  });
-
-  it('FilesystemArtifactSource throws for a missing shape', async () => {
-    const source = new FilesystemArtifactSource(join(tmpdir(), 'armada-artifacts-does-not-exist'));
-    await expect(source.resolve(SHAPE)).rejects.toThrow();
-  });
-
+describe('HttpArtifactSource (§4.5)', () => {
   const bytesResponse = (bytes: Uint8Array): Response =>
     ({ ok: true, status: 200, arrayBuffer: async () => new Uint8Array(bytes).buffer } as unknown as Response);
   const VKEY_BYTES = new TextEncoder().encode(VKEY_RAW);
@@ -121,11 +93,6 @@ describe('ArtifactSource impls (§4.5)', () => {
   it('HttpArtifactSource times out a stalled download instead of hanging the proof forever', async () => {
     const source = new HttpArtifactSource('https://cdn.example/artifacts', { manifest, fetchFn: hangingFetch(), timeoutMs: 20 });
     await expect(source.resolve(SHAPE)).rejects.toThrow(/timed out after 20 ms/);
-  });
-
-  it('FilesystemArtifactSource rejects an aborted resolve with AbortedError', async () => {
-    const source = new FilesystemArtifactSource(baseDir);
-    await expect(source.resolve(SHAPE, { signal: AbortSignal.abort() })).rejects.toBeInstanceOf(AbortedError);
   });
 
   describe('default fetch `this` binding', () => {

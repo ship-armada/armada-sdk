@@ -176,9 +176,10 @@ existing memo field.
 - **Browser-first, Node-compatible.** No Node built-ins in core modules; environment adapters
   (storage, workers) are injected. Target: the Vite `nodePolyfills`/`level-js` scaffolding in
   `apps/armada-interface/vite.config.ts` becomes removable, except what snarkjs itself needs.
-- Single package with subpath exports (`@armada/sdk/core`, `/wallet`, `/payments`, `/ops`), not a
-  three-package split — the engine/wallet/shared-models triple with version skew is one of the
-  things being fixed.
+- Single package with subpath exports (`@armada/sdk/core`, `/wallet`, `/prover`, `/prover/worker`,
+  and the Node-only `/node`; `/payments` and `/ops` are added with Phases 3 and 4), code-split so every
+  entry shares one engine copy and one module state. Not a three-package split — the
+  engine/wallet/shared-models triple with version skew is one of the things being fixed.
 
 ### 3.2 Layering
 
@@ -870,7 +871,7 @@ implement it against the same spec later.
 ## 10. Implementation plan
 
 **Status (2026-10-01):** Phases 0–2 are complete; Phase 3 (payments) and Phase 4 (ops journal) are
-next. The `/payments` and `/ops` subpath exports are placeholders until then.
+next. The `/payments` and `/ops` subpath exports are added with them.
 
 Phases are sequential; each has acceptance criteria and lands behind integration flags so the
 stock SDK path keeps working until Phase 5. Per repo policy every phase ships unit +

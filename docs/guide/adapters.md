@@ -68,23 +68,18 @@ circuit wasm and zkey receive the full private witness, so integrity matters —
 artifact against a pinned manifest:
 
 ```ts
-import {
-  HttpArtifactSource,
-  FilesystemArtifactSource,
-  VerifiedArtifactSource,
-} from '@armada/sdk';
+import { HttpArtifactSource, VerifiedArtifactSource } from '@armada/sdk';
+import { FilesystemArtifactSource } from '@armada/sdk/node';
 
-new HttpArtifactSource('https://…', { manifest });           // fetch over HTTP, verified
-new VerifiedArtifactSource(                                   // read from disk (Node), verified
-  new FilesystemArtifactSource('/path/to/artifacts'),
-  manifest,
-);
+new HttpArtifactSource('https://…', { manifest });              // fetch over HTTP
+new FilesystemArtifactSource('/path/to/artifacts', { manifest }); // read from disk (Node only)
+new VerifiedArtifactSource(mySource, manifest);                   // add the check to a source of your own
 ```
 
-`HttpArtifactSource` verifies against its manifest itself, and requires either a `manifest` or an
+Both built-in sources verify against their manifest, and each requires either a `manifest` or an
 explicit `dangerouslySkipIntegrity: true` — there is no unverified default. `FilesystemArtifactSource`
-does **not** verify on its own; wrap it in a `VerifiedArtifactSource` (which works around any source)
-to check it against the manifest. The manifest is a build-time trust anchor pinned in your app; it
+is on the Node-only `@armada/sdk/node` entry, so a browser bundle never has to resolve `node:fs`. Wrap
+a source of your own in a `VerifiedArtifactSource` to get the same check. The manifest is a build-time trust anchor pinned in your app; it
 should not be fetched from the same origin as the artifacts, or the integrity check is
 self-referential.
 

@@ -1,5 +1,5 @@
-// ABOUTME: Concrete ArtifactSource implementations (SPEC §4.5) — resolve compiled circuit artifacts by
-// ABOUTME: shape from a local directory (node) or over HTTP (browser), matching armada-circuits/build layout.
+// ABOUTME: HttpArtifactSource (SPEC §4.5) — resolves compiled circuit artifacts by shape over HTTP, matching the
+// ABOUTME: armada-circuits/build layout. The Node filesystem source lives in src/node (the `@armada/sdk/node` entry).
 
 import type { ArtifactResolveOptions, ArtifactSet, ArtifactSource, CircuitShape } from './index';
 import { verifyArtifactIntegrity, type ArtifactManifest } from './manifest';
@@ -8,41 +8,14 @@ import { AbortedError } from '../errors';
 /** How long `HttpArtifactSource` waits for one shape's artifacts to download before giving up. */
 const DEFAULT_HTTP_TIMEOUT_MS = 120_000;
 
-function shapeDir(shape: CircuitShape): string {
+export function shapeDir(shape: CircuitShape): string {
   return `${shape.nullifiers}x${shape.commitments}`;
 }
 
-// Relative paths within a shape's build directory (armada-circuits/build/<N>x<M>/).
-function artifactPaths(shape: CircuitShape): { wasm: string; zkey: string; vkey: string } {
+/** Relative paths within a shape's build directory (armada-circuits/build/<N>x<M>/). */
+export function artifactPaths(shape: CircuitShape): { wasm: string; zkey: string; vkey: string } {
   const key = shapeDir(shape);
   return { wasm: `${key}/main_${key}_js/main_${key}.wasm`, zkey: `${key}/final.zkey`, vkey: `${key}/vkey.json` };
-}
-
-/**
- * Resolve artifacts from a local `armada-circuits/build/` directory (node). `node:fs` is imported
- * lazily so this module stays bundlable for browser entry points that never call it.
- */
-export class FilesystemArtifactSource implements ArtifactSource {
-  constructor(private readonly baseDir: string) {}
-
-  async resolve(shape: CircuitShape, options?: ArtifactResolveOptions): Promise<ArtifactSet> {
-    const signal = options?.signal;
-    if (signal?.aborted) throw new AbortedError('artifact resolve: aborted before start');
-    const fs = await import('node:fs/promises');
-    const path = await import('node:path');
-    const p = artifactPaths(shape);
-    const read = (file: string): Promise<Buffer> => fs.readFile(path.join(this.baseDir, file), signal !== undefined ? { signal } : {});
-    let wasm: Buffer, zkey: Buffer, vkeyBytes: Buffer;
-    try {
-      [wasm, zkey, vkeyBytes] = await Promise.all([read(p.wasm), read(p.zkey), read(p.vkey)]);
-    } catch (err) {
-      if (signal?.aborted) throw new AbortedError('artifact resolve: aborted', { cause: err });
-      throw err;
-    }
-    // Keep the raw vkey bytes (for the manifest integrity check) and parse the object from them.
-    const vkeyRaw = new Uint8Array(vkeyBytes);
-    return { wasm: new Uint8Array(wasm), zkey: new Uint8Array(zkey), vkey: JSON.parse(new TextDecoder().decode(vkeyRaw)) as object, vkeyRaw };
-  }
 }
 
 /**

@@ -168,6 +168,9 @@ export {
   getTokenDataHash,
   initPoseidonPromise,
   ChainType,
+  // The 0zk address codec, so a consumer of the note helpers above needn't load `/core` for it (#116).
+  decodeAddress,
+  encodeAddress,
 } from './core/index';
 export type {
   TokenData,

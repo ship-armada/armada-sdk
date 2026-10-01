@@ -32,39 +32,64 @@
   },
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     },
     "./core": {
-      "types": "./dist/core/index.d.ts",
-      "import": "./dist/core/index.js",
-      "require": "./dist/core/index.cjs"
+      "import": {
+        "types": "./dist/core/index.d.ts",
+        "default": "./dist/core/index.js"
+      },
+      "require": {
+        "types": "./dist/core/index.d.cts",
+        "default": "./dist/core/index.cjs"
+      }
     },
     "./wallet": {
-      "types": "./dist/wallet/index.d.ts",
-      "import": "./dist/wallet/index.js",
-      "require": "./dist/wallet/index.cjs"
-    },
-    "./payments": {
-      "types": "./dist/payments/index.d.ts",
-      "import": "./dist/payments/index.js",
-      "require": "./dist/payments/index.cjs"
-    },
-    "./ops": {
-      "types": "./dist/ops/index.d.ts",
-      "import": "./dist/ops/index.js",
-      "require": "./dist/ops/index.cjs"
+      "import": {
+        "types": "./dist/wallet/index.d.ts",
+        "default": "./dist/wallet/index.js"
+      },
+      "require": {
+        "types": "./dist/wallet/index.d.cts",
+        "default": "./dist/wallet/index.cjs"
+      }
     },
     "./prover": {
-      "types": "./dist/prover/index.d.ts",
-      "import": "./dist/prover/index.js",
-      "require": "./dist/prover/index.cjs"
+      "import": {
+        "types": "./dist/prover/index.d.ts",
+        "default": "./dist/prover/index.js"
+      },
+      "require": {
+        "types": "./dist/prover/index.d.cts",
+        "default": "./dist/prover/index.cjs"
+      }
     },
     "./prover/worker": {
-      "types": "./dist/prover/worker.d.ts",
-      "import": "./dist/prover/worker.js",
-      "require": "./dist/prover/worker.cjs"
+      "import": {
+        "types": "./dist/prover/worker.d.ts",
+        "default": "./dist/prover/worker.js"
+      },
+      "require": {
+        "types": "./dist/prover/worker.d.cts",
+        "default": "./dist/prover/worker.cjs"
+      }
+    },
+    "./node": {
+      "import": {
+        "types": "./dist/node/index.d.ts",
+        "default": "./dist/node/index.js"
+      },
+      "require": {
+        "types": "./dist/node/index.d.cts",
+        "default": "./dist/node/index.cjs"
+      }
     }
   },
   "scripts": {
