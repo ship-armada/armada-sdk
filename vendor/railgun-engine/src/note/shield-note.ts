@@ -1,3 +1,4 @@
+// DIVERGES FROM UPSTREAM: getPublicViewingKey imported from utils/keys-utils directly, not the utils barrel.
 import { bytesToHex } from 'ethereum-cryptography/utils';
 import { poseidon } from '../utils/poseidon';
 import { ShieldCiphertext, TokenData } from '../models/formatted-types';

@@ -1,4 +1,5 @@
-# ABOUTME: CI for @armada/sdk — lint, typecheck, unit + differential vector suite, build, on every PR.
+# ABOUTME: CI for @armada/sdk — lint, typecheck, unit + differential vector suite, build, vendoring guards, and
+# ABOUTME: a docs build (TypeDoc + VitePress) on every PR, so a docs break fails here rather than at deploy.
 name: ci
 
 on:
@@ -14,14 +15,29 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npm install
+      - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run typecheck:vendor
       - run: npm test
       - run: npm run build
-      - name: PPOI strip guard (no proof-of-innocence code in vendor/)
+      - name: PPOI strip guard (no proof-of-innocence code in src/ or vendor/)
         run: |
-          if grep -rn 'POI' vendor/ | grep -v 'POINTS'; then
-            echo "::error::PPOI reference found in vendor/ — must be stripped (SPEC §3.5)"; exit 1
+          if grep -rn 'POI' src/ vendor/ | grep -v 'POINTS'; then
+            echo "::error::PPOI reference found in src/ or vendor/ — must be stripped (SPEC §3.5)"; exit 1
           fi
+      - name: Vendored files that diverge from upstream are marked (SPEC §3.4)
+        run: node scripts/check-vendor-divergence.mjs
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - name: Build API reference (TypeDoc)
+        run: npm run docs:api
+      - name: Build docs site (VitePress)
+        run: npm run docs:build

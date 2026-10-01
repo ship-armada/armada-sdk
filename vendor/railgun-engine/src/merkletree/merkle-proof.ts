@@ -1,3 +1,5 @@
+// DIVERGES FROM UPSTREAM: hashLeftRight comes from the lifted merkle-math.ts instead of
+// Merkletree.hashLeftRight (merkletree.ts, the tree/DB orchestration, is not vendored).
 import { poseidon } from '../utils/poseidon';
 import { MerkleProof } from '../models/formatted-types';
 import { TREE_DEPTH } from '../models/merkletree-types';

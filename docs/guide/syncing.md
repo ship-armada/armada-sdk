@@ -164,6 +164,7 @@ Both token events carry the same pair of identifiers `balances()` returns: `toke
 canonical 32-byte hash, without a `0x` prefix — and `tokenAddress`, its ERC-20 address. Join a live
 event back to a `balances()` snapshot on `tokenHash`, or key your UI on `tokenAddress`.
 
-On a `sync()` that does work, `scan:started` fires first and `scan:complete` last. In between,
-`balance:updated` fires for each token whose balance changed — a token that is fully spent emits a
-zero. If the scan throws, `scan:error` fires.
+On a `sync()` that does work, `scan:started` fires first. `scan:complete` fires once the new state is
+saved, so `balances()` and `history()` already reflect it. After it, `balance:updated` fires for each
+token whose balance changed (a token that is fully spent emits a zero), then `note:received` for each
+new incoming transfer. If the scan throws, `scan:error` fires instead.

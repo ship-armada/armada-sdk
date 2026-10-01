@@ -1,6 +1,6 @@
-// ABOUTME: Pure merkle hash math lifted from the engine's merkletree/merkletree.ts. DIVERGES FROM
-// ABOUTME: UPSTREAM: only the tree-agnostic hash is kept here; the tree-building/DB-sync orchestration
-// ABOUTME: in merkletree.ts is dropped as ABOVE_CORE (rebuilt in the SDK's sync layer).
+// ABOUTME: Pure merkle hash math lifted from the engine's merkletree/merkletree.ts.
+// ABOUTME: DIVERGES FROM UPSTREAM: only the tree-agnostic hash is kept here; the tree-building/DB-sync
+// ABOUTME: orchestration in merkletree.ts is dropped as ABOVE_CORE (rebuilt in the SDK's sync layer).
 
 import { poseidonHex } from '../utils/poseidon';
 

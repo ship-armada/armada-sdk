@@ -3,14 +3,15 @@
 A fork-and-shrink replacement of the Railgun SDK stack, owning the shielded-pool crypto core,
 wallet layer, payments, and operations journal for the Armada protocol.
 
-**Status:** Phase 1 (bootstrap + pinned-core parity). The package skeleton, vendoring provenance
-(`NOTICE.md`), and Phase 0 differential vectors (`test/vectors/`) are in place; the vendored
-`core/` and its differential runner land in Phase 1.
+**Status:** Phases 0–2 are complete (`SPEC.md` §10): the pinned crypto core at parity, and the wallet
+layer — storage, sync, keys and signers, proving, transaction building and preflight. Phase 3 (payments)
+and Phase 4 (the operations journal) are next.
 
 ## What this is
 
 - A browser-first, Node-compatible TypeScript package (`@armada/sdk`) with subpath exports:
-  `@armada/sdk/core`, `/wallet`, `/payments`, `/ops`.
+  `@armada/sdk/core`, `/wallet`, `/prover` and `/prover/worker` (the prebuilt Web Worker entry).
+  `/payments` and `/ops` are placeholders that export nothing yet; they land with Phases 3 and 4.
 - A **byte-compatible** reimplementation of the pinned Railgun crypto core (Poseidon/BN254,
   commitments, nullifiers, merkle math, note ECIES, EdDSA spend authorization, `TransactionStructV2`
   serialization) — enforced forever by the differential vector suite in `test/vectors/`.

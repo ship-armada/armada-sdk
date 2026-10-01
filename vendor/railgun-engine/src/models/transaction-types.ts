@@ -1,3 +1,5 @@
+// DIVERGES FROM UPSTREAM: TXIDVersion imported from txid-version.ts (poi-types is dropped, SPEC §3.5);
+// PoseidonMerkleVerifier imported from its own typechain module, not the dropped barrel.
 import { BytesLike } from 'ethers';
 import { PoseidonMerkleVerifier } from '../abi/typechain/PoseidonMerkleVerifier';
 import { CommitmentPreimageStruct } from '../abi/typechain/PoseidonMerkleAccumulator';

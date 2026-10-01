@@ -1,3 +1,5 @@
+// DIVERGES FROM UPSTREAM: TXIDVersion imported from txid-version.ts (poi-types is dropped, SPEC §3.5);
+// a proof-of-innocence reference removed from a comment.
 import { ByteLength, fromUTF8String, ByteUtils } from '../utils/bytes';
 import { SNARK_PRIME } from '../utils/constants';
 import { keccak256 } from '../utils/hash';

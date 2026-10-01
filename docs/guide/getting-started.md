@@ -63,6 +63,17 @@ const sdk = await createArmadaSdk({
 });
 ```
 
+`createSnarkjsProver` proves on the calling thread, which suits Node. In a browser app, prove in a
+Web Worker instead so the page doesn't freeze for the length of a proof:
+
+```ts
+import { createWorkerProver, webWorkerChannel } from '@armada/sdk';
+
+const prover = createWorkerProver(() =>
+  webWorkerChannel(new Worker(new URL('@armada/sdk/prover/worker', import.meta.url), { type: 'module' })),
+);
+```
+
 `pool`, `rpc`, `storage`, `prover`, and `artifacts` are required; the addresses, RPC URL, and
 artifact manifest are specific to your deployment. The adapters are covered in
 [Adapters](./adapters); everything else has a documented optional field on the config type.

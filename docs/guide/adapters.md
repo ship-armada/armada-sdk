@@ -64,8 +64,8 @@ worker.
 ## Artifacts
 
 The artifact source resolves the circuit artifacts (wasm, zkey, vkey) for a given circuit shape. The
-circuit wasm and zkey receive the full private witness, so integrity matters — the built-ins verify
-each resolved artifact against a pinned manifest:
+circuit wasm and zkey receive the full private witness, so integrity matters — check each resolved
+artifact against a pinned manifest:
 
 ```ts
 import {
@@ -74,16 +74,17 @@ import {
   VerifiedArtifactSource,
 } from '@armada/sdk';
 
-new HttpArtifactSource('https://…', { manifest });           // fetch over HTTP
-new FilesystemArtifactSource('/path/to/artifacts');          // read from disk (Node)
-new VerifiedArtifactSource(                                   // wrap any source with verification
+new HttpArtifactSource('https://…', { manifest });           // fetch over HTTP, verified
+new VerifiedArtifactSource(                                   // read from disk (Node), verified
   new FilesystemArtifactSource('/path/to/artifacts'),
   manifest,
 );
 ```
 
-`HttpArtifactSource` requires either a `manifest` or an explicit `dangerouslySkipIntegrity: true` —
-there is no unverified default. The manifest is a build-time trust anchor pinned in your app; it
+`HttpArtifactSource` verifies against its manifest itself, and requires either a `manifest` or an
+explicit `dangerouslySkipIntegrity: true` — there is no unverified default. `FilesystemArtifactSource`
+does **not** verify on its own; wrap it in a `VerifiedArtifactSource` (which works around any source)
+to check it against the manifest. The manifest is a build-time trust anchor pinned in your app; it
 should not be fetched from the same origin as the artifacts, or the integrity check is
 self-referential.
 

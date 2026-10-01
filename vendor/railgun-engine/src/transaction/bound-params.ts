@@ -1,3 +1,5 @@
+// DIVERGES FROM UPSTREAM: ByteUtils and PoseidonMerkleVerifier imported from their own modules, not the
+// utils / typechain barrels.
 import { AbiCoder } from 'ethers';
 import { BoundParamsStruct } from '../abi/typechain/RailgunSmartWallet';
 import { ByteUtils } from '../utils/bytes';

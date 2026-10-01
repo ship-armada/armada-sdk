@@ -373,13 +373,17 @@ signature over it:
 ```ts
 interface SpendSignRequest {
   message: bigint;                       // the pinned poseidon digest ("intent digest")
-  context: {                             // fully-bound intent, human/policy-inspectable
-    nullifiers: bigint[];
-    commitmentsOut: bigint[];
-    merkleRoot: bigint;
-    boundParams: DecodedBoundParams;     // incl. adaptContract + decoded adaptParams
-    summary: PlanSummary;                // token, amounts, outputs, fee output
-  };
+  context: SpendIntentContext;           // fully-bound intent, human/policy-inspectable
+}
+
+interface SpendIntentContext {
+  nullifiers: bigint[];
+  commitmentsOut: bigint[];
+  merkleRoot: bigint;
+  boundParams: DecodedBoundParams;       // incl. adaptContract + decoded adaptParams
+  commitmentCiphertext: CommitmentCiphertextV2[]; // folded into boundParamsHash — lets a signer
+                                         // recompute `message` (computeSpendIntentDigest)
+  summary: PlanSummary;                  // token, amounts, outputs, fee output
 }
 
 interface SpendSigner {
@@ -397,8 +401,8 @@ interface SpendSigner {
   policy-gated; transport and gating are defined by the consuming integration, e.g.
   `specs/PAROS_INTEGRATION.md`, **not** by the SDK), and later `ThresholdSigner` (FROST on Baby
   Jubjub — a pure signer swap; circuits/contracts/tx semantics see a standard EdDSA signature).
-- Signing happens during witness assembly: `sdk.prover.prove(plan)` requests signatures from
-  the wallet's attached `SpendSigner` before proof generation. External-signer latency
+- Signing happens during witness assembly: `wallet.prove(plan)` / `wallet.proveAll(plans)` request
+  signatures from the wallet's attached `SpendSigner` before proof generation. External-signer latency
   therefore gates proving; the `ProofHandle` TTL model (§4.6) is the vehicle for
   signature-release → submission time-bounding.
 - **Signature lifecycle (must-document):** a signed/proved transaction has **no on-chain
@@ -482,8 +486,11 @@ Requirements:
 - **Quick-sync interface (optional, deferred within Phase 2):**
   `interface EventSource { getEvents(fromBlock, toBlock): Promise<AccumulatedEvents> }` — an
   indexer-backed implementation can later serve snapshots to cut first-scan time (the crowdfund
-  indexer infra is prior art). RPC scan is always the verification fallback: quick-sync results
-  are verified against on-chain roots before acceptance.
+  indexer infra is prior art). RPC scan is always the verification fallback: a quick-sync batch is
+  accepted only if its commitment leaves rebuild the pool's on-chain merkle root. That check binds the
+  leaf hashes only — the nullifiers, note ciphertexts and history metadata an indexer serves are not
+  covered by it, so an indexer can still omit or alter those (tracked as SYNC-4, deferred until an
+  indexer is enabled in production).
 - The engine-global merkletree is shared across wallets in one instance (this matches stock
   behavior and is load-bearing for `importNote`, §6.4).
 
@@ -571,16 +578,17 @@ const tx = buildTransactCalldata(handles.map((h) => h.toTransactionData()), pool
   yield adapter binding (parity with current `encodeYieldAdaptParams` /
   `encodeYieldAdaptParamsWithFee`). Wrapper call encoding (`lendAndShield`, `redeemAndShield`,
   `atomicCrossChainUnshield`) is provided as calldata builders.
-- **Decode API for verifiers.** `sdk.tx.decodeTransact(calldata)` understands both bare
-  `transact()` and the wrapper entry points natively and exposes
-  `extractFeeOutput(viewingKey)` — replacing the relayer's synthetic-calldata normalization in
+- **Decode API for verifiers.** The pure `decodeTransact(calldata)` understands both bare
+  `transact()` and the wrapper entry points natively, and `extractFeeOutput(decoded, broadcasterKeys,
+  tokenDataGetter)` recovers the broadcaster fee note (bound to its commitment). Both are plain
+  functions (no SDK instance needed), replacing the relayer's synthetic-calldata normalization in
   `broadcaster-fee-verifier.ts` with a supported API. For the shield path, the SDK provides
   the **npk-reconstruction fee verification** primitive (per #410's v1 relayer): given a
   shield request, reconstruct the fee note's npk from the relayer's own keys and verify the
   note is addressed to the relayer's 0zk with value ≥ the advertised fee.
-- **Shield.** `sdk.shield.buildRequest(...)` ports the `ShieldNoteERC20`/ECIES bundle
-  construction (`lib/sdk/shield.ts`, interface `shield.ts`) onto core primitives, targeting
-  the #410 gasless-shield model:
+- **Shield.** The pure builders `buildShieldRequest(...)` and `buildGaslessShield(...)` port the
+  `ShieldNoteERC20`/ECIES bundle construction (`lib/sdk/shield.ts`, interface `shield.ts`) onto
+  core primitives, targeting the #410 gasless-shield model:
   - **Two-note construction** — the user's shield note plus a relayer fee note addressed to
     the relayer's 0zk (fee paid shielded, not in public USDC);
   - **EIP-712 shield-intent signing** binding the full shield-note array (recipient npk, fee
@@ -604,7 +612,7 @@ clock), which the consumer owns. Fees are bound in-band on both paths:
   is **per proof**: a split spend of k proofs pays k × `perProof` (each proof costs the
   relayer its own verification gas), carried by fee notes in the leading plans. The relayer sums
   the fee notes across the batch.
-- **Shield path (#410):** `buildRequest` computes the relayer fee note (§4.6 Shield) with
+- **Shield path (#410):** `buildGaslessShield` computes the relayer fee note (§4.6 Shield) with
   **grossed-up fee tiers** so the relayer nets its target amount *after* the on-chain shield
   fee is applied — the gross-up math is part of the SDK's fee model, not left to callers.
 
@@ -615,7 +623,8 @@ parallel formula).
 
 ### 4.7 Preflight
 
-`sdk.preflight(plans)` runs cheap RPC checks over a spend's plans before proving and returns typed findings:
+`wallet.preflight(plans)` (on the wallet, because deriving the input nullifiers needs its nullifying
+key) runs cheap RPC checks over a spend's plans before proving and returns typed findings:
 
 - merkle root of the plan still accepted by the pool (root freshness),
 - no input nullifier already spent on-chain,
@@ -837,6 +846,9 @@ implement it against the same spec later.
       changed), `'missing-leaves'` (the saved tree skipped part of the chain), or
       `'persisted-root-invalid'` (the saved tree's roots are no longer in `rootHistory`). Block number
       + enum only — no PII.
+    - `storage.chain-reset` — `createArmadaSdk` found storage bound to a different (schema, chain, pool,
+      deploy block) and wiped the chain-derived state (e.g. after a pool redeploy). Payload:
+      `{ chainId, deployBlock }` — public chain config only.
 
 ---
 
@@ -856,6 +868,9 @@ implement it against the same spec later.
 ---
 
 ## 10. Implementation plan
+
+**Status (2026-10-01):** Phases 0–2 are complete; Phase 3 (payments) and Phase 4 (ops journal) are
+next. The `/payments` and `/ops` subpath exports are placeholders until then.
 
 Phases are sequential; each has acceptance criteria and lands behind integration flags so the
 stock SDK path keeps working until Phase 5. Per repo policy every phase ships unit +

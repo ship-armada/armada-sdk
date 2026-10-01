@@ -10,7 +10,8 @@
 |---|---|
 | Upstream repo | https://github.com/Railgun-Community/engine |
 | Vendored tag | `v9.6.0` |
-| Tag commit SHA | `f767362661b24cf17ff7fe6f4e0d14a4b5b31adc` |
+| Tag object SHA | `f767362661b24cf17ff7fe6f4e0d14a4b5b31adc` (annotated tag) |
+| Tag commit SHA | `6e2614d53a106dd62abad91e7ce03ee4a3956138` (the commit the tag points at) |
 | npm package | `@railgun-community/engine@9.6.0` |
 | npm tarball shasum | `c2d2f07bd37dce7c95f65ab827131e4c1fdc0683` |
 | License | MIT (© 2022 RAILGUN Project Contributors) |
@@ -30,8 +31,13 @@ The npm artifact is what production code actually runs; the vendored git tag mus
    **Result: MATCH.** The tag source corresponds to the published npm artifact.
 
 PPOI (proof of innocence) code is stripped at vendor time — not present in `vendor/` — per SPEC §3.5.
-CI enforces this with a `grep 'POI' vendor/` guard (excluding the `BASIS_POINTS` false positive) and a
-`typecheck:vendor` closure gate.
+CI enforces this with a `grep 'POI' src/ vendor/` guard (excluding the `BASIS_POINTS` false positive)
+and a `typecheck:vendor` closure gate.
+
+Every vendored file that differs from upstream (or is not in upstream at all) carries a one-line
+`DIVERGES FROM UPSTREAM` comment (SPEC §3.4). CI enforces this with `scripts/check-vendor-divergence.mjs`,
+which clones the tag above, checks it still points at the recorded commit, and diffs `vendor/railgun-engine/src`
+against it. Run it locally the same way (needs network), or with `--upstream <checkout>` offline.
 
 ### 9.5.4 tree-scoped nullifier invariant (carry into the rebuilt layer)
 

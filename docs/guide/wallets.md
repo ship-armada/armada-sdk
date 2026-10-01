@@ -77,14 +77,18 @@ Calling a spend-path method — `planTransfer`, `prove`, or `proveAll` — on a 
 `NoSpendCapabilityError`:
 
 ```ts
-import { NoSpendCapabilityError } from '@armada/sdk';
+import { ArmadaError } from '@armada/sdk';
 
 try {
   await viewOnly.planTransfer(request);
 } catch (err) {
-  err instanceof NoSpendCapabilityError; // true
+  (err as ArmadaError).code === 'NO_SPEND_CAPABILITY'; // true
 }
 ```
+
+Match SDK errors on their `code`, not with `instanceof` or on the message. Every SDK error carries a
+stable `code`, while `instanceof` can be false when the error class was loaded from a different
+entry point (for example `@armada/sdk` and `@armada/sdk/core`).
 
 ## Signers
 
