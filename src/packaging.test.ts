@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { distAvailable } from '../test/dist-guard';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -36,8 +36,15 @@ function esmGraph(entry: string): string[] {
 const BROWSER_ENTRIES = ['index.js', 'core/index.js', 'wallet/index.js', 'prover/index.js', 'prover/worker.js'];
 
 describe('one engine copy across entries (#116)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('ESM: the root, /core, /wallet and /prover share module state and classes', async (ctx) => {
     if (!distAvailable(ctx)) return;
+    // The ESM build targets browsers: its bundled `process` polyfill reads `navigator.language` on load.
+    // Node 21+ defines `navigator`; on older Node, supply the one browser global it needs.
+    if ((globalThis as { navigator?: unknown }).navigator === undefined) vi.stubGlobal('navigator', { language: 'en-US' });
     const load = (p: string): Promise<Record<string, unknown>> => import(pathToFileURL(join(DIST, p)).href);
     const [root, core, wallet, prover] = await Promise.all(['index.js', 'core/index.js', 'wallet/index.js', 'prover/index.js'].map(load));
     expect(core!.initPoseidonPromise).toBe(root!.initPoseidonPromise);
