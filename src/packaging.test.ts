@@ -98,7 +98,7 @@ describe('browser chunks', () => {
 
 describe('exports map', () => {
   it('lists exactly the shipped entries, with no /payments or /ops placeholders', () => {
-    expect(Object.keys(pkg.exports).sort()).toEqual(['.', './core', './node', './prover', './prover/worker', './wallet']);
+    expect(Object.keys(pkg.exports).sort()).toEqual(['.', './core', './internal', './node', './prover', './prover/worker', './wallet']);
   });
 
   it('gives every import/require condition its own types file, and every target exists', (ctx) => {

@@ -4,6 +4,7 @@
 import type { StorageAdapter } from './storage/index';
 import type { ProverAdapter, ArtifactSource } from './prover/index';
 import type { WalletFactory } from './wallet/index';
+import type { QuickSyncTelemetry } from './sdk';
 
 export interface PoolConfig {
   readonly chainId: number;
@@ -81,9 +82,33 @@ export interface RpcConfig {
   readonly urls: readonly string[];
 }
 
-/** Injected telemetry (SPEC §8). MUST NOT receive key material, seeds, memo plaintext, or 0zk addresses. */
+/** Why a wallet discarded its chain-derived state and rescanned from the deploy block (`sync.reorg-recovery`). */
+export type ReorgRecoveryReason = 'checkpoint-reorged' | 'missing-leaves' | 'persisted-root-invalid';
+
+/**
+ * Every telemetry event the SDK emits, with its payload (SPEC §8). Payloads carry only block numbers, public chain
+ * config, booleans and enums — never key material, seeds, memo plaintext, amounts or 0zk addresses. Typing them here
+ * makes that rule checkable: a new field has to be added to this map, where review sees it.
+ */
+export interface TelemetryEventMap {
+  /** One per sync when an indexer is configured: whether it served a root-verified batch (and why not, if not). */
+  'sync.quicksync': QuickSyncTelemetry;
+  /** A wallet discarded its chain-derived state and is rescanning from `fromBlock` (the deploy block). */
+  'sync.reorg-recovery': { readonly fromBlock: number; readonly reason: ReorgRecoveryReason };
+  /** `createArmadaSdk` found storage bound to another deployment and wiped its chain-derived state. */
+  'storage.chain-reset': { readonly chainId: number; readonly deployBlock: number };
+}
+
+/** One `emit` call's arguments: an event name and its payload, as a union so checking `event` narrows `data`. */
+export type TelemetryEvent = { [K in keyof TelemetryEventMap]: [event: K, data: TelemetryEventMap[K]] }[keyof TelemetryEventMap];
+
+/**
+ * Injected telemetry (SPEC §8). Receives only the events in `TelemetryEventMap`, each with its typed payload. An
+ * implementation `emit(event, data) { if (event === 'sync.quicksync') … }` sees `data` narrowed to that event's payload
+ * (a sink that ignores payloads can take `(...[event])`).
+ */
 export interface TelemetrySink {
-  emit(event: string, data: Readonly<Record<string, unknown>>): void;
+  emit(...args: TelemetryEvent): void;
 }
 
 export interface ArmadaSdkConfig {

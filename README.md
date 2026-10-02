@@ -11,8 +11,9 @@ and Phase 4 (the operations journal) are next.
 
 - A browser-first, Node-compatible TypeScript package (`@armada/sdk`) with subpath exports:
   `@armada/sdk/core`, `/wallet`, `/prover`, `/prover/worker` (the prebuilt Web Worker entry), and
-  `/node` (Node-only adapters such as `FilesystemArtifactSource`). All entries share one copy of the
-  engine. `/payments` and `/ops` arrive with Phases 3 and 4.
+  `/node` (Node-only adapters such as `FilesystemArtifactSource`). `/internal` exposes the SDK's
+  building blocks (scan engine, storage keys, planning/proving pipeline) with no compatibility promise.
+  All entries share one copy of the engine. `/payments` and `/ops` arrive with Phases 3 and 4.
 - A **byte-compatible** reimplementation of the pinned Railgun crypto core (Poseidon/BN254,
   commitments, nullifiers, merkle math, note ECIES, EdDSA spend authorization, `TransactionStructV2`
   serialization) — enforced forever by the differential vector suite in `test/vectors/`.

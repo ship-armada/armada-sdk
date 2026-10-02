@@ -17,8 +17,8 @@ import {
 } from './sdk';
 import { RootMismatchError, QuickSyncSchemaError, IndexerHttpError, PositionGapError } from './errors';
 import { deriveKeyset, LocalSigner } from './wallet/index';
-import { saveScanState, WalletScanState } from './sync/index';
-import { MemoryStorageAdapter, walletRecordId } from './storage/index';
+import { saveScanState, WalletScanState, walletRecordId } from './internal/index';
+import { MemoryStorageAdapter } from './storage/index';
 import { NoSpendCapabilityError, InvalidKeyMaterialError, InvalidRequestError, UnsupportedCircuitShapeError } from './errors';
 import { initPoseidonPromise, Mnemonic, getTokenDataERC20, getTokenDataHash } from './core/index';
 import { feeForOperation } from './tx/index';
@@ -146,10 +146,12 @@ describe('createArmadaSdk (§4.1)', () => {
     expect(wallet.canSpend).toBe(true);
   });
 
-  it('exportDisclosure throws a documented not-implemented error', async () => {
+  it('has no exportDisclosure until selective disclosure ships (SPEC §5.3, Phase 3)', async () => {
+    // WHY: a frozen API method that only throws an uncoded "not implemented" is a trap; it returns with Phase 3.
     const sdk = await createArmadaSdk(makeConfig());
     const wallet = await sdk.wallet.fromRootSecret(seed(0x33), { creationBlock: 1 });
-    await expect(wallet.exportDisclosure('ref')).rejects.toThrow(/not implemented/);
+    // @ts-expect-error — not part of the Wallet API
+    expect(wallet.exportDisclosure).toBeUndefined();
   });
 
   it('shareViewingKey round-trips into a view-only wallet (same 0zk, no spend)', async () => {
@@ -220,7 +222,7 @@ describe('createArmadaSdk (§4.1)', () => {
     // store under deployBlock 1, then construct an instance at deployBlock 2 → mismatch → reset → emit.
     const store = new MemoryStorageAdapter();
     await store.open({ schemaVersion: 1, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1 });
-    const events: { event: string; data: Readonly<Record<string, unknown>> }[] = [];
+    const events: { event: string; data: unknown }[] = [];
     const cfg: ArmadaSdkConfig = {
       ...makeConfig(),
       storage: store,

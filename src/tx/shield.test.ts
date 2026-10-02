@@ -4,7 +4,8 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initPoseidonPromise, getTokenDataERC20, getTokenDataHash } from '../core/index';
 import { deriveKeyset, type Keyset } from '../wallet/derive';
-import { tryDecryptShield, type DecodedShieldCommitment } from '../sync/index';
+import { tryDecryptShield } from '../sync/shield-crypto';
+import type { DecodedShieldCommitment } from '../sync/index';
 import { buildShieldRequest, generateShieldPrivateKey, type ShieldRequest } from './shield';
 
 const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';

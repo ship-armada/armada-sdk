@@ -3,17 +3,28 @@
 
 import { JsonRpcProvider, FallbackProvider, Interface, type Provider } from 'ethers';
 import {
+  tryDecryptCommitment,
+  tryDecryptSentCommitment,
+  reconstructHistory,
+  erc20AddressFromHash,
+  encodeSelfMetadata,
+  type SyncEventMap,
+  type TXO,
+  type TokenAddressResolver,
+  type Unsubscribe,
+  type HistoryEntry,
+  type ReceiverNoteKeys,
+  type TokenBalance,
+} from './sync/index';
+import {
   WalletScanState,
   RpcEventSource,
   IndexerEventSource,
   SyncEmitter,
-  tryDecryptCommitment,
   decryptedCommitmentMatches,
-  tryDecryptSentCommitment,
   tryDecryptShield,
   shieldCommitmentMatches,
   ownedNoteFromTransactNote,
-  reconstructHistory,
   newReceivedNotes,
   saveScanState,
   loadScanState,
@@ -22,23 +33,23 @@ import {
   loadPendingSpends,
   savePendingSpends,
   tokenHashKey,
-  erc20AddressFromHash,
   withTokenAddresses,
-  encodeSelfMetadata,
   POOL_V2_EVENT_ABI,
+  EncryptedStore,
+  deriveWalletStorageKey,
+  walletRecordId,
+  planSpend,
+  planWitnessInputs,
+  prove,
+  proveAll,
+  runPreflight,
   type EventSource,
-  type SyncEventMap,
-  type TXO,
-  type TokenAddressResolver,
-  type Unsubscribe,
   type WalletDecryptors,
-  type HistoryEntry,
   type ParsedPoolLog,
-  type ReceiverNoteKeys,
-  type TokenBalance,
-} from './sync/index';
-import { EncryptedStore, deriveWalletStorageKey, walletRecordId, type StorageAdapter } from './storage/index';
-import { planSpend, planWitnessInputs, prove, proveAll, runPreflight, isCrossChainUnshield, type Plan, type PlanSelection, type ProofHandle, type PreflightResult, type ProveParams } from './tx/index';
+  type ProveParams,
+} from './internal/index';
+import type { StorageAdapter } from './storage/index';
+import { isCrossChainUnshield, type Plan, type PlanSelection, type ProofHandle, type PreflightResult } from './tx/index';
 import { planConsolidate, txosAfterConsolidation } from './tx/consolidate';
 import { maxTransferAmount, maxUnshieldAmount } from './tx/max-transfer';
 import type { PlanTransferParams } from './tx/plan';
@@ -83,7 +94,7 @@ import {
 } from './errors';
 import { validateConfig } from './config';
 import { startAutoSync } from './sync/auto-sync';
-import type { ArmadaSdk, ArmadaSdkConfig, TelemetrySink } from './index';
+import type { ArmadaSdk, ArmadaSdkConfig, ReorgRecoveryReason, TelemetrySink } from './index';
 
 // Per-instance shared context handed to each wallet.
 interface SdkContext {
@@ -570,7 +581,7 @@ class ArmadaWallet implements Wallet {
    * telemetry (SPEC §8-safe: an enum and a block number) so an operator can see why rescans happen.
    */
   private async recoverByRescan(
-    reason: 'checkpoint-reorged' | 'missing-leaves' | 'persisted-root-invalid',
+    reason: ReorgRecoveryReason,
   ): Promise<{ fromBlock: number; syncedThrough: number; scanned: boolean }> {
     this.ctx.telemetry?.emit('sync.reorg-recovery', { fromBlock: this.ctx.deployBlock, reason });
     await this.resetChainDerivedState();
@@ -697,9 +708,7 @@ class ArmadaWallet implements Wallet {
       // rejection, the classified `reason` (+ HTTP status) for it. No-op when no indexer is configured.
       // Never carries key material / addresses.
       const qs = quickSyncTelemetry({ usingIndexer, tailCovered, fellBack, fromBlock: from, head, cause: fallbackCause });
-      // Cast bridges the precise payload type to the sink's untyped `Record<string, unknown>` contract
-      // (the interface has no index signature, so the double-cast is the sanctioned boundary widening).
-      if (qs !== null) this.ctx.telemetry?.emit(qs.event, qs.data as unknown as Readonly<Record<string, unknown>>);
+      if (qs !== null) this.ctx.telemetry?.emit(qs.event, qs.data);
 
       // Ephemeral wallets keep their scan state in memory only — never write note data to disk (SPEC §6.5).
       if (!this.ephemeral) {
@@ -1143,10 +1152,6 @@ class ArmadaWallet implements Wallet {
     this.holds.prune(Date.now() - this.ctx.pendingSpendTtlMs);
   }
 
-  async exportDisclosure(): Promise<Uint8Array> {
-    throw new Error('exportDisclosure: not implemented — selective disclosure lands separately (SPEC §5.3)');
-  }
-
   shareViewingKey(): string {
     return encodeShareableViewingKey({
       viewingPrivateKey: this.keyset.viewingPrivateKey,
@@ -1163,9 +1168,9 @@ class ArmadaWallet implements Wallet {
 export function safeTelemetry(sink: TelemetrySink | undefined): TelemetrySink | undefined {
   if (sink === undefined) return undefined;
   return {
-    emit(event, data) {
+    emit(...args) {
       try {
-        sink.emit(event, data);
+        sink.emit(...args);
       } catch {
         // Deliberately swallowed: see above.
       }

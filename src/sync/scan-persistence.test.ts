@@ -3,7 +3,8 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initPoseidonPromise, TransactNote } from '../core/index';
-import { MemoryStorageAdapter, EncryptedStore, deriveStorageKey } from '../storage/index';
+import { MemoryStorageAdapter } from '../storage/index';
+import { EncryptedStore, deriveStorageKey } from '../storage/encrypted';
 import { WalletScanState } from './scan-engine';
 import type { DecodedPoolEvents, DecodedTransactCommitment } from './event-decoder';
 import type { CommitmentCiphertextV2 } from './note-crypto';

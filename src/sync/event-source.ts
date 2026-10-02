@@ -5,13 +5,33 @@ import { fetchLogsRanged, type GetLogsFn } from './ranged-fetch';
 import { decodePoolEvents, type ParsedPoolLog } from './event-decoder';
 import { parseQuickSync } from './quick-sync-wire';
 import { IndexerHttpError } from '../errors';
-import type { EventBatch, EventSource } from './index';
+import type { DecodedPoolEvents } from './event-decoder';
 
 /**
  * Default source: ranged `getLogs` over `[fromBlock, toBlock]`, decoded to the native event shape.
  * Always covers the full requested range (`syncedThroughBlock === toBlock`), so it is both the
  * standalone sync path and the tail/verification fallback for the indexer source.
  */
+/** A batch of decoded pool events plus the highest block it fully covers. */
+export interface EventBatch {
+  readonly events: DecodedPoolEvents;
+  /**
+   * Highest block the batch fully covers. May be < the requested `toBlock` when an indexer lags the
+   * chain head — the SDK then RPC-covers the `(syncedThroughBlock, toBlock]` tail itself.
+   */
+  readonly syncedThroughBlock: number;
+}
+
+/**
+ * Pluggable event source (SPEC §4.4, decision #3). The default RPC source (getLogs → decode) is the
+ * source of truth; an optional indexer source (native `/v2/quick-sync`) is a fast path whose batches
+ * are verified against on-chain roots before acceptance, falling back to RPC on any mismatch.
+ */
+export interface EventSource {
+  /** `onProgress` (when supplied) is called with the highest block covered as the fetch chunks the range. */
+  getEvents(fromBlock: number, toBlock: number, onProgress?: (coveredThroughBlock: number) => void): Promise<EventBatch>;
+}
+
 export class RpcEventSource implements EventSource {
   constructor(
     private readonly getLogs: GetLogsFn<ParsedPoolLog>,

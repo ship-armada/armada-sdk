@@ -1,34 +1,5 @@
-// ABOUTME: Sync contracts (SPEC §4.4) — event scan building the UTXO merkletree, behind a pluggable
-// ABOUTME: EventSource (RPC getLogs default, native indexer quick-sync optional) + typed sync events.
-
-import type { DecodedPoolEvents } from './event-decoder';
-
-/** A batch of decoded pool events plus the highest block it fully covers. */
-export interface EventBatch {
-  readonly events: DecodedPoolEvents;
-  /**
-   * Highest block the batch fully covers. May be < the requested `toBlock` when an indexer lags the
-   * chain head — the SDK then RPC-covers the `(syncedThroughBlock, toBlock]` tail itself.
-   */
-  readonly syncedThroughBlock: number;
-}
-
-/**
- * Pluggable event source (SPEC §4.4, decision #3). The default RPC source (getLogs → decode) is the
- * source of truth; an optional indexer source (native `/v2/quick-sync`) is a fast path whose batches
- * are verified against on-chain roots before acceptance, falling back to RPC on any mismatch.
- */
-export interface EventSource {
-  /** `onProgress` (when supplied) is called with the highest block covered as the fetch chunks the range. */
-  getEvents(fromBlock: number, toBlock: number, onProgress?: (coveredThroughBlock: number) => void): Promise<EventBatch>;
-}
-
-export interface SyncStatus {
-  readonly phase: 'idle' | 'scanning' | 'complete' | 'error';
-  readonly fromBlock: number;
-  readonly toBlock: number;
-  readonly syncedThrough: number;
-}
+// ABOUTME: Public sync surface (SPEC §4.4) — typed sync events, note encryption/decryption, history reconstruction,
+// ABOUTME: and the quick-sync wire format. The scan engine itself is internal (`@armada/sdk/internal`).
 
 /** Typed subscription events — replace the single global `setOnBalanceUpdateCallback` multiplexer. */
 export interface SyncEventMap {
@@ -47,83 +18,42 @@ export interface SyncEventMap {
   };
 }
 
-// Typed scan/balance event bus — a wallet owns one and emits on sync().
-export { SyncEmitter } from './emitter';
+// The unsubscribe function `wallet.on(...)` returns.
 export type { Unsubscribe } from './emitter';
 
-// Ranged log fetch.
-export { fetchLogsRanged } from './ranged-fetch';
-export type { GetLogsFn, RangedFetchOptions } from './ranged-fetch';
-
-// EventSource implementations — RPC getLogs (default) + native-indexer quick-sync.
-export { RpcEventSource, IndexerEventSource } from './event-source';
-export type { IndexerEventSourceOptions } from './event-source';
-
 // Native tx-history reconstruction from scan state (SPEC §5).
-export { reconstructReceiveHistory, reconstructHistory, newReceivedNotes, ownSpendTxids } from './history';
+export { reconstructReceiveHistory, reconstructHistory } from './history';
 export type { HistoryEntry, HistoryCategory, TokenAddressResolver, ReconstructHistoryInput, SentRecipient } from './history';
+// The scan-state shapes `ReconstructHistoryInput` carries.
+export type { SentOutput } from './scan-engine';
 
-// Wallet scan orchestrator — folds decoded events into trees/TXOs/balances with root verification.
-export { WalletScanState, ownedNoteFromTransactNote } from './scan-engine';
-export type { WalletDecryptors, Decryptor, OwnedNote, SentOutput, ApplyResult, ScanStateSnapshot } from './scan-engine';
-
-// Scan-state persistence — resume sync from the last synced block instead of rescanning from genesis.
-export { saveScanState, loadScanState, scanStateKey } from './scan-persistence';
-
-// Optimistic in-flight spend holds (issue #55) — kept apart from scan state, with their own durable record.
-export { PendingSpends, savePendingSpends, loadPendingSpends, pendingSpendsKey } from './pending-spends';
-
-// UTXO merkletree.
-export { UTXOMerkletree } from './merkletree';
-export type { MerkleProof } from './merkletree';
-
-// Note ECIES V2 codec — trial-decrypt commitments (scan) + encrypt to a receiver (send).
+// Note ECIES V2 codec — trial-decrypt commitments + encrypt to a receiver (send).
 export {
   encryptNoteToReceiver,
   tryDecryptCommitment,
-  decryptedCommitmentMatches,
   tryDecryptSentCommitment,
   createTransferNote,
   DEFAULT_EVM_CHAIN,
 } from './note-crypto';
-
-// Shield-note ownership decryption — the scan-side counterpart for shield commitments.
-export { tryDecryptShield, shieldCommitmentMatches } from './shield-crypto';
 export type {
   CommitmentCiphertextV2,
   SenderNoteKeys,
   ReceiverNoteKeys,
 } from './note-crypto';
 
-// Auto-sync loop — self-scheduling sync() driver with error backoff (issue #59).
-export { startAutoSync } from './auto-sync';
-export type { AutoSyncOptions } from './auto-sync';
-
 // Self-metadata codec — tag/recover a caller blob stored in a self-owned change-note memo (issue #88).
 export { encodeSelfMetadata, decodeSelfMetadata } from './self-metadata';
 
-// Balance aggregation — per-token spendable/pending from the TXO set + spent nullifiers.
-export { computeBalances, txoFromNote, tokenHashKey, erc20AddressFromHash, withTokenAddresses } from './balances';
-export type { TXO, SpentNullifier, PendingSpend, TokenBalance, BalanceOptions } from './balances';
+// Balances — the TXO and per-token balance shapes the wallet API returns, and a token hash's ERC-20 address.
+export { erc20AddressFromHash } from './balances';
+export type { TXO, NoteOrigin, SpentNullifier, TokenBalance } from './balances';
 
-// Pool event decoder — Shield/Transact/Nullified args → typed commitments/ciphertexts/nullifiers.
-export {
-  POOL_V2_EVENT_ABI,
-  formatShieldEvent,
-  formatTransactEvent,
-  formatNullifiedEvent,
-  formatCommitmentCiphertext,
-  decodePoolEvents,
-} from './event-decoder';
+// Decoded pool events — the shape `serializeQuickSync` takes (an indexer serves it on the quick-sync wire).
 export type {
-  LogMeta,
-  ParsedPoolLog,
-  RawShieldArgs,
-  RawTransactArgs,
-  RawNullifiedArgs,
   DecodedShieldCommitment,
   DecodedTransactCommitment,
   DecodedNullifier,
+  DecodedUnshield,
   DecodedPoolEvents,
 } from './event-decoder';
 
@@ -134,6 +64,7 @@ export type {
   WireShieldCommitment,
   WireTransactCommitment,
   WireNullifier,
+  WireUnshield,
   WireCommitmentCiphertext,
   WireTokenData,
 } from './quick-sync-wire';

@@ -35,6 +35,8 @@ const entry = {
   'wallet/index': 'src/wallet/index.ts',
   // Node-only adapters (`node:fs`). Kept off the browser entries; its `node:` imports stay external below.
   'node/index': 'src/node/index.ts',
+  // The SDK's building blocks (scan engine, storage keys, planning/proving pipeline) — unstable, no compatibility promise.
+  'internal/index': 'src/internal/index.ts',
   // Lean prover entry — prover code + snarkjs only, NO vendored engine/core/wasm. A browser Web
   // Worker imports this (not the 13MB wasm-inlined root) so the worker chunk stays small + bundles fast.
   'prover/index': 'src/prover/index.ts',
