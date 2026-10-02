@@ -146,8 +146,6 @@ export interface Wallet {
    * once the release is written to storage.
    */
   clearSpendPending(txid: string): Promise<void>;
-  /** Verifiable single-note disclosure receipt (SPEC §5.3). Available on view-only wallets too. */
-  exportDisclosure(txoRef: string): Promise<Uint8Array>;
   /** Export this wallet's shareable viewing key (Railgun wire format) — grants view-only capability. */
   shareViewingKey(): string;
   /**

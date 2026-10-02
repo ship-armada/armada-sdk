@@ -4,7 +4,8 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initPoseidonPromise, getTokenDataERC20, getTokenDataHash } from '../core/index';
 import { deriveKeyset, type Keyset } from '../wallet/derive';
-import { tryDecryptShield, type DecodedShieldCommitment } from '../sync/index';
+import { tryDecryptShield } from '../sync/shield-crypto';
+import type { DecodedShieldCommitment } from '../sync/index';
 import { generateShieldPrivateKey, type ShieldRequest } from './shield';
 import { hashShieldRequests, buildShieldIntentTypedData, hashShieldIntent, buildGaslessShield } from './gasless-shield';
 

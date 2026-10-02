@@ -2,7 +2,8 @@
 // ABOUTME: replaces synthetic-calldata normalization. ABI-decodes transact(Transaction[]) into DecodedTransact[].
 
 import { Interface } from 'ethers';
-import { formatCommitmentCiphertext, tryDecryptCommitment, type ReceiverNoteKeys } from '../sync/index';
+import { tryDecryptCommitment, type ReceiverNoteKeys } from '../sync/index';
+import { formatCommitmentCiphertext } from '../sync/event-decoder';
 import type { TokenDataGetter, Chain } from '../core/index';
 import { InvalidRequestError } from '../errors';
 import type { DecodedTransact, DecodedBoundParams } from './index';

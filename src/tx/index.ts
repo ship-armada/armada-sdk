@@ -210,31 +210,17 @@ export type { ShieldFeeTiers } from './shield-fee';
 export { buildGaslessCrossChainShield, hashShieldData, hashCrossChainShieldIntent } from './gasless-cross-chain-shield';
 export type { ShieldData, CrossChainShieldIntent, CrossChainShieldIntentTypedData, GaslessCrossChainShieldInput } from './gasless-cross-chain-shield';
 
-// Transfer planning — inspectable Plan (TXO selection + change + fee output + circuit shape).
-export { planTransfer, planSpend, planWitnessInputs } from './plan';
-// Consolidation — merge one token's notes into fewer self-owned notes (old trees first, then smallest).
-export { planConsolidate, txosAfterConsolidation } from './consolidate';
-export type { PlanConsolidateParams } from './consolidate';
-// The largest single-recipient transfer / unshield the notes can plan, fee included (a wallet's "Max").
-export { maxTransferAmount, maxUnshieldAmount } from './max-transfer';
-export type { MaxTransferParams, MaxUnshieldParams } from './max-transfer';
-export type { PlanTransferParams, TransferOutputRequest, FeeRequest } from './plan';
-
 // transact() calldata serializer (inverse of decodeTransact) — proof G2 swap + Transaction structs.
 export { buildTransactCalldata, transactionToTuple } from './serialize';
 export type { TransactionData, TransactionBoundParams } from './serialize';
 
-// prove() orchestration + ProofHandle — witness → artifacts → proof → calldata.
-export { prove, proveAll } from './prove';
-export type { ProveParams } from './prove';
-
-// Preflight — cheap pre-proof checks over a Plan (SPEC §4.7), and failed findings as typed errors.
-export { runPreflight, readShieldsPaused, assertPreflight, isCrossChainUnshield } from './preflight';
+// Preflight — failed findings (from `wallet.preflight`) as typed errors, and the cross-chain-unshield test.
+export { assertPreflight, isCrossChainUnshield } from './preflight';
 
 // The broadcaster fee a spend pays — explicit per-proof amount; strict tier lookup from a relayer quote.
 export { feeForOperation } from './spend-fee';
 export type { SpendFee, FeeOperation } from './spend-fee';
-export type { PreflightCheck, PreflightFinding, PreflightResult, PreflightQueries, PreflightParams } from './preflight';
+export type { PreflightCheck, PreflightFinding, PreflightResult } from './preflight';
 
 // Shield-request builder — the ShieldRequest struct for privacyPool.shield() (#410).
 export { buildShieldRequest, generateShieldPrivateKey } from './shield';
@@ -244,14 +230,6 @@ export type { ShieldRequest, ShieldRequestInput } from './shield';
 export { buildGaslessShield, hashShieldRequests, buildShieldIntentTypedData, hashShieldIntent, buildPermitTypedData, hashPermit } from './gasless-shield';
 export type { GaslessShieldInput, ShieldIntent, ShieldIntentTypedData, PermitMessage, PermitTypedData } from './gasless-shield';
 
-// Circuit witness assembly — full notes + merkle proofs + SpendSigner signature → circuit inputs.
-export { buildWitness, computeSpendIntentDigest, hashSpendBoundParams } from './witness';
-export type {
-  BuildWitnessParams,
-  BuiltWitness,
-  WitnessInput,
-  WitnessOutputRequest,
-  WitnessSenderContext,
-  FormattedCircuitInputs,
-  SpendIntentContext,
-} from './witness';
+// Spend-intent digest — what a SpendSigner recomputes to check the `message` it is asked to sign (SPEC §4.2.1).
+export { computeSpendIntentDigest } from './witness';
+export type { SpendIntentContext } from './witness';

@@ -177,7 +177,8 @@ existing memo field.
   (storage, workers) are injected. Target: the Vite `nodePolyfills`/`level-js` scaffolding in
   `apps/armada-interface/vite.config.ts` becomes removable, except what snarkjs itself needs.
 - Single package with subpath exports (`@armada/sdk/core`, `/wallet`, `/prover`, `/prover/worker`,
-  and the Node-only `/node`; `/payments` and `/ops` are added with Phases 3 and 4), code-split so every
+  the Node-only `/node`, and the unstable `/internal` building blocks; `/payments` and `/ops` are added
+  with Phases 3 and 4), each an explicit export list, code-split so every
   entry shares one engine copy and one module state. Not a three-package split — the
   engine/wallet/shared-models triple with version skew is one of the things being fixed.
 
@@ -664,7 +665,7 @@ state does not replay its history.
 
 ### 5.3 Receipts (selective disclosure)
 
-`wallet.exportDisclosure(txoRef)` produces a verifiable receipt for one note: enough of the note
+`wallet.exportDisclosure(txoRef)` (Phase 3; not on `Wallet` until it ships) produces a verifiable receipt for one note: enough of the note
 preimage/shared-key material for a verifier to recompute the commitment hash and check inclusion
 against the on-chain tree, without revealing anything about other notes. Format: reuse/extend the
 existing disclosure-bundle format (per the claims brief's recommendation — do not invent a second
@@ -825,9 +826,10 @@ implement it against the same spec later.
   `FeeQuoteExpiredError`, `ArtifactIntegrityError`, `StorageConflictError`,
   `NonDeterministicSignerError`, `ClaimSeedCounterError`, etc. Every SDK error carries a stable
   `code` string; consuming code and tests match on codes, never message text.
-- **TelemetrySink interface** (injected, no-op default): structured events for scan progress and
-  durations, proof timings per shape, RPC failover/bisect activity, preflight outcomes, journal
-  transitions. Feeds Sentry in the interface and the relayer's monitoring per `MONITORING.md`.
+- **TelemetrySink interface** (injected, no-op default), typed by `TelemetryEventMap` — `emit(event,
+  data)` takes an event name and its payload as a typed pair, so every event's payload is declared in
+  one reviewed place: structured events for scan progress and durations, proof timings per shape, RPC
+  failover/bisect activity, preflight outcomes, journal transitions. Feeds Sentry in the interface and the relayer's monitoring per `MONITORING.md`.
   Events MUST NOT contain key material, seeds, memo plaintext, amounts-with-identity, or 0zk
   addresses — telemetry payload review is part of code review for this module.
   - Emitted events (grows as instrumentation lands):

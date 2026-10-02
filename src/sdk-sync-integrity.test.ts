@@ -113,17 +113,8 @@ import { Interface } from 'ethers';
 import { createArmadaSdk } from './sdk';
 import { MemoryStorageAdapter } from './storage/index';
 import { initPoseidonPromise, getTokenDataERC20, getTokenDataHash, ShieldNote, TransactNote } from './core/index';
-import {
-  POOL_V2_EVENT_ABI,
-  UTXOMerkletree,
-  WalletScanState,
-  saveScanState,
-  serializeQuickSync,
-  createTransferNote,
-  encryptNoteToReceiver,
-  type DecodedShieldCommitment,
-} from './sync/index';
-import { walletRecordId } from './storage/index';
+import { serializeQuickSync, createTransferNote, encryptNoteToReceiver, type DecodedShieldCommitment } from './sync/index';
+import { POOL_V2_EVENT_ABI, UTXOMerkletree, WalletScanState, saveScanState, walletRecordId } from './internal/index';
 import { deriveKeyset, type Keyset } from './wallet/index';
 import type { ArmadaSdkConfig } from './index';
 import type { Plan } from './tx/index';
@@ -372,7 +363,7 @@ describe('SYNC-1: a reorg under the checkpoint is detected by block hash and rec
 
     reorgFrom(20, 21, () => pushTransact(21, [102n]));
     const events: string[] = [];
-    const second = await createArmadaSdk(cfg({ storage, telemetry: { emit: (event) => events.push(event) } }));
+    const second = await createArmadaSdk(cfg({ storage, telemetry: { emit: (...[event]) => { events.push(event); } } }));
     const wallet = await second.wallet.fromRootSecret(ROOT_SECRET, { creationBlock: 1 });
     await expect(wallet.sync()).resolves.toMatchObject({ syncedThrough: 21 });
     expect(events).toContain('sync.reorg-recovery');
@@ -453,7 +444,7 @@ describe('SYNC-3: an indexer cannot misstate the value or token of a shield the 
     chain.head = 30;
     const lied: DecodedShieldCommitment = { ...real, value: 1_000_000_000_000n }; // hash unchanged
     const body = serializeQuickSync({ shields: [lied], transacts: [], nullifiers: [], unshields: [] }, 30);
-    const events: { event: string; data: Readonly<Record<string, unknown>> }[] = [];
+    const events: { event: string; data: unknown }[] = [];
     const sdk = await createArmadaSdk(
       cfg({
         indexer: { url: 'https://idx.example', fetchFn: (async () => ({ ok: true, status: 200, json: async () => body }) as Response) as typeof fetch },

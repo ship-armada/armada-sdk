@@ -35,21 +35,30 @@ unset in production.
 
 ## Telemetry
 
-You can pass an optional telemetry sink to receive operational events:
+You can pass an optional telemetry sink to receive operational events. Every event and its payload is
+typed in `TelemetryEventMap`, and checking the event name narrows the payload:
 
 ```ts
-interface TelemetrySink {
-  emit(event: string, data: Readonly<Record<string, unknown>>): void;
-}
-
 const sdk = await createArmadaSdk({
   // …
-  telemetry: { emit: (event, data) => myMetrics.record(event, data) },
+  telemetry: {
+    emit(event, data) {
+      if (event === 'sync.quicksync') myMetrics.record(event, data.outcome); // data: QuickSyncTelemetry
+    },
+  },
 });
 ```
 
+| Event | Payload |
+| --- | --- |
+| `sync.quicksync` | `{ outcome, fromBlock, head, tailCovered, reason?, status? }` — whether a configured indexer served a verified batch |
+| `sync.reorg-recovery` | `{ fromBlock, reason }` — a wallet discarded its chain-derived state and is rescanning |
+| `storage.chain-reset` | `{ chainId, deployBlock }` — storage belonged to another deployment and was reset |
+
 Telemetry events exclude secret and identifying material by design — key material, seeds, memo
-plaintext, and shielded addresses are never emitted to the sink.
+plaintext, amounts, and shielded addresses are never emitted to the sink. Payloads carry only block
+numbers, public chain config, booleans and enums, and the types enforce that: a payload can't gain a
+field without a change to `TelemetryEventMap`.
 
 ## Spending and viewing
 

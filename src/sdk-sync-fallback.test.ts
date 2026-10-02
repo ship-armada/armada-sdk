@@ -69,7 +69,7 @@ describe('quick-sync fallback observability, end to end (#83)', () => {
     // WHY: the pure pieces (classifyQuickSyncReason, quickSyncTelemetry, the typed throw) are unit-tested
     // in isolation, but nothing exercises the actual `catch (err)` → `cause: fallbackCause` → sink.emit
     // wiring in runSync. This is the exact path that used to mislabel a 404 as `root-mismatch-fallback`.
-    const events: { event: string; data: Readonly<Record<string, unknown>> }[] = [];
+    const events: { event: string; data: unknown }[] = [];
     const cfg: ArmadaSdkConfig = {
       pool: { chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1, usdcAddress: USDC },
       rpc: { urls: ['http://127.0.0.1:1'] }, // dialed through the mocked provider, never a real socket

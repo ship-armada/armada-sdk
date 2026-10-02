@@ -90,6 +90,16 @@
         "types": "./dist/node/index.d.cts",
         "default": "./dist/node/index.cjs"
       }
+    },
+    "./internal": {
+      "import": {
+        "types": "./dist/internal/index.d.ts",
+        "default": "./dist/internal/index.js"
+      },
+      "require": {
+        "types": "./dist/internal/index.d.cts",
+        "default": "./dist/internal/index.cjs"
+      }
     }
   },
   "scripts": {
