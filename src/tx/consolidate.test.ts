@@ -8,6 +8,7 @@ import { InsufficientBalanceError, NothingToConsolidateError, UnsupportedCircuit
 import { planConsolidate, txosAfterConsolidation, type PlanConsolidateParams } from './consolidate';
 import { planSpend } from './plan';
 import type { PlanSelection } from './index';
+import { seededRandom } from '../../test/support/seeded-random';
 
 const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' as const;
 const SHARES = '0x6b175474e89094c44da98b954eedeac495271d0f' as const;
@@ -154,8 +155,7 @@ describe('planConsolidate — non-fee token run (shares + a USDC fee group)', ()
 
 describe('planConsolidate — randomized invariants (seeded)', () => {
   it('every run is single-tree per group, supported, value-conserving, ordered, fee-correct, capped', () => {
-    let seed = 0x2545f491;
-    const rand = (n: number) => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) % n);
+    const rand = seededRandom(0x2545f491);
     let runs = 0;
     for (let iter = 0; iter < 300; iter += 1) {
       const currentTree = rand(3);
