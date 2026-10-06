@@ -109,7 +109,8 @@
     "docs:api": "typedoc",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
-    "docs:preview": "vitepress preview docs"
+    "docs:preview": "vitepress preview docs",
+    "example:privacy": "esbuild src/privacy/index.ts --bundle --format=esm --platform=browser --outfile=examples/privacy-nudges/privacy.js"
   },
   "dependencies": {
     "@noble/ciphers": "^0.4.0",
