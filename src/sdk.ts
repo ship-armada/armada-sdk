@@ -27,7 +27,7 @@ import {
   newReceivedNotes,
   saveScanState,
   loadScanState,
-  SCAN_STATE_KEY,
+  clearScanState,
   PendingSpends,
   loadPendingSpends,
   savePendingSpends,
@@ -260,7 +260,8 @@ async function assertSignerHoldsKey(signer: SpendSigner, spendingPublicKey: read
 
 // The storage layout version, part of the deployment namespace: a store written under another version is reset
 // (chain-derived records wiped and rebuilt by a rescan). 2: wallet records moved under per-wallet scopes (#138).
-const STORAGE_SCHEMA_VERSION = 2;
+// 3: scan state split into a checkpoint, the wallet's notes (own spends only), and chunked tree records (#143).
+const STORAGE_SCHEMA_VERSION = 3;
 
 /**
  * Resolve the per-wallet storage handle: the wallet's own scope of the shared adapter (`ScopedStore`, tagged with
@@ -498,6 +499,7 @@ class ArmadaWallet implements Wallet {
     const receiver = this.receiver();
     const discovers = (blockNumber: number): boolean => blockNumber >= this.creationBlock;
     return {
+      nullifyingKey: this.keyset.nullifyingKey,
       transact: async (c) => {
         if (!discovers(c.blockNumber)) return undefined;
         const note = await tryDecryptCommitment(c.ciphertext, receiver, this.ctx.tokenDataGetter, this.ctx.chain);
@@ -768,8 +770,10 @@ class ArmadaWallet implements Wallet {
       // A wallet disposed mid-sync (or a closing SDK) keeps nothing from it: stop before saving or committing.
       this.assertUsable();
       // Ephemeral wallets keep their scan state in memory only — never write note data to disk (SPEC §6.5).
+      // The committed state is what the store holds (loaded, last saved, or empty after a reset or a cache miss),
+      // so passing it writes only the tree chunks that changed.
       if (!this.ephemeral) {
-        await saveScanState(this.storage, next, head, headHash);
+        await saveScanState(this.storage, next, head, headHash, this.scanState);
       }
       // Commit: only now — verified and saved — does the new state become the one readers see, and the
       // checkpoint advance. A save failure above leaves both where they were.
@@ -823,8 +827,8 @@ class ArmadaWallet implements Wallet {
     this.lastBalances.clear();
     this.seenReceiveKeys.clear();
     this.receiveBaselined = false;
-    // Delete the poisoned record so a crash mid-rescan can't load it again.
-    if (!this.ephemeral) await this.storage.del(SCAN_STATE_KEY);
+    // Delete the poisoned records so a crash mid-rescan can't load them again.
+    if (!this.ephemeral) await clearScanState(this.storage);
   }
 
   // Push `note:received` for incoming transfers discovered since the last sync (`newReceivedNotes`

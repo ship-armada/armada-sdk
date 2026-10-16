@@ -54,6 +54,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
     const t = [mkTransact(0, 0, leafHex(11)), mkTransact(0, 1, leafHex(12)), mkTransact(0, 2, leafHex(13))];
     // Own only the middle commitment.
     const decryptors: WalletDecryptors = {
+      nullifyingKey: NK,
       transact: async (c) => (c.hash === leafHex(12) ? owned(TOKEN, 100n) : undefined),
     };
     const res = await state.apply({ ...noEvents(), transacts: t }, decryptors);
@@ -74,7 +75,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
 
   it('verifies roots and throws RootMismatchError (code ROOT_MISMATCH) on mismatch', async () => {
     const state = new WalletScanState();
-    const decryptors: WalletDecryptors = { transact: async () => undefined };
+    const decryptors: WalletDecryptors = { nullifyingKey: NK, transact: async () => undefined };
     await state.apply({ ...noEvents(), transacts: [mkTransact(0, 0, leafHex(7))] }, decryptors);
 
     // Matching root passes — with and without 0x prefix normalization.
@@ -93,7 +94,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
 
   it('routes leaves into per-treeNumber merkletrees independently', async () => {
     const state = new WalletScanState();
-    const decryptors: WalletDecryptors = { transact: async () => undefined };
+    const decryptors: WalletDecryptors = { nullifyingKey: NK, transact: async () => undefined };
     await state.apply(
       { ...noEvents(), transacts: [mkTransact(0, 0, leafHex(21)), mkTransact(0, 1, leafHex(22)), mkTransact(1, 0, leafHex(23))] },
       decryptors,
@@ -106,7 +107,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
   it('throws a typed PositionGapError on a merkle position gap (leaf position must equal current tree length)', async () => {
     // WHY: the quick-sync fallback classifier keys on `code` — a position gap must surface as a typed
     // POSITION_GAP so it is reported distinctly, not swallowed into a misleading `root-mismatch`.
-    const decryptors: WalletDecryptors = { transact: async () => undefined };
+    const decryptors: WalletDecryptors = { nullifyingKey: NK, transact: async () => undefined };
     await expect(
       new WalletScanState().apply({ ...noEvents(), transacts: [mkTransact(0, 1, leafHex(31))] }, decryptors),
     ).rejects.toThrowError(PositionGapError);
@@ -119,7 +120,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
     const withoutShield = new WalletScanState();
     await withoutShield.apply(
       { ...noEvents(), shields: [mkShield(0, 0, leafHex(41)), mkShield(0, 1, leafHex(42))] },
-      { transact: async () => undefined },
+      { nullifyingKey: NK, transact: async () => undefined },
     );
     expect(withoutShield.treeLength(0)).toBe(2); // leaves inserted for root correctness
     expect(withoutShield.txoCount).toBe(0); // but no ownership without a shield decryptor
@@ -127,7 +128,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
     const withShield = new WalletScanState();
     await withShield.apply(
       { ...noEvents(), shields: [mkShield(0, 0, leafHex(41), 500n)] },
-      { transact: async () => undefined, shield: async (c) => owned(TOKEN, c.value) },
+      { nullifyingKey: NK, transact: async () => undefined, shield: async (c) => owned(TOKEN, c.value) },
     );
     expect(withShield.txoCount).toBe(1);
     expect(withShield.balances(NK, { currentBlock: 1000, finalityThreshold: 10 })).toEqual([
@@ -140,7 +141,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
     // Own the commitment at tree 0, position 0.
     await state.apply(
       { ...noEvents(), transacts: [mkTransact(0, 0, leafHex(51))] },
-      { transact: async () => owned(TOKEN, 250n) },
+      { nullifyingKey: NK, transact: async () => owned(TOKEN, 250n) },
     );
     expect(state.balances(NK, { currentBlock: 1000, finalityThreshold: 10 })).toEqual([
       { tokenHash: TOKEN, spendable: 250n, spendableNotes: 1, pending: 0n },
@@ -149,14 +150,14 @@ describe('wallet scan orchestrator (§4.4)', () => {
     // Its nullifier arrives in a later batch → spent → drops out of the balance.
     await state.apply(
       { ...noEvents(), nullifiers: [{ tree: 0, nullifier: TransactNote.getNullifier(NK, 0), blockNumber: 101, txid: TXID }] },
-      { transact: async () => undefined },
+      { nullifyingKey: NK, transact: async () => undefined },
     );
     expect(state.balances(NK, { currentBlock: 1000, finalityThreshold: 10 })).toEqual([]);
   });
 
   it('accumulates leaves across incremental batches (append-only continuation)', async () => {
     const state = new WalletScanState();
-    const decryptors: WalletDecryptors = { transact: async () => undefined };
+    const decryptors: WalletDecryptors = { nullifyingKey: NK, transact: async () => undefined };
     await state.apply({ ...noEvents(), transacts: [mkTransact(0, 0, leafHex(61)), mkTransact(0, 1, leafHex(62))] }, decryptors);
     await state.apply({ ...noEvents(), transacts: [mkTransact(0, 2, leafHex(63)), mkTransact(0, 3, leafHex(64))] }, decryptors);
     expect(state.treeLength(0)).toBe(4);
@@ -190,6 +191,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
     };
     const tokenDataGetter = { getTokenDataFromHash: async () => tokenData };
     const decryptors: WalletDecryptors = {
+      nullifyingKey: NK,
       transact: async (c) => {
         const decrypted = await tryDecryptCommitment(
           c.ciphertext,
@@ -215,7 +217,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
     const state = new WalletScanState();
     await state.apply(
       { ...noEvents(), transacts: [mkTransact(0, 0, leafHex(70)), mkTransact(0, 1, leafHex(71))] },
-      { transact: async () => owned(TOKEN, 100n) },
+      { nullifyingKey: NK, transact: async () => owned(TOKEN, 100n) },
     );
     const ref = new UTXOMerkletree();
     ref.insertMany([leafHex(70), leafHex(71)]);
@@ -228,14 +230,14 @@ describe('wallet scan orchestrator (§4.4)', () => {
     const state = new WalletScanState();
     await state.apply(
       { ...noEvents(), transacts: [mkTransact(0, 0, leafHex(80)), mkTransact(0, 1, leafHex(81))] },
-      { transact: async () => owned(TOKEN, 100n) },
+      { nullifyingKey: NK, transact: async () => owned(TOKEN, 100n) },
     );
     expect(state.spendableTxos(NK)).toHaveLength(2);
 
     // Spend the note at position 0 → it drops out of the spendable set.
     await state.apply(
       { ...noEvents(), nullifiers: [{ tree: 0, nullifier: TransactNote.getNullifier(NK, 0), blockNumber: 1, txid: TXID }] },
-      { transact: async () => undefined },
+      { nullifyingKey: NK, transact: async () => undefined },
     );
     const spendable = state.spendableTxos(NK);
     expect(spendable).toHaveLength(1);
@@ -254,7 +256,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
     // per-commitment shield fee here → the relayer GROSS equals its net note value.
     await state.apply(
       { ...noEvents(), shields: [mkShield(0, 0, leafHex(90), 990_000n), mkShield(0, 1, leafHex(91), 10_000n)] },
-      { transact: async () => undefined, shield: async (c) => (c.hash === leafHex(90) ? owned(TOKEN, 990_000n) : undefined) },
+      { nullifyingKey: NK, transact: async () => undefined, shield: async (c) => (c.hash === leafHex(90) ? owned(TOKEN, 990_000n) : undefined) },
     );
     expect(state.shieldRelayerFees().get(TXID)).toBe(10_000n);
     // Survives snapshot/restore.
@@ -274,7 +276,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
           mkShield(0, 1, leafHex(94), 249_950n, 50n),
         ],
       },
-      { transact: async () => undefined, shield: async (c) => (c.hash === leafHex(93) ? owned(TOKEN, 745_000n) : undefined) },
+      { nullifyingKey: NK, transact: async () => undefined, shield: async (c) => (c.hash === leafHex(93) ? owned(TOKEN, 745_000n) : undefined) },
     );
     expect(state.shieldRelayerFees().get(TXID)).toBe(250_000n);
     expect(WalletScanState.restore(state.snapshot()).shieldRelayerFees().get(TXID)).toBe(250_000n);
@@ -284,7 +286,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
     const state = new WalletScanState();
     await state.apply(
       { ...noEvents(), shields: [mkShield(0, 0, leafHex(92), 500_000n)] },
-      { transact: async () => undefined, shield: async () => owned(TOKEN, 500_000n) },
+      { nullifyingKey: NK, transact: async () => undefined, shield: async () => owned(TOKEN, 500_000n) },
     );
     expect(state.shieldRelayerFees().size).toBe(0);
   });
@@ -297,7 +299,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
       const state = new WalletScanState();
       await state.apply(
         { ...noEvents(), transacts: [mkTransact(0, 0, leafHex(80)), mkTransact(0, 1, leafHex(81))] },
-        { transact: async () => owned(TOKEN, 100n) },
+        { nullifyingKey: NK, transact: async () => owned(TOKEN, 100n) },
       );
       return state;
     }
@@ -327,7 +329,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
       // The real spend confirms on-chain — the same nullifier arrives in a scan batch.
       await state.apply(
         { ...noEvents(), nullifiers: [{ ...nf(0), blockNumber: 1, txid: TXID }] },
-        { transact: async () => undefined },
+        { nullifyingKey: NK, transact: async () => undefined },
       );
       expect(holds.releaseConfirmed(state.spentNullifiers())).toBe(true);
       expect(holds.list()).toHaveLength(0); // confirmed set is authoritative
@@ -341,7 +343,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
       const state = await twoNoteState();
       await state.apply(
         { ...noEvents(), nullifiers: [{ ...nf(0), blockNumber: 1, txid: TXID }] },
-        { transact: async () => undefined },
+        { nullifyingKey: NK, transact: async () => undefined },
       );
       const holds = new PendingSpends();
       holds.mark([nf(0)], '0xother', 1000, state.spentNullifiers());
@@ -372,11 +374,58 @@ describe('wallet scan orchestrator (§4.4)', () => {
 
     it('is tree-scoped: a hold in tree 0 does not touch the same position in tree 1', async () => {
       const state = new WalletScanState();
-      await state.apply({ ...noEvents(), transacts: [mkTransact(0, 0, leafHex(80))] }, { transact: async () => owned(TOKEN, 100n) });
-      await state.apply({ ...noEvents(), transacts: [mkTransact(1, 0, leafHex(81))] }, { transact: async () => owned(TOKEN, 200n) });
+      await state.apply({ ...noEvents(), transacts: [mkTransact(0, 0, leafHex(80))] }, { nullifyingKey: NK, transact: async () => owned(TOKEN, 100n) });
+      await state.apply({ ...noEvents(), transacts: [mkTransact(1, 0, leafHex(81))] }, { nullifyingKey: NK, transact: async () => owned(TOKEN, 200n) });
       const holds = new PendingSpends();
       holds.mark([nf(0, 0)], TXID, 1000, []); // hold tree-0 position-0 only
       expect(state.spendableTxos(NK, holds.list()).map((t) => ({ tree: t.tree, position: t.position }))).toEqual([{ tree: 1, position: 0 }]);
+    });
+  });
+
+  describe("keeps only the wallet's own nullifiers and unshields (SYNC-9, #143)", () => {
+    const OWN_TX = '0x' + '01'.repeat(32);
+    const OTHER_TX = '0x' + '02'.repeat(32);
+    const unshield = (txid: string) => ({
+      to: '0x' + '33'.repeat(20),
+      tokenData: { tokenType: 0, tokenAddress: '0x' + '44'.repeat(20), tokenSubID: '0' } as TokenData,
+      amount: 5n,
+      fee: 0n,
+      blockNumber: 101,
+      txid,
+    });
+    const decryptors: WalletDecryptors = {
+      nullifyingKey: NK,
+      transact: async (c) => (c.hash === leafHex(1) ? owned(TOKEN, 100n) : undefined),
+    };
+    const spendEvents = (): DecodedPoolEvents => ({
+      ...noEvents(),
+      nullifiers: [
+        { tree: 0, nullifier: TransactNote.getNullifier(NK, 0), blockNumber: 101, txid: OWN_TX }, // our note at 0
+        { tree: 0, nullifier: TransactNote.getNullifier(NK, 1), blockNumber: 101, txid: OTHER_TX }, // position 1 isn't ours
+        { tree: 0, nullifier: 12345n, blockNumber: 101, txid: OTHER_TX },
+      ],
+      unshields: [unshield(OWN_TX), unshield(OTHER_TX)],
+    });
+
+    it('records only the nullifiers of its own notes, and only the unshields of transactions it spent in', async () => {
+      // WHY: every wallet stored every pool nullifier and unshield — chain-public data that grew with the pool (about
+      // 20 MB per wallet at 100k leaves), re-encrypted and rewritten on every sync.
+      const state = new WalletScanState();
+      await state.apply({ ...noEvents(), transacts: [mkTransact(0, 0, leafHex(1)), mkTransact(0, 1, leafHex(2))] }, decryptors);
+      const result = await state.apply(spendEvents(), decryptors);
+      expect(state.spentNullifiers().map((n) => n.txid)).toEqual([OWN_TX]);
+      expect(result.nullifiers.map((n) => n.txid)).toEqual([OWN_TX]);
+      expect(state.unshieldEvents().map((u) => u.txid)).toEqual([OWN_TX]);
+      expect(state.spendableTxos(NK)).toEqual([]);
+    });
+
+    it('still recognizes its notes after a restore', async () => {
+      const state = new WalletScanState();
+      await state.apply({ ...noEvents(), transacts: [mkTransact(0, 0, leafHex(1)), mkTransact(0, 1, leafHex(2))] }, decryptors);
+      const restored = WalletScanState.restore(state.snapshot());
+      await restored.apply(spendEvents(), decryptors);
+      expect(restored.spentNullifiers().map((n) => n.txid)).toEqual([OWN_TX]);
+      expect(restored.unshieldEvents().map((u) => u.txid)).toEqual([OWN_TX]);
     });
   });
 
@@ -385,7 +434,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
       // WHY: every sync clones the state. Re-inserting the leaves into an incrementally hashed tree would rehash the
       // whole tree on every sync.
       const original = new WalletScanState();
-      await original.apply({ ...noEvents(), transacts: [mkTransact(0, 0, leafHex(80))] }, { transact: async () => undefined });
+      await original.apply({ ...noEvents(), transacts: [mkTransact(0, 0, leafHex(80))] }, { nullifyingKey: NK, transact: async () => undefined });
       const reinsert = vi.spyOn(UTXOMerkletree.prototype, 'insertMany');
       try {
         const copy = original.clone();
@@ -398,11 +447,11 @@ describe('wallet scan orchestrator (§4.4)', () => {
 
     it('applying to the clone leaves the original untouched', async () => {
       const original = new WalletScanState();
-      await original.apply({ ...noEvents(), transacts: [mkTransact(0, 0, leafHex(80))] }, { transact: async () => owned(TOKEN, 100n) });
+      await original.apply({ ...noEvents(), transacts: [mkTransact(0, 0, leafHex(80))] }, { nullifyingKey: NK, transact: async () => owned(TOKEN, 100n) });
       const rootBefore = original.treeRoot(0);
 
       const copy = original.clone();
-      await copy.apply({ ...noEvents(), transacts: [mkTransact(0, 1, leafHex(81))] }, { transact: async () => owned(TOKEN, 200n) });
+      await copy.apply({ ...noEvents(), transacts: [mkTransact(0, 1, leafHex(81))] }, { nullifyingKey: NK, transact: async () => owned(TOKEN, 200n) });
 
       expect(copy.treeLength(0)).toBe(2);
       expect(copy.txoCount).toBe(2);
@@ -413,7 +462,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
       const direct = new WalletScanState();
       await direct.apply(
         { ...noEvents(), transacts: [mkTransact(0, 0, leafHex(80)), mkTransact(0, 1, leafHex(81))] },
-        { transact: async () => undefined },
+        { nullifyingKey: NK, transact: async () => undefined },
       );
       expect(copy.treeRoot(0)).toBe(direct.treeRoot(0));
     });
@@ -425,6 +474,7 @@ describe('wallet scan orchestrator (§4.4)', () => {
       await state.apply(
         { ...noEvents(), transacts: [mkTransact(0, 0, leafHex(80))], shields: [{ ...mkShield(0, 1, leafHex(81), 500n), fee: 3n }] },
         {
+          nullifyingKey: NK,
           transact: async () => ({ ...owned(TOKEN, 100n), memo: 'thanks for lunch', senderShieldedAddress: '0zk1sender' }),
           shield: async () => owned(TOKEN, 500n),
         },

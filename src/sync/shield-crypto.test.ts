@@ -93,6 +93,7 @@ describe('shield-note ownership decryption (§4.4)', () => {
     await state.apply(
       { shields: [commitment], transacts: [], nullifiers: [], unshields: [] },
       {
+        nullifyingKey: 0n,
         transact: async () => undefined,
         shield: (c) => tryDecryptShield(c, receiverKeys(receiver)),
       },

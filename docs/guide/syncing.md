@@ -23,7 +23,9 @@ const { fromBlock, syncedThrough, scanned } = await wallet.sync();
 Scan state persists through the [storage adapter](./adapters). A wallet loads its saved state when
 you create it, so `balances()`, `history()`, and planning work straight away after a reload, before
 any sync. A later `sync()` resumes from the last checkpoint rather than rescanning from the pool's
-deploy block, so repeat syncs only cover new blocks.
+deploy block, so repeat syncs only cover new blocks. Saving is incremental too: a sync writes the
+newest part of the merkle tree, the wallet's notes and the checkpoint together, not the whole state.
+A wallet keeps only its own spends, not every nullifier and unshield in the pool.
 
 Each sync builds its result on a copy of the wallet's state and switches over only once the result is
 verified and saved. Reads made while a sync is running — `balances()`, `history()`, `planTransfer` —

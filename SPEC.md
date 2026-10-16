@@ -520,8 +520,12 @@ Requirements:
 - **Progress + events.** `sdk.sync.status()` and subscription events
   (`scan:started/progress/complete/error`, `balance:updated`, `note:received` — see §5.2)
   replace the single global `setOnBalanceUpdateCallback` multiplexer.
-- **Checkpointing.** Scan checkpoints per (wallet, chain) live in storage (replacing the
-  localStorage `history-checkpoint.ts`), covered by the schema-version reset rule.
+- **Checkpointing.** Scan state per (wallet, chain) lives in storage (replacing the
+  localStorage `history-checkpoint.ts`), covered by the schema-version reset rule, as three kinds of
+  record: a checkpoint (synced block, its hash, each tree's length), the wallet's notes (its owned
+  notes and only its own spends — not every pool nullifier and unshield), and each tree's leaves in
+  1,024-leaf chunks. A save writes the changed chunks, the notes and the checkpoint in one atomic
+  batch; any unreadable or inconsistent record is a cache miss, and the wallet rescans.
 - **Quick-sync interface (optional, deferred within Phase 2):**
   `interface EventSource { getEvents(fromBlock, toBlock): Promise<AccumulatedEvents> }` — an
   indexer-backed implementation can later serve snapshots to cut first-scan time (the crowdfund

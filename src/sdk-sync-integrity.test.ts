@@ -111,7 +111,7 @@ vi.mock('ethers', async (importActual) => {
 
 import { Interface } from 'ethers';
 import { createArmadaSdk, resolveWalletStorage } from './sdk';
-import { MemoryStorageAdapter } from './storage/index';
+import { MemoryStorageAdapter, type StorageOp } from './storage/index';
 import { initPoseidonPromise, getTokenDataERC20, getTokenDataHash, ShieldNote, TransactNote } from './core/index';
 import { serializeQuickSync, createTransferNote, encryptNoteToReceiver, type DecodedShieldCommitment } from './sync/index';
 import { POOL_V2_EVENT_ABI, UTXOMerkletree, WalletScanState, saveScanState, walletRecordId } from './internal/index';
@@ -230,13 +230,14 @@ async function pushTransfer(block: number, receiver: Keyset, value: bigint, memo
 
 // A MemoryStorageAdapter whose next scan-state write can be made to fail (e.g. an IndexedDB quota error).
 class FlakyStorage extends MemoryStorageAdapter {
-  failNextScanStatePut = false;
-  override async put(key: string, value: Uint8Array): Promise<void> {
-    if (this.failNextScanStatePut && /^chain\/[^/]+\/scan-state$/.test(key)) { // a wallet's scoped scan-state record
-      this.failNextScanStatePut = false;
+  failNextScanStateWrite = false;
+  override async batch(ops: readonly StorageOp[]): Promise<void> {
+    // A scan-state save is one batch that includes the wallet's scoped checkpoint record.
+    if (this.failNextScanStateWrite && ops.some((op) => /^chain\/[^/]+\/checkpoint$/.test(op.key))) {
+      this.failNextScanStateWrite = false;
       throw new Error('QuotaExceededError');
     }
-    return super.put(key, value);
+    return super.batch(ops);
   }
 }
 
@@ -475,7 +476,7 @@ describe('SYNC-5: a sync whose save fails does not advance the checkpoint', () =
 
     pushTransact(20, [102n]);
     chain.head = 20;
-    storage.failNextScanStatePut = true;
+    storage.failNextScanStateWrite = true;
     await expect(wallet.sync()).rejects.toThrow('QuotaExceededError');
     expect((await wallet.syncStatus()).syncedThrough).toBe(10);
 
@@ -589,6 +590,10 @@ describe('close() during a sync (#140)', () => {
       this.written.push(key);
       return super.put(key, value);
     }
+    override async batch(ops: readonly StorageOp[]): Promise<void> {
+      for (const op of ops) if (op.type === 'put') this.written.push(op.key);
+      return super.batch(ops);
+    }
   }
 
   it('waits for the in-flight sync, which rejects with INSTANCE_CLOSED and saves nothing', async () => {
@@ -616,7 +621,7 @@ describe('close() during a sync (#140)', () => {
     release();
     await closing;
     expect(await outcome).toMatchObject({ code: 'INSTANCE_CLOSED' });
-    expect(storage.written.filter((k) => k.endsWith('/scan-state'))).toEqual([]);
+    expect(storage.written.filter((k) => k.endsWith('/checkpoint'))).toEqual([]);
   });
 });
 
@@ -652,7 +657,7 @@ describe('WS-1: stored record keys never contain the 0zk address', () => {
     const keys: string[] = [];
     for await (const { key } of storage.list('')) keys.push(key);
     const id = walletRecordId(keyset.viewingPrivateKey);
-    expect(keys).toContain(`chain/${id}/scan-state`);
+    expect(keys).toContain(`chain/${id}/checkpoint`);
     expect(keys).toContain(`chain/${id}/pending-spends`);
     expect(keys.some((k) => k.includes(keyset.shieldedAddress))).toBe(false);
     await sdk.close();
