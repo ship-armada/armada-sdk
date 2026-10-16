@@ -54,6 +54,7 @@ export default withMermaid({
             { text: 'Syncing', link: '/guide/syncing' },
             { text: 'Transactions', link: '/guide/transactions' },
             { text: 'Adapters', link: '/guide/adapters' },
+            { text: 'Privacy nudges', link: '/guide/privacy' },
             { text: 'Security', link: '/guide/security' },
           ],
         },

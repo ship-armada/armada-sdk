@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Privacy nudges demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Charis+SIL&family=Geist:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<style>
+  :root { --ink: #151416; --muted: #5a5560; --violet: #3d1d9e; --strong: #b42318; --warn: #b54708; --info: #3d1d9e; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { min-height: 100vh; font-family: "Geist", system-ui, sans-serif; color: var(--ink);
+    background: radial-gradient(1200px 900px at 12% 10%, rgba(202,138,234,0.5), transparent 70%),
+                radial-gradient(1100px 1000px at 92% 90%, rgba(248,209,151,0.8), transparent 70%),
+                radial-gradient(1000px 800px at 78% 8%, rgba(243,157,176,0.4), transparent 70%), #f3dde0;
+    background-attachment: fixed; padding: 48px 16px 80px; }
+  header { max-width: 1240px; margin: 0 auto 36px; display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; flex-wrap: wrap; }
+  h1 { font-family: "Charis SIL", serif; font-weight: 400; font-size: 52px; letter-spacing: -0.02em; line-height: 1.05; }
+  header p { color: var(--muted); font-size: 17px; margin-top: 10px; max-width: 640px; line-height: 1.45; }
+  .lock { display: flex; gap: 12px; align-items: center; } .lock .s { width: 30px; } .lock .w { height: 22px; }
+  .grid { max-width: 1240px; margin: 0 auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 24px; }
+  .card { background: rgba(255,255,255,0.86); border: 1px solid rgba(255,255,255,0.95); border-radius: 28px; box-shadow: 0 16px 44px rgba(41,20,51,0.10); padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+  .scenario { font-size: 13px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--violet); }
+  .action { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+  .action .what { font-size: 20px; font-weight: 650; }
+  .action .amt { font-variant-numeric: tabular-nums; font-size: 20px; font-weight: 700; white-space: nowrap; }
+  .meta { color: var(--muted); font-size: 14px; line-height: 1.4; }
+  .badge { align-self: flex-start; font-size: 14px; font-weight: 700; padding: 6px 14px; border-radius: 999px; }
+  .badge.good { background: #dcfae6; color: #067647; } .badge.fair { background: #fef0c7; color: #93370d; } .badge.weak { background: #fee4e2; color: #912018; }
+  .warn { display: grid; grid-template-columns: 30px 1fr; gap: 12px; align-items: start; border-radius: 18px; padding: 14px 16px; background: #f6f3f9; }
+  .warn.strong { background: #fdf1f0; } .warn.warn-l { background: #fdf6ec; }
+  .warn .ic { width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 15px; color: #fff; background: var(--info); }
+  .warn.strong .ic { background: var(--strong); } .warn.warn-l .ic { background: var(--warn); }
+  .warn .tx { display: flex; flex-direction: column; gap: 4px; }
+  .warn .t { font-weight: 700; font-size: 15px; line-height: 1.3; } .warn .b { font-size: 14px; color: #3a3640; line-height: 1.45; }
+  .warn .lvl { font-size: 12px; font-weight: 700; color: var(--info); } .warn.strong .lvl { color: var(--strong); } .warn.warn-l .lvl { color: var(--warn); }
+  .buttons { display: flex; gap: 10px; flex-wrap: wrap; margin-top: auto; }
+  button { font: inherit; font-weight: 650; font-size: 14px; border-radius: 999px; padding: 11px 18px; cursor: pointer; border: 1px solid rgba(21,20,22,0.15); background: #fff; color: var(--ink); }
+  button.fix { background: #5227ca; border-color: #5227ca; color: #fff; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .confirm { display: flex; gap: 8px; align-items: center; } .confirm input { font: inherit; font-size: 14px; padding: 10px 14px; border-radius: 999px; border: 1px solid rgba(21,20,22,0.2); width: 130px; }
+  .none { font-size: 14px; color: #067647; font-weight: 600; }
+  footer { max-width: 1240px; margin: 40px auto 0; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Privacy nudges</h1>
+    <p>Each card runs <code>checkPrivacy()</code> from the SDK branch against an example wallet. Everything is checked on the device and the user can always continue.</p>
+  </div>
+  <div class="lock"><img class="s" src="symbol-ink.svg" alt="" /><img class="w" src="wordmark-ink.svg" alt="Armada" /></div>
+</header>
+<div class="grid" id="grid"></div>
+<footer>Demo data is made up. Warning copy is the SDK default; apps can restyle or reword it.</footer>
+
+<script type="module">
+import { checkPrivacy, formatAmount } from './privacy.js';
+
+const USDC = 1_000_000n, HOUR = 3600, DAY = 86_400;
+const NOW = Math.floor(Date.now() / 1000);
+const DEPOSIT = '0x8f3a5e1c7b2d4a6f9e0c3b5d7a1f2e4c6b8d91c2';
+const FRESH = '0x4b17c2a9e5d3f1b7a6c8e0d2f4b6a8c0e2d4e08d';
+const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
+const e = (category, value, timestamp, extra = {}) => ({ txid: `0x${Math.random().toString(16).slice(2)}`, blockNumber: 1, tokenHash: '00', tokenAddress: '0x01', category, value, timestamp, ...extra });
+const shield = (gross, ts) => { const fee = (gross * 5n) / 1000n; return e('shield', gross - fee, ts, { shieldFee: fee }); };
+
+const scenarios = [
+  { name: 'Careful withdrawal', what: 'Withdraw', amount: 3_000n * USDC, to: FRESH,
+    action: { kind: 'unshield', amount: 3_000n * USDC, recipient: FRESH },
+    ctx: { history: [shield(9_950n * USDC, NOW - 12 * DAY)], depositAddresses: [DEPOSIT], poolActivity: { recentActions24h: 142 }, network: { tor: true } } },
+  { name: 'Submitting it yourself', what: 'Send privately', amount: 250n * USDC, to: '0zk1q…v7kd',
+    action: { kind: 'transfer', amount: 250n * USDC, submittedBy: 'self' },
+    ctx: { history: [], poolActivity: { recentActions24h: 142 }, network: { privateRpc: true } } },
+  { name: 'Straight back out', what: 'Withdraw', amount: 12_480n * USDC, to: DEPOSIT,
+    action: { kind: 'unshield', amount: 12_480n * USDC, recipient: DEPOSIT },
+    ctx: { history: [shield(12_480n * USDC, NOW - 3 * HOUR)], depositAddresses: [DEPOSIT], poolActivity: { recentActions24h: 142 }, network: { tor: true } } },
+  { name: 'Monthly payroll', what: 'Withdraw', amount: 4_200n * USDC, to: '0x9c2e…7a41',
+    action: { kind: 'unshield', amount: 4_200n * USDC, recipient: '0x9c2e000000000000000000000000000000007a41' },
+    ctx: { history: [e('unshield', -4_200n * USDC, NOW - 60 * DAY, { recipient: '0xa1' }), e('unshield', -4_200n * USDC, NOW - 30 * DAY, { recipient: '0xa2' })], poolActivity: { recentActions24h: 142 }, network: { tor: true } } },
+  { name: 'Odd amount, quiet pool', what: 'Deposit', amount: 12_480_370_000n, to: 'Armada pool',
+    action: { kind: 'shield', amount: 12_480_370_000n },
+    ctx: { history: [], poolActivity: { recentActions24h: 6 }, network: { privateRpc: true } } },
+  { name: 'Moving to Base', what: 'Withdraw to Base', amount: 800n * USDC, to: FRESH,
+    action: { kind: 'cross-chain-unshield', amount: 800n * USDC, recipient: FRESH },
+    ctx: { history: [shield(5_000n * USDC, NOW - 20 * DAY)], depositAddresses: [DEPOSIT], poolActivity: { recentActions24h: 142 }, network: { tor: true } } },
+  { name: 'Quick yield exit', what: 'Withdraw from yield', amount: 10_010n * USDC, to: 'Your shielded balance',
+    action: { kind: 'yield-withdraw', amount: 10_010n * USDC },
+    ctx: { history: [e('yield-deposit', -10_000n * USDC, NOW - DAY)], poolActivity: { recentActions24h: 142 }, network: { tor: true } } },
+  { name: 'Sharing with an auditor', what: 'Share viewing key', amount: null, to: 'auditor@firm.com',
+    action: { kind: 'share-viewing-key' },
+    ctx: { history: [] } },
+  { name: 'No network cover', what: 'Send privately', amount: 90n * USDC, to: '0zk1q…3mfa',
+    action: { kind: 'transfer', amount: 90n * USDC },
+    ctx: { history: [], poolActivity: { recentActions24h: 142 }, network: {} } },
+];
+
+const when = (ts) => new Date(ts * 1000).toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+const fixLabel = (f) => ({
+  'use-relayer': () => 'Use a relayer',
+  'fresh-address': () => 'Use a new address',
+  'split': () => `Split: ${f.parts.map((p) => formatAmount(p)).join(' · ')}`,
+  'delay': () => `Wait until ${when(f.notBefore)}`,
+  'remind': () => `Remind me ${when(f.at)}`,
+  'change-amount': () => `Use ${formatAmount(f.suggested)}`,
+  'pay-in-pool': () => 'Pay inside the pool',
+  'network-settings': () => 'Open network settings',
+  'learn-more': () => 'Learn more',
+}[f.kind]?.() ?? f.kind);
+
+const grid = document.getElementById('grid');
+for (const s of scenarios) {
+  const r = checkPrivacy(s.action, { ...s.ctx, now: NOW });
+  const card = document.createElement('div'); card.className = 'card';
+  const amt = s.amount === null ? '' : `${formatAmount(s.amount)} USDC`;
+  card.innerHTML = `
+    <div class="scenario">${s.name}</div>
+    <div class="action"><div class="what">${s.what}</div><div class="amt">${amt}</div></div>
+    <div class="meta">To ${s.to.startsWith('0x') && s.to.length > 20 ? short(s.to) : s.to}</div>
+    <div class="badge ${r.level}">Privacy: ${r.level}</div>`;
+  if (r.warnings.length === 0) card.insertAdjacentHTML('beforeend', '<div class="none">No issues. Good to go.</div>');
+  let primaryFix = null, typeConfirm = null;
+  for (const w of r.warnings) {
+    const cls = w.level === 'strong' ? 'strong' : w.level === 'warn' ? 'warn-l' : '';
+    const label = { strong: 'High risk', warn: 'Worth fixing', info: 'Good to know' }[w.level];
+    const glyph = w.level === 'info' ? 'i' : '!';
+    card.insertAdjacentHTML('beforeend', `<div class="warn ${cls}"><div class="ic">${glyph}</div><div class="tx"><div class="lvl">${label}</div><div class="t">${w.title}</div><div class="b">${w.body}</div></div></div>`);
+    if (w.fix?.kind === 'type-to-confirm') typeConfirm = w.fix.phrase;
+    else if (w.fix && !primaryFix) primaryFix = w.fix;
+  }
+  const buttons = document.createElement('div'); buttons.className = 'buttons';
+  if (typeConfirm) {
+    buttons.innerHTML = `<div class="confirm"><input placeholder="type ${typeConfirm}" /><button class="fix" disabled>Share key</button></div>`;
+    const input = buttons.querySelector('input'), btn = buttons.querySelector('button');
+    input.addEventListener('input', () => { btn.disabled = input.value.trim().toLowerCase() !== typeConfirm; });
+  } else {
+    if (primaryFix) buttons.insertAdjacentHTML('beforeend', `<button class="fix">${fixLabel(primaryFix)}</button>`);
+    buttons.insertAdjacentHTML('beforeend', `<button>${r.warnings.length ? 'Continue anyway' : 'Confirm'}</button>`);
+  }
+  card.appendChild(buttons);
+  grid.appendChild(card);
+}
+</script>
+</body>
+</html>

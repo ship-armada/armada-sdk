@@ -179,6 +179,8 @@ export * from './sync/index';
 export * from './prover/index';
 export * from './tx/index';
 export * from './wallet/index';
+// Privacy nudges: local-only checks an app runs before a shield/unshield/transfer/viewing-key share.
+export * from './privacy/index';
 
 // ── Explicit root re-exports for node10 (classic moduleResolution) consumers ──
 // A bare `export *` from a multi-entry tsup build silently drops symbols that the dts bundler assigns

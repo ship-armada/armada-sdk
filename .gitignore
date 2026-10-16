@@ -15,3 +15,6 @@ docs/api/
 *.key
 *.pem
 *.secret
+
+# Privacy nudges demo bundle (built by `npm run example:privacy`)
+examples/privacy-nudges/privacy.js
