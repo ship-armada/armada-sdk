@@ -89,7 +89,7 @@ import {
 } from './errors';
 import { resolveConfig, type ResolvedConfig } from './config';
 import { ChainClient } from './chain/client';
-import { ChainState, assertMatchesTree, assertShieldsMatchLeaves, noEvents, type ChainAdvance } from './chain/state';
+import { ChainState, CHAIN_CHUNK_BLOCKS, assertMatchesTree, assertShieldsMatchLeaves, noEvents, type ChainAdvance } from './chain/state';
 import { WalletNotes } from './sync/wallet-notes';
 import { loadWalletNotes, saveWalletNotes, clearWalletNotes } from './sync/scan-persistence';
 import type { DecodedPoolEvents } from './sync/event-decoder';
@@ -471,33 +471,42 @@ class ArmadaWallet implements Wallet {
 
   /**
    * Bring the notes up to the chain's checkpoint (`target`): fetch the events from where the notes stop — or from
-   * `creationBlock`, if later — and read the wallet's notes from them. The trees are already verified, so the batch
-   * isn't verified again; instead every commitment in it must match the verified leaf at its position. An indexer
-   * batch that doesn't is discarded for an RPC one; an RPC batch that doesn't fails the sync.
+   * `creationBlock`, if later — and read the wallet's notes from them, a chunk at a time (each saved before the next,
+   * as the chain does). The trees are already verified, so the batch isn't verified again; instead every commitment
+   * in it must match the verified leaf at its position. An indexer batch that doesn't is discarded for an RPC one; an
+   * RPC batch that doesn't fails the sync.
    */
   private async catchUp(target: number, onProgress: (coveredThroughBlock: number) => void): Promise<void> {
     const chain = this.ctx.chainState;
     const from = Math.max(this.syncedThrough + 1, this.creationBlock);
-    let events = noEvents();
-    if (from <= target) {
-      const usingIndexer = this.ctx.eventSource !== this.ctx.rpcEventSource;
-      let fetched: DecodedPoolEvents | undefined;
-      if (usingIndexer) {
-        try {
-          fetched = (await chain.fetchEvents(this.ctx.eventSource, from, target, onProgress)).events;
-          assertShieldsMatchLeaves(fetched);
-          assertMatchesTree(fetched, chain.tree);
-        } catch {
-          fetched = undefined;
-        }
-      }
-      if (fetched === undefined) {
-        fetched = (await chain.fetchEvents(this.ctx.rpcEventSource, from, target, onProgress)).events;
-        assertMatchesTree(fetched, chain.tree);
-      }
-      events = fetched;
+    if (from > target) {
+      // Nothing the wallet could own lies in range: it starts at the chain's checkpoint.
+      await this.ingest(noEvents(), target, chain.syncedThroughHash);
+      return;
     }
-    await this.ingest(events, target, chain.syncedThroughHash);
+    for (let start = from; start <= target; start += CHAIN_CHUNK_BLOCKS) {
+      const end = Math.min(start + CHAIN_CHUNK_BLOCKS - 1, target);
+      const endHash = end === target ? chain.syncedThroughHash : await this.ctx.chainClient.getBlockHash(end);
+      await this.ingest(await this.fetchMatchingTree(start, end, onProgress), end, endHash);
+    }
+  }
+
+  // Fetch `[from, to]` for a catch-up and check it against the verified trees (see `catchUp`).
+  private async fetchMatchingTree(from: number, to: number, onProgress: (coveredThroughBlock: number) => void): Promise<DecodedPoolEvents> {
+    const chain = this.ctx.chainState;
+    if (this.ctx.eventSource !== this.ctx.rpcEventSource) {
+      try {
+        const served = (await chain.fetchEvents(this.ctx.eventSource, from, to, onProgress)).events;
+        assertShieldsMatchLeaves(served);
+        assertMatchesTree(served, chain.tree);
+        return served;
+      } catch {
+        // Deliberately swallowed: the indexer is untrusted, and RPC is read instead.
+      }
+    }
+    const events = (await chain.fetchEvents(this.ctx.rpcEventSource, from, to, onProgress)).events;
+    assertMatchesTree(events, chain.tree);
+    return events;
   }
 
   /**
@@ -650,8 +659,7 @@ class ArmadaWallet implements Wallet {
         // Behind the chain (new, or loaded from an older save): catch up to its checkpoint first, so this wallet is
         // level with the chain when it advances and reads the new batch with the others.
         if (this.syncedThrough < chain.syncedThrough) await this.catchUp(chain.syncedThrough, emitProgress);
-        const batch = await chain.advance(head, headHash, emitProgress);
-        if (batch !== undefined) await this.deliver(batch, chainHead);
+        await chain.advance(head, headHash, emitProgress, (batch) => this.deliver(batch, chainHead));
 
         this.emitter.emit('scan:complete', { syncedThrough: this.syncedThrough });
         // Balance events use the chain head, as `balances()` does, so both agree on spendable vs pending.

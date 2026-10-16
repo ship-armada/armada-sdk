@@ -35,6 +35,9 @@ export interface ChainAdvance {
   readonly events: DecodedPoolEvents;
 }
 
+/** Blocks per chain-sync chunk: each is verified, saved and handed to the wallets before the next starts. */
+export const CHAIN_CHUNK_BLOCKS = 100_000;
+
 /** An empty event batch. */
 export const noEvents = (): DecodedPoolEvents => ({ shields: [], transacts: [], nullifiers: [], unshields: [] });
 
@@ -140,106 +143,127 @@ export class ChainState {
   }
 
   /**
-   * Advance the trees from the checkpoint to `head` (whose hash is `headHash`, when the node returned it): fetch the
-   * events, apply their leaves to a copy, verify it, save it, then commit it. Returns the verified batch, for the
-   * wallets to read their notes from, or undefined when the checkpoint is already at `head`.
+   * Advance the trees from the checkpoint to `head` (whose hash is `headHash`, when the node returned it), in chunks of
+   * `CHAIN_CHUNK_BLOCKS`. Each chunk is fetched, applied to a copy, verified, saved and committed, then handed to
+   * `onCommitted` (the wallets read their notes from it) before the next starts — so a failure late in a long first
+   * sync keeps everything before it, and the retry resumes there.
+   *
+   * Chunks before the head are verified against the pool's root history, which any node can answer; only the chunk
+   * ending at the head gets the exact, pinned tree check (SYNC-2), since a pinned read of an old block needs an archive
+   * node. A chunk that dropped leaves can't slip through: the next chunk's first leaf then lands past the tree's next
+   * position, which forces a rescan.
    */
   async advance(
     head: number,
     headHash: string | undefined,
     onProgress?: (coveredThroughBlock: number) => void,
-    recovering = false,
-  ): Promise<ChainAdvance | undefined> {
-    if (head <= this.through) return undefined;
+    onCommitted?: (batch: ChainAdvance) => Promise<void>,
+  ): Promise<void> {
+    // A rescan happens at most once per sync (a second failure is thrown), and reads from RPC only: the indexer is
+    // untrusted, and one that truncated a chunk would otherwise send every rescan the same way.
+    let recovered = false;
+    while (this.through < head) {
+      const toBlock = Math.min(this.through + CHAIN_CHUNK_BLOCKS, head);
+      const atHead = toBlock === head;
+      const toBlockHash = atHead ? headHash : await this.deps.client.getBlockHash(toBlock);
+      let batch: ChainAdvance;
+      try {
+        batch = await this.advanceChunk(toBlock, toBlockHash, atHead, !recovered, onProgress);
+      } catch (err) {
+        if (this.deps.isClosed()) {
+          throw err instanceof InstanceClosedError ? err : new InstanceClosedError('sync: cancelled by sdk.close()', { cause: err });
+        }
+        // Two failures no retry can fix, so self-heal by rescanning from the deploy block: (1) the local tree is missing
+        // leaves — a leaf arrived past its next position, so part of the chain was skipped; (2) a reorg removed an
+        // already-PERSISTED leaf the hash check couldn't see (a record saved without a hash), so the committed state
+        // itself fails root verification.
+        if (!recovered && scanStateMissingLeaves(err)) {
+          await this.resetForRescan('missing-leaves');
+          recovered = true;
+          continue;
+        }
+        if (shouldRecoverFromReorg(err, await this.committedRootsInvalid(toBlock), recovered)) {
+          await this.resetForRescan('persisted-root-invalid');
+          recovered = true;
+          continue;
+        }
+        throw err;
+      }
+      await onCommitted?.(batch);
+    }
+  }
+
+  /** Fetch, apply, verify, save and commit `(checkpoint, toBlock]`. See `advance`. */
+  private async advanceChunk(
+    toBlock: number,
+    toBlockHash: string | undefined,
+    atHead: boolean,
+    allowIndexer: boolean,
+    onProgress?: (coveredThroughBlock: number) => void,
+  ): Promise<ChainAdvance> {
     const fromBlock = this.through + 1;
-    // Pin verification to the exact block scanned — by hash when the node returns it — so the pool state the tree is
-    // checked against is the state the logs came from; a reorg of `head` mid-sync makes the pinned read fail instead
+    // Pin the head check to the exact block scanned — by hash when the node returns it — so the pool state the tree is
+    // checked against is the state the logs came from; a reorg of the head mid-sync makes the pinned read fail instead
     // of verifying against a different chain.
-    const blockTag = headHash ?? head;
-    const usingIndexer = this.deps.eventSource !== this.deps.rpcEventSource;
+    const verify = (tree: TreeStore): Promise<void> =>
+      atHead ? this.verifySyncedTree(tree, toBlock, toBlockHash ?? toBlock) : this.verifyRoots(tree, toBlock);
+    const usingIndexer = allowIndexer && this.deps.eventSource !== this.deps.rpcEventSource;
     // Apply the batch to a COPY of the committed trees; it replaces them only once it is verified and saved. ANY
     // failure below — a partial apply, a root mismatch, a save error — just discards the copy: the committed state
     // and checkpoint were never touched, so a retry re-scans the range cleanly.
     let next = this.committed.clone();
-    try {
-      let events: DecodedPoolEvents;
-      let tailCovered = false;
-      let fellBack = false;
-      // Preserved so telemetry can classify WHY the indexer batch was discarded (#83) — an HTTP 404, a
-      // wire-schema skew, a position gap, or a genuine root mismatch, not one mislabel for all four.
-      let fallbackCause: unknown;
+    let events: DecodedPoolEvents;
+    let tailCovered = false;
+    let fellBack = false;
+    // Preserved so telemetry can classify WHY the indexer batch was discarded (#83) — an HTTP 404, a
+    // wire-schema skew, a position gap, or a genuine root mismatch, not one mislabel for all four.
+    let fallbackCause: unknown;
 
-      if (usingIndexer) {
-        try {
-          // The indexer is untrusted: its fetch, wire-schema parse, apply, AND root-verify all live inside this try
-          // so ANY failure — malformed/garbage response, HTTP error, position gap, root mismatch, a shield whose
-          // value or token doesn't match its leaf hash — discards the batch and re-scans from RPC (the source of
-          // truth), rather than failing the whole sync on a degraded indexer (SPEC §4.4).
-          ({ events, tailCovered } = await this.fetchEvents(this.deps.eventSource, fromBlock, head, onProgress));
-          assertShieldsMatchLeaves(events);
-          next.applyLeaves(events);
-          await this.verifySyncedTree(next, head, blockTag);
-        } catch (err) {
-          fellBack = true;
-          fallbackCause = err;
-          next = this.committed.clone();
-          ({ events } = await this.fetchEvents(this.deps.rpcEventSource, fromBlock, head, onProgress));
-          next.applyLeaves(events);
-        }
-      } else {
-        ({ events, tailCovered } = await this.fetchEvents(this.deps.rpcEventSource, fromBlock, head, onProgress));
+    if (usingIndexer) {
+      try {
+        // The indexer is untrusted: its fetch, wire-schema parse, apply, AND root-verify all live inside this try
+        // so ANY failure — malformed/garbage response, HTTP error, position gap, root mismatch, a shield whose
+        // value or token doesn't match its leaf hash — discards the batch and re-scans from RPC (the source of
+        // truth), rather than failing the whole sync on a degraded indexer (SPEC §4.4).
+        ({ events, tailCovered } = await this.fetchEvents(this.deps.eventSource, fromBlock, toBlock, onProgress));
+        assertShieldsMatchLeaves(events);
+        next.applyLeaves(events);
+        await verify(next);
+      } catch (err) {
+        fellBack = true;
+        fallbackCause = err;
+        next = this.committed.clone();
+        ({ events } = await this.fetchEvents(this.deps.rpcEventSource, fromBlock, toBlock, onProgress));
         next.applyLeaves(events);
       }
-
-      // Final guard (SPEC §4.4): the accepted tree — RPC baseline or post-fallback RPC rescan — must reproduce the
-      // on-chain root. This is the ONLY verification on the pure-RPC path; a mismatch means the provider returned
-      // bad/truncated logs. It throws → the copy is discarded and the checkpoint doesn't advance.
-      if (finalRootCheckRequired(usingIndexer, fellBack)) {
-        await this.verifySyncedTree(next, head, blockTag);
-      }
-
-      // Quick-sync observability (SPEC §8): report whether the configured indexer served a root-verified batch,
-      // lagged into an RPC tail, or was rejected for an RPC re-scan — and, on a rejection, the classified `reason`
-      // (+ HTTP status) for it. No-op when no indexer is configured. Never carries key material / addresses.
-      const qs = quickSyncTelemetry({ usingIndexer, tailCovered, fellBack, fromBlock, head, cause: fallbackCause });
-      if (qs !== null) this.deps.telemetry?.emit(qs.event, qs.data);
-
-      if (this.deps.isClosed()) throw new InstanceClosedError('sync: cancelled by sdk.close()');
-      await saveChainState(
-        this.deps.storage,
-        next,
-        { syncedThrough: head, ...(headHash !== undefined ? { syncedThroughHash: headHash } : {}) },
-        this.committed,
-      );
-      // Commit: only now — verified and saved — do the new trees become the ones readers see.
-      this.committed = next;
-      this.through = head;
-      this.throughHash = headHash;
-      return { fromBlock, toBlock: head, ...(headHash !== undefined ? { toBlockHash: headHash } : {}), events: events! };
-    } catch (err) {
-      if (this.deps.isClosed()) {
-        throw err instanceof InstanceClosedError ? err : new InstanceClosedError('sync: cancelled by sdk.close()', { cause: err });
-      }
-      // Two failures no retry can fix, so self-heal by rescanning from the deploy block (`recovering` guards a loop):
-      // (1) the local tree is missing leaves — a leaf arrived past its next position, so part of the chain was
-      // skipped; (2) a reorg removed an already-PERSISTED leaf the hash check couldn't see (a record saved without a
-      // hash), so the committed state itself fails root verification.
-      if (!recovering && scanStateMissingLeaves(err)) return this.rescan('missing-leaves', head, headHash, onProgress);
-      if (shouldRecoverFromReorg(err, await this.committedRootsInvalid(head), recovering)) {
-        return this.rescan('persisted-root-invalid', head, headHash, onProgress);
-      }
-      throw err;
+    } else {
+      ({ events, tailCovered } = await this.fetchEvents(this.deps.rpcEventSource, fromBlock, toBlock, onProgress));
+      next.applyLeaves(events);
     }
-  }
 
-  private async rescan(
-    reason: ReorgRecoveryReason,
-    head: number,
-    headHash: string | undefined,
-    onProgress?: (coveredThroughBlock: number) => void,
-  ): Promise<ChainAdvance | undefined> {
-    await this.resetForRescan(reason);
-    return this.advance(head, headHash, onProgress, true);
+    // Final guard (SPEC §4.4): the accepted tree — RPC baseline or post-fallback RPC rescan — must reproduce the
+    // on-chain root. This is the ONLY verification on the pure-RPC path; a mismatch means the provider returned
+    // bad/truncated logs. It throws → the copy is discarded and the checkpoint doesn't advance.
+    if (finalRootCheckRequired(usingIndexer, fellBack)) await verify(next);
+
+    // Quick-sync observability (SPEC §8): report whether the configured indexer served a root-verified batch,
+    // lagged into an RPC tail, or was rejected for an RPC re-scan — and, on a rejection, the classified `reason`
+    // (+ HTTP status) for it. No-op when no indexer is configured. Never carries key material / addresses.
+    const qs = quickSyncTelemetry({ usingIndexer, tailCovered, fellBack, fromBlock, head: toBlock, cause: fallbackCause });
+    if (qs !== null) this.deps.telemetry?.emit(qs.event, qs.data);
+
+    if (this.deps.isClosed()) throw new InstanceClosedError('sync: cancelled by sdk.close()');
+    await saveChainState(
+      this.deps.storage,
+      next,
+      { syncedThrough: toBlock, ...(toBlockHash !== undefined ? { syncedThroughHash: toBlockHash } : {}) },
+      this.committed,
+    );
+    // Commit: only now — verified and saved — do the new trees become the ones readers see.
+    this.committed = next;
+    this.through = toBlock;
+    this.throughHash = toBlockHash;
+    return { fromBlock, toBlock, ...(toBlockHash !== undefined ? { toBlockHash } : {}), events };
   }
 
   /**

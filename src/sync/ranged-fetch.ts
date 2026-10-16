@@ -17,10 +17,21 @@ export interface RangedFetchOptions {
 const DEFAULT_MAX_RANGE = 5000;
 const DEFAULT_MIN_RANGE = 1;
 
+// ethers' codes for a failure to reach the node at all (connection, timeout, HTTP-level error). Smaller windows can't
+// help, so these surface at once. Anything else is the node answering with an error — which includes every provider's
+// range or result-size limit, however worded — and is bisected.
+const TRANSPORT_ERROR_CODES = new Set(['NETWORK_ERROR', 'TIMEOUT', 'SERVER_ERROR']);
+
+function isTransportError(error: unknown): boolean {
+  const code = typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : undefined;
+  return typeof code === 'string' && TRANSPORT_ERROR_CODES.has(code);
+}
+
 /**
  * Fetch logs across `[fromBlock, toBlock]` in windows of `maxRange`, bisecting any window whose
  * `getLogs` call throws (a provider range-limit) down to `minRange`. A throw at/below `minRange` is
- * re-thrown as a genuine error (not a range-size issue). Results are returned in block order.
+ * re-thrown as a genuine error (not a range-size issue), and so is a transport failure, at once.
+ * Results are returned in block order.
  */
 export async function fetchLogsRanged<T>(
   getLogs: GetLogsFn<T>,
@@ -54,6 +65,7 @@ async function fetchWindow<T>(
   } catch (error) {
     const span = to - from + 1;
     if (span <= minRange) throw error; // can't split further → a real error, surface it
+    if (isTransportError(error)) throw error; // the node wasn't reached: smaller windows won't help
     const mid = from + Math.floor((to - from) / 2);
     const left = await fetchWindow(getLogs, from, mid, minRange);
     const right = await fetchWindow(getLogs, mid + 1, to, minRange);

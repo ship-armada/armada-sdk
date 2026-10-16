@@ -510,12 +510,20 @@ Requirements:
   `deployBlock` (it is append-only from leaf 0); a wallet's `creationBlock` only bounds note discovery.
   The `eth_getLogs` bisecting logic currently monkey-patched into ethers
   (`relayer/lib/rpc-bisecting.ts`, duplicated in the interface) moves **into** the sync module
-  as first-class ranged fetching with per-provider range adaptation.
+  as first-class ranged fetching with per-provider range adaptation: a window the node rejects is
+  bisected, but a transport failure (connection, timeout, HTTP-level error) surfaces at once.
 - **Merkle root verification** against the pool contract after each batch (validator callback
   equivalent), with typed `RootMismatchError` carrying tree/index context. The rebuilt current tree
   must EQUAL the pool's `(treeNumber, merkleRoot, nextLeafIndex)` read at the scanned block (by hash);
   earlier trees' roots must be in `rootHistory`. Membership alone is insufficient — every insert leaves
   a historical root, so truncated logs would pass.
+- **Chunked sync.** A sync advances in chunks of 100,000 blocks, each verified, saved and handed to
+  the wallets before the next, so a late failure keeps the chunks before it and the retry resumes
+  there. Chunks before the head are checked by `rootHistory` membership (any node can answer it);
+  only the chunk ending at the head gets the exact, pinned check above, since a pinned read of an old
+  block needs an archive node. A chunk that dropped leaves can't be committed unnoticed: the next
+  chunk's first leaf lands past the tree's next position, which triggers the missing-leaves rescan
+  (which reads from RPC only).
 - **Reorg detection.** The checkpoint stores its block hash; if the chain's hash at that height has
   changed, the wallet rescans from `deployBlock` (keeping in-flight spend holds). A persisted tree found
   to be missing leaves is rescanned the same way. Both emit `sync.reorg-recovery` (§8).

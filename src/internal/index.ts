@@ -22,7 +22,7 @@ export {
   TREE_CHUNK_SIZE,
 } from '../sync/scan-persistence';
 export type { SyncedThrough } from '../sync/scan-persistence';
-export { ChainState } from '../chain/state';
+export { ChainState, CHAIN_CHUNK_BLOCKS } from '../chain/state';
 export type { ChainAdvance, ChainStateDeps } from '../chain/state';
 export { TreeStore } from '../sync/tree-store';
 export { WalletNotes, WALLET_NOTES_VERSION } from '../sync/wallet-notes';

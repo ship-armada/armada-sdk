@@ -21,6 +21,7 @@ const chain = {
   epochs: new Map<number, number>(), // block → fork epoch (bumped by a reorg)
   lagTo: Infinity as number, // getLogs silently returns only logs <= lagTo (a lagging backend)
   getLogsRanges: [] as [number, number][], // every getLogs range asked for, in order
+  failGetLogsFrom: Infinity as number, // getLogs throws for any range reaching past this block (a failing RPC)
   callBlockTags: [] as unknown[],
   // When set, every pool eth_call waits on it — pauses a sync in its verification step, AFTER it applied
   // the new events, so a test can observe what readers see mid-sync. `callEntered` fires on the first wait.
@@ -76,6 +77,7 @@ vi.mock('ethers', async (importActual) => {
     }
     async getLogs(f: { fromBlock: number; toBlock: number }): Promise<unknown[]> {
       chain.getLogsRanges.push([f.fromBlock, f.toBlock]);
+      if (f.toBlock > chain.failGetLogsFrom) throw Object.assign(new Error('getLogs: upstream down'), { code: 'SERVER_ERROR' });
       return chain.logs.filter((l) => l.blockNumber >= f.fromBlock && l.blockNumber <= Math.min(f.toBlock, chain.lagTo));
     }
     async call(tx: { data: string; blockTag?: unknown }): Promise<string> {
@@ -116,7 +118,7 @@ import { createArmadaSdk, resolveWalletStorage, resolveChainStorage } from './sd
 import { MemoryStorageAdapter, type StorageOp } from './storage/index';
 import { initPoseidonPromise, getTokenDataERC20, getTokenDataHash, ShieldNote, TransactNote } from './core/index';
 import { serializeQuickSync, createTransferNote, encryptNoteToReceiver, type DecodedShieldCommitment } from './sync/index';
-import { POOL_V2_EVENT_ABI, UTXOMerkletree, WalletNotes, TreeStore, saveChainState, saveWalletNotes, walletRecordId } from './internal/index';
+import { CHAIN_CHUNK_BLOCKS, POOL_V2_EVENT_ABI, UTXOMerkletree, WalletNotes, TreeStore, saveChainState, saveWalletNotes, walletRecordId } from './internal/index';
 import { deriveKeyset, type Keyset } from './wallet/index';
 import type { ArmadaSdkConfig } from './index';
 import type { Plan } from './tx/index';
@@ -264,6 +266,7 @@ beforeEach(() => {
   chain.epochs = new Map();
   chain.lagTo = Infinity;
   chain.getLogsRanges = [];
+  chain.failGetLogsFrom = Infinity;
   chain.callBlockTags = [];
   chain.callGate = undefined;
   chain.callEntered = undefined;
@@ -735,6 +738,46 @@ describe('F1: one chain state per instance, shared by its wallets (#143)', () =>
     await b.sync();
     expect((await a.syncStatus()).syncedThrough).toBe(21);
     expect(await a.balances()).toEqual([]);
+    await sdk.close();
+  });
+});
+
+describe('SYNC-11: a long first sync advances in chunks, each verified and saved (#143)', () => {
+  it('a failure late in the range keeps the chunks before it, and the retry resumes from there', async () => {
+    // WHY: the first sync was all-or-nothing over the whole range: one late failure discarded minutes of work, and
+    // `watch()` retried from scratch.
+    const head = 2 * CHAIN_CHUNK_BLOCKS + 500;
+    pushTransact(10, [101n]);
+    await pushShield(CHAIN_CHUNK_BLOCKS + 10, keyset, 1_000_000n);
+    pushTransact(2 * CHAIN_CHUNK_BLOCKS + 10, [102n]);
+    chain.head = head;
+    chain.failGetLogsFrom = 2 * CHAIN_CHUNK_BLOCKS + 100;
+    const sdk = await createArmadaSdk(cfg());
+    const wallet = await sdk.wallet.fromRootSecret(ROOT_SECRET, { creationBlock: 1 });
+
+    await expect(wallet.sync()).rejects.toThrow('upstream down');
+    // Two chunks were verified and saved, for the chain and the wallet, which already sees its shield.
+    expect((await sdk.sync.status()).syncedThrough).toBe(2 * CHAIN_CHUNK_BLOCKS);
+    expect((await wallet.syncStatus()).syncedThrough).toBe(2 * CHAIN_CHUNK_BLOCKS);
+    expect((await wallet.balances())[0]?.spendable).toBe(1_000_000n);
+
+    chain.failGetLogsFrom = Infinity;
+    chain.getLogsRanges = [];
+    await expect(wallet.sync()).resolves.toMatchObject({ scanned: true, syncedThrough: head });
+    expect(chain.getLogsRanges[0]?.[0]).toBe(2 * CHAIN_CHUNK_BLOCKS + 1); // resumed, not restarted
+    await sdk.close();
+  });
+
+  it('checks earlier chunks against the root history, and reads the pinned pool tree only at the head', async () => {
+    // WHY: a pinned read of the pool's tree at an old block needs an archive node; rootHistory works on any node.
+    pushTransact(10, [101n]);
+    pushTransact(CHAIN_CHUNK_BLOCKS + 10, [102n]);
+    chain.head = CHAIN_CHUNK_BLOCKS + 500;
+    const sdk = await createArmadaSdk(cfg());
+    const wallet = await sdk.wallet.fromRootSecret(ROOT_SECRET, { creationBlock: 1 });
+    await wallet.sync();
+    const pinned = chain.callBlockTags.filter((tag) => tag !== undefined);
+    expect(new Set(pinned)).toEqual(new Set([blockHash(CHAIN_CHUNK_BLOCKS + 500)]));
     await sdk.close();
   });
 });

@@ -41,6 +41,18 @@ describe('fetchLogsRanged', () => {
     ).rejects.toThrow('boom at block 42');
   });
 
+  it('throws a transport failure at once instead of bisecting it (SYNC-11, #143)', async () => {
+    // WHY: every error was bisected as "range too large", so a dead RPC took about 10,000 failing calls per 5,000-block
+    // window (each possibly a timeout) before the error surfaced.
+    for (const code of ['NETWORK_ERROR', 'TIMEOUT', 'SERVER_ERROR']) {
+      const getLogs = vi.fn(async (): Promise<number[]> => {
+        throw Object.assign(new Error(`transport: ${code}`), { code });
+      });
+      await expect(fetchLogsRanged(getLogs, { fromBlock: 0, toBlock: 4999, maxRange: 5000 })).rejects.toThrow(code);
+      expect(getLogs).toHaveBeenCalledTimes(1);
+    }
+  });
+
   it('returns [] for an empty range (from > to)', async () => {
     const getLogs = fakeGetLogs();
     expect(await fetchLogsRanged(getLogs, { fromBlock: 10, toBlock: 5 })).toEqual([]);

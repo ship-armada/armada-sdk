@@ -124,7 +124,12 @@ with frequent one-block reorgs a `confirmationDepth` of 1–2 avoids repeated re
 
 Every sync is also verified before it is accepted: the rebuilt merkle tree must match the pool's tree
 (tree number, leaf count, and root) at the scanned block. If an RPC node returns incomplete logs, the
-sync fails without moving the checkpoint, and the next sync retries the same range. Verification
+sync fails without moving the checkpoint, and the next sync retries the same range.
+
+A long sync — a wallet's first, on a pool with history — advances in chunks of 100,000 blocks, each
+verified and saved before the next. If it fails partway, the chunks before the failure are kept and
+the next sync carries on from there instead of starting over. Chunks before the head are checked
+against the pool's history of roots; only the last one is checked against the pool's exact tree. Verification
 reads the pool's state at the scanned block, so keep `confirmationDepth` within the RPC node's
 recent-state window (about 128 blocks on a standard, non-archive node).
 
