@@ -65,7 +65,10 @@ export interface Wallet {
   syncStatus(): Promise<{ syncedThrough: number; syncing: boolean }>;
   /** Per-token spendable/pending balances over the synced TXO set. */
   balances(): Promise<TokenBalance[]>;
-  /** Reconstructed transaction history from the wallet's own scan state (SPEC §5). Works view-only. */
+  /**
+   * Reconstructed transaction history from the wallet's own scan state (SPEC §5). Works view-only. Makes no network
+   * request: each entry's `timestamp` was recorded during sync, which fetches every pool-event block's (#135).
+   */
   history(options?: { sinceBlock?: number }): Promise<HistoryEntry[]>;
   /**
    * Plan a shielded spend as ONE OR MORE supported-shape groups (SPEC §4.6). Returns a single-element

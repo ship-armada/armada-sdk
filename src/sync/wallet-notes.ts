@@ -12,8 +12,11 @@ import type {
 } from './event-decoder';
 import type { ApplyResult, SentOutput, WalletDecryptors } from './scan-engine';
 
-/** The persisted format of `WalletNotesSnapshot`; a stored record of another version is a cache miss (rescan). */
-export const WALLET_NOTES_VERSION = 1;
+/**
+ * The persisted format of `WalletNotesSnapshot`; a stored record of another version is a cache miss (rescan).
+ * 2: block timestamps (#135).
+ */
+export const WALLET_NOTES_VERSION = 2;
 
 /** JSON-serializable snapshot of a wallet's notes (bigints as decimal strings) for persistence. */
 export interface WalletNotesSnapshot {
@@ -60,6 +63,8 @@ export interface WalletNotesSnapshot {
    * before this field restore cleanly (treated as none). `[txid, feeString]` pairs.
    */
   readonly shieldRelayerFees?: ReadonlyArray<readonly [string, string]>;
+  /** `[block, timestamp]` for the blocks of the wallet's own entries (#135). Optional: absent means none known. */
+  readonly blockTimestamps?: ReadonlyArray<readonly [number, number]>;
 }
 
 // Tree-scoped nullifier key — the shared identity for spent/pending/spendable matching. Tree scope is
@@ -76,6 +81,8 @@ export class WalletNotes {
   // Relayer fee paid in a gasless shield WE co-authored, per txid (issue #88 lever 2) — the value of the
   // fee note (a shield commitment to the relayer) that rides in the same Shield event as our own note.
   private readonly shieldRelayerFeeByTxid = new Map<string, bigint>();
+  // The timestamp of each block holding one of our entries, recorded during sync so history() needs no RPC (#135).
+  private readonly blockTimes = new Map<number, number>();
   // The nullifier keys of our own notes — how a spend event is recognized as ours. Built on first use (it needs the
   // nullifying key, which a restored snapshot doesn't carry) and kept up to date as notes arrive.
   private ownNullifierKeys: Set<string> | undefined;
@@ -217,6 +224,23 @@ export class WalletNotes {
     return this.ownNullifierKeys;
   }
 
+  /**
+   * Keep the timestamps, from `times` (every pool-event block in a batch), of the blocks holding our entries. Called
+   * after `apply` with the same batch.
+   */
+  recordBlockTimestamps(times: ReadonlyMap<number, number>): void {
+    for (const entry of [...this.txos, ...this.spent, ...this.unshields, ...this.sent]) {
+      if (this.blockTimes.has(entry.blockNumber)) continue;
+      const time = times.get(entry.blockNumber);
+      if (time !== undefined) this.blockTimes.set(entry.blockNumber, time);
+    }
+  }
+
+  /** The timestamp of `block`, if it holds one of our entries and sync recorded it. */
+  blockTimestamp(block: number): number | undefined {
+    return this.blockTimes.get(block);
+  }
+
   /** All owned notes ever received (spent or not). */
   ownedTxos(): readonly TXO[] {
     return this.txos;
@@ -249,6 +273,7 @@ export class WalletNotes {
     copy.unshields.push(...this.unshields);
     copy.sent.push(...this.sent);
     for (const [txid, fee] of this.shieldRelayerFeeByTxid) copy.shieldRelayerFeeByTxid.set(txid, fee);
+    for (const [block, time] of this.blockTimes) copy.blockTimes.set(block, time);
     if (this.ownNullifierKeys !== undefined) copy.ownNullifierKeys = new Set(this.ownNullifierKeys);
     copy.ownNullifyingKey = this.ownNullifyingKey;
     return copy;
@@ -294,6 +319,7 @@ export class WalletNotes {
         ...(s.memo !== undefined ? { memo: s.memo } : {}),
       })),
       shieldRelayerFees: [...this.shieldRelayerFeeByTxid.entries()].map(([txid, fee]) => [txid, fee.toString()]),
+      blockTimestamps: [...this.blockTimes.entries()],
     };
   }
 
@@ -343,6 +369,7 @@ export class WalletNotes {
     for (const [txid, fee] of snapshot.shieldRelayerFees ?? []) {
       notes.shieldRelayerFeeByTxid.set(txid, BigInt(fee));
     }
+    for (const [block, time] of snapshot.blockTimestamps ?? []) notes.blockTimes.set(block, time);
     return notes;
   }
 }

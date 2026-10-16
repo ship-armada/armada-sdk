@@ -21,6 +21,7 @@ const chain = {
   epochs: new Map<number, number>(), // block → fork epoch (bumped by a reorg)
   lagTo: Infinity as number, // getLogs silently returns only logs <= lagTo (a lagging backend)
   getLogsRanges: [] as [number, number][], // every getLogs range asked for, in order
+  getBlockCalls: [] as number[], // every block whose header was asked for
   failGetLogsFrom: Infinity as number, // getLogs throws for any range reaching past this block (a failing RPC)
   callBlockTags: [] as unknown[],
   // When set, every pool eth_call waits on it — pauses a sync in its verification step, AFTER it applied
@@ -73,6 +74,7 @@ vi.mock('ethers', async (importActual) => {
       return chain.poolCode;
     }
     async getBlock(n: number): Promise<{ number: number; hash: string; timestamp: number } | null> {
+      chain.getBlockCalls.push(n);
       return n > chain.head ? null : { number: n, hash: blockHash(n), timestamp: n };
     }
     async getLogs(f: { fromBlock: number; toBlock: number }): Promise<unknown[]> {
@@ -266,6 +268,7 @@ beforeEach(() => {
   chain.epochs = new Map();
   chain.lagTo = Infinity;
   chain.getLogsRanges = [];
+  chain.getBlockCalls = [];
   chain.failGetLogsFrom = Infinity;
   chain.callBlockTags = [];
   chain.callGate = undefined;
@@ -778,6 +781,67 @@ describe('SYNC-11: a long first sync advances in chunks, each verified and saved
     await wallet.sync();
     const pinned = chain.callBlockTags.filter((tag) => tag !== undefined);
     expect(new Set(pinned)).toEqual(new Set([blockHash(CHAIN_CHUNK_BLOCKS + 500)]));
+    await sdk.close();
+  });
+});
+
+describe('#135: history() asks the RPC nothing about which blocks are the wallet\'s', () => {
+  const OTHER_SECRET = new Uint8Array(32).fill(0x22);
+
+  it('sync fetches every pool-event block\'s timestamp whoever owns it; history() then makes no request', async () => {
+    // WHY: history() asked the RPC for the timestamp of exactly the wallet's blocks, on every call — a fingerprint of
+    // its transactions, linked to the client's IP. A sync reads logs by range, so it can't tell whose events are whose.
+    const other = await deriveKeyset(OTHER_SECRET);
+    await pushShield(10, keyset, 1_000_000n);
+    await pushShield(20, other, 2_000_000n);
+    pushTransact(30, [101n]); // someone else's
+    chain.head = 40;
+
+    const requested = async (secret: Uint8Array): Promise<number[]> => {
+      chain.getBlockCalls = [];
+      const sdk = await createArmadaSdk(cfg());
+      const wallet = await sdk.wallet.fromRootSecret(secret, { creationBlock: 1 });
+      await wallet.sync();
+      const calls = [...new Set(chain.getBlockCalls)].sort((x, y) => x - y);
+      await sdk.close();
+      return calls;
+    };
+    // Two wallets with different activity over the same pool make the same requests.
+    const forA = await requested(ROOT_SECRET);
+    expect(await requested(OTHER_SECRET)).toEqual(forA);
+    expect(forA).toEqual(expect.arrayContaining([10, 20, 30]));
+
+    const storage = new MemoryStorageAdapter();
+    const sdk = await createArmadaSdk(cfg({ storage }));
+    const wallet = await sdk.wallet.fromRootSecret(ROOT_SECRET, { creationBlock: 1 });
+    await wallet.sync();
+    chain.getBlockCalls = [];
+    const [entry] = await wallet.history();
+    expect(entry?.timestamp).toBe(10); // the mock chain's timestamp for block n is n
+    expect(chain.getBlockCalls).toEqual([]);
+    await sdk.close();
+
+    // The timestamps are saved with the notes: after a reload, still no request.
+    const reloaded = await createArmadaSdk(cfg({ storage }));
+    const again = await reloaded.wallet.fromRootSecret(ROOT_SECRET, { creationBlock: 1 });
+    expect((await again.history())[0]?.timestamp).toBe(10);
+    expect(chain.getBlockCalls).toEqual([]);
+    await reloaded.close();
+  });
+
+  it('a wallet catching up fetches the timestamps of every pool-event block in its range too', async () => {
+    const other = await deriveKeyset(OTHER_SECRET);
+    await pushShield(10, keyset, 1_000_000n);
+    await pushShield(60, other, 2_000_000n);
+    pushTransact(70, [101n]);
+    chain.head = 80;
+    const sdk = await createArmadaSdk(cfg());
+    await (await sdk.wallet.fromRootSecret(ROOT_SECRET, { creationBlock: 1 })).sync();
+    chain.getBlockCalls = [];
+    const late = await sdk.wallet.fromRootSecret(OTHER_SECRET, { creationBlock: 50 });
+    await late.sync();
+    expect(chain.getBlockCalls).toEqual(expect.arrayContaining([60, 70]));
+    expect((await late.history())[0]?.timestamp).toBe(60);
     await sdk.close();
   });
 });

@@ -61,7 +61,10 @@ export interface HistoryEntry {
   /** Recipient outputs of a send (transfer-sent), recovered sender-side — recipient 0zk + amount + memo. */
   readonly sentOutputs?: readonly SentRecipient[];
   readonly memo?: string;
-  /** Unix seconds — attached by `wallet.history()` from the block; absent in the pure reconstruction. */
+  /**
+   * Unix seconds — the block's, recorded during sync and attached by `wallet.history()`; absent in the pure
+   * reconstruction, or when the node didn't return the block.
+   */
   readonly timestamp?: number;
 }
 

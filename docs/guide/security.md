@@ -64,6 +64,19 @@ plaintext, amounts, and shielded addresses are never emitted to the sink. Payloa
 numbers, public chain config, booleans and enums, and the types enforce that: a payload can't gain a
 field without a change to `TelemetryEventMap`.
 
+## What your RPC provider sees
+
+The RPC provider (usually a third party) sees every request the SDK makes, with your client's IP. The
+SDK keeps those requests from pointing at a wallet's own transactions:
+
+- A sync reads the pool's logs by block range, so the provider can't tell which events are the
+  wallet's. It also fetches the timestamp of every block in the range that has a pool event — not
+  only the wallet's — and the wallet keeps the ones it needs.
+- `history()` makes no network request at all: its timestamps come from the sync.
+- `preflight()` is the exception: it asks the pool whether a plan's input notes are already spent,
+  so the provider sees those nullifiers shortly before the transaction that publishes them. Skip it,
+  or point it at a provider you trust, if that link matters for your app.
+
 ## Spending and viewing
 
 A wallet's ability to spend lives behind a signer, separate from its ability to view. View-only

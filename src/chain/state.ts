@@ -33,7 +33,13 @@ export interface ChainAdvance {
   readonly toBlock: number;
   readonly toBlockHash?: string;
   readonly events: DecodedPoolEvents;
+  /** The timestamp of every block with an event in the batch (see `ChainState.timestampsFor`). */
+  readonly timestamps: ReadonlyMap<number, number>;
 }
+
+// Timestamp requests in flight at once. ethers batches concurrent JSON-RPC calls (up to 100 per HTTP request), so
+// this many cost about one round trip.
+const TIMESTAMP_CONCURRENCY = 100;
 
 /** Blocks per chain-sync chunk: each is verified, saved and handed to the wallets before the next starts. */
 export const CHAIN_CHUNK_BLOCKS = 100_000;
@@ -252,6 +258,7 @@ export class ChainState {
     const qs = quickSyncTelemetry({ usingIndexer, tailCovered, fellBack, fromBlock, head: toBlock, cause: fallbackCause });
     if (qs !== null) this.deps.telemetry?.emit(qs.event, qs.data);
 
+    const timestamps = await this.timestampsFor(events);
     if (this.deps.isClosed()) throw new InstanceClosedError('sync: cancelled by sdk.close()');
     await saveChainState(
       this.deps.storage,
@@ -263,7 +270,29 @@ export class ChainState {
     this.committed = next;
     this.through = toBlock;
     this.throughHash = toBlockHash;
-    return { fromBlock, toBlock, ...(toBlockHash !== undefined ? { toBlockHash } : {}), events };
+    return { fromBlock, toBlock, ...(toBlockHash !== undefined ? { toBlockHash } : {}), events, timestamps };
+  }
+
+  /**
+   * The timestamp of every block with an event in `events` — every one, whoever's it is (#135). Wallets keep the ones
+   * for their own entries, so `history()` never asks the RPC about the blocks that hold a wallet's transactions; the
+   * requests here depend only on the range scanned, which says nothing about whose events are whose. A block the
+   * node doesn't return is left out.
+   */
+  async timestampsFor(events: DecodedPoolEvents): Promise<Map<number, number>> {
+    const blocks = [
+      ...new Set([...events.shields, ...events.transacts, ...events.nullifiers, ...events.unshields].map((e) => e.blockNumber)),
+    ];
+    const times = new Map<number, number>();
+    for (let i = 0; i < blocks.length; i += TIMESTAMP_CONCURRENCY) {
+      await Promise.all(
+        blocks.slice(i, i + TIMESTAMP_CONCURRENCY).map(async (block) => {
+          const timestamp = await this.deps.client.getBlockTimestamp(block);
+          if (timestamp !== undefined) times.set(block, timestamp);
+        }),
+      );
+    }
+    return times;
   }
 
   /**

@@ -280,9 +280,6 @@ export function planSyncWindow(
   return { fromBlock: syncedThrough + 1, scanned: head > syncedThrough };
 }
 
-// Max concurrent `getBlock` calls when attaching timestamps in history() — bounds RPC fan-out.
-const HISTORY_BLOCK_CONCURRENCY = 8;
-
 // Any EVM address: a plain unshield's max doesn't depend on where it goes, only on its value.
 const MAX_UNSHIELD_PROBE_RECIPIENT = '0x0000000000000000000000000000000000000001' as const;
 
@@ -481,13 +478,15 @@ class ArmadaWallet implements Wallet {
     const from = Math.max(this.syncedThrough + 1, this.creationBlock);
     if (from > target) {
       // Nothing the wallet could own lies in range: it starts at the chain's checkpoint.
-      await this.ingest(noEvents(), target, chain.syncedThroughHash);
+      await this.ingest(noEvents(), new Map(), target, chain.syncedThroughHash);
       return;
     }
     for (let start = from; start <= target; start += CHAIN_CHUNK_BLOCKS) {
       const end = Math.min(start + CHAIN_CHUNK_BLOCKS - 1, target);
       const endHash = end === target ? chain.syncedThroughHash : await this.ctx.chainClient.getBlockHash(end);
-      await this.ingest(await this.fetchMatchingTree(start, end, onProgress), end, endHash);
+      const events = await this.fetchMatchingTree(start, end, onProgress);
+      // Every pool-event block's timestamp in the range, not just the wallet's (#135; see `ChainState.timestampsFor`).
+      await this.ingest(events, await chain.timestampsFor(events), end, endHash);
     }
   }
 
@@ -514,9 +513,15 @@ class ArmadaWallet implements Wallet {
    * them, and commit them. The commit happens only once the notes are saved, so a failure leaves the wallet where it
    * was, and a retry reads the range again.
    */
-  private async ingest(events: DecodedPoolEvents, through: number, throughHash: string | undefined): Promise<void> {
+  private async ingest(
+    events: DecodedPoolEvents,
+    timestamps: ReadonlyMap<number, number>,
+    through: number,
+    throughHash: string | undefined,
+  ): Promise<void> {
     const next = this.notes.clone();
     await next.apply(events, this.decryptors());
+    next.recordBlockTimestamps(timestamps);
     // A wallet disposed mid-sync (or a closing SDK) keeps nothing from it: stop before saving or committing.
     this.assertUsable();
     const position = { syncedThrough: through, ...(throughHash !== undefined ? { syncedThroughHash: throughHash } : {}) };
@@ -567,11 +572,11 @@ class ArmadaWallet implements Wallet {
     for (const wallet of [...this.ctx.wallets]) {
       if (!wallet.ready || wallet.syncedThrough !== batch.fromBlock - 1) continue;
       if (wallet === this) {
-        await this.ingest(batch.events, batch.toBlock, batch.toBlockHash);
+        await this.ingest(batch.events, batch.timestamps, batch.toBlock, batch.toBlockHash);
         continue;
       }
       try {
-        await wallet.ingest(batch.events, batch.toBlock, batch.toBlockHash);
+        await wallet.ingest(batch.events, batch.timestamps, batch.toBlock, batch.toBlockHash);
         wallet.emitBalanceUpdates(chainHead);
         wallet.emitReceivedNotes();
       } catch {
@@ -797,21 +802,10 @@ class ArmadaWallet implements Wallet {
       const since = options.sinceBlock;
       entries = entries.filter((e) => e.blockNumber >= since);
     }
-    // Attach block timestamps, fetched over the distinct blocks the entries touch. Capped concurrency:
-    // an unbounded Promise.all over a 10k-note wallet's blocks would flood the RPC and get rate-limited.
-    const times = new Map<number, number>();
-    const distinctBlocks = [...new Set(entries.map((e) => e.blockNumber))];
-    for (let i = 0; i < distinctBlocks.length; i += HISTORY_BLOCK_CONCURRENCY) {
-      const chunk = distinctBlocks.slice(i, i + HISTORY_BLOCK_CONCURRENCY);
-      await Promise.all(
-        chunk.map(async (b) => {
-          const timestamp = await this.ctx.chainClient.getBlockTimestamp(b);
-          if (timestamp !== undefined) times.set(b, timestamp);
-        }),
-      );
-    }
+    // Block timestamps come from the notes: sync recorded them while fetching every pool-event block's, so asking
+    // the RPC here — for exactly this wallet's blocks — would tell it which transactions are the wallet's (#135).
     return entries.map((e) => {
-      const ts = times.get(e.blockNumber);
+      const ts = this.notes.blockTimestamp(e.blockNumber);
       return ts !== undefined ? { ...e, timestamp: ts } : e;
     });
   }

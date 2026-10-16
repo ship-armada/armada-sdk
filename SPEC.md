@@ -527,6 +527,10 @@ Requirements:
 - **Reorg detection.** The checkpoint stores its block hash; if the chain's hash at that height has
   changed, the wallet rescans from `deployBlock` (keeping in-flight spend holds). A persisted tree found
   to be missing leaves is rescanned the same way. Both emit `sync.reorg-recovery` (§8).
+- **No ownership-dependent RPC requests (#135).** What the SDK asks the RPC must not depend on which
+  events are a wallet's. Sync reads logs by range and fetches the timestamp of every pool-event block in
+  each verified chunk (concurrently, so ethers batches them); wallets keep their own entries' timestamps,
+  and `history()` makes no request. (Preflight's nullifier reads are the known exception.)
 - **Progress + events.** `sdk.sync.status()` and subscription events
   (`scan:started/progress/complete/error`, `balance:updated`, `note:received` — see §5.2)
   replace the single global `setOnBalanceUpdateCallback` multiplexer.
