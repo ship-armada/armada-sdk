@@ -3,8 +3,14 @@
 
 import { TransactNote } from '../core/index';
 import type { TXO, SpentNullifier, NoteOrigin } from './balances';
-import type { DecodedNullifier, DecodedUnshield } from './event-decoder';
-import type { SentOutput } from './scan-engine';
+import type {
+  DecodedNullifier,
+  DecodedPoolEvents,
+  DecodedShieldCommitment,
+  DecodedTransactCommitment,
+  DecodedUnshield,
+} from './event-decoder';
+import type { ApplyResult, SentOutput, WalletDecryptors } from './scan-engine';
 
 /** The persisted format of `WalletNotesSnapshot`; a stored record of another version is a cache miss (rescan). */
 export const WALLET_NOTES_VERSION = 1;
@@ -108,6 +114,97 @@ export class WalletNotes {
     const ourTxids = new Set(ours.map((n) => n.txid));
     this.unshields.push(...unshields.filter((u) => ourTxids.has(u.txid)));
     return ours;
+  }
+
+  /**
+   * Fold a decoded event batch into the wallet's notes: commitments the wallet owns become TXOs (via `decryptors`),
+   * notes it authored are recovered sender-side, and its own spends are recorded. Batches MUST arrive in scan order.
+   * The trees are not touched (see `TreeStore.applyLeaves`). Returns the owned TXOs + the wallet's own nullifiers newly
+   * seen in this batch.
+   */
+  async apply(events: DecodedPoolEvents, decryptors: WalletDecryptors): Promise<ApplyResult> {
+    // Unify shield + transact commitments into a single position-ordered stream.
+    type Leaf =
+      | { readonly kind: 'shield'; readonly c: DecodedShieldCommitment }
+      | { readonly kind: 'transact'; readonly c: DecodedTransactCommitment };
+    const leaves: Leaf[] = [
+      ...events.shields.map((c): Leaf => ({ kind: 'shield', c })),
+      ...events.transacts.map((c): Leaf => ({ kind: 'transact', c })),
+    ].sort((a, b) => a.c.tree - b.c.tree || a.c.position - b.c.position);
+
+    // Per-txid shield GROSS totals (issue #88 lever 2). A gasless shield emits both the user's note AND
+    // the relayer's fee note in one Shield event/txid, each with a PLAINTEXT value AND a plaintext
+    // protocol shield fee (the `fees[]` array). The relayer fee (a note we don't own) is recoverable as
+    // (total shield GROSS in the txid) − (our owned shield GROSS), with no decryption of the relayer's
+    // note — `gross = commitment value + its shield fee`. Accumulated here, reconciled after the loop.
+    const shieldTotalByTxid = new Map<string, bigint>();
+    const shieldOwnedByTxid = new Map<string, bigint>();
+
+    const ownedTxos: TXO[] = [];
+    for (const leaf of leaves) {
+      const { tree, position, blockNumber, txid } = leaf.c;
+
+      if (leaf.kind === 'shield') {
+        // Accumulate the GROSS shield value per commitment (net committed value + its protocol shield
+        // fee, both plaintext in the Shield event). Summing gross — not just the net commitment value —
+        // makes the relayer fee derived below the amount the user actually PAID the relayer (its note +
+        // the shield fee taken from it), so a recovered gasless shield reconstructs the full deposit.
+        shieldTotalByTxid.set(txid, (shieldTotalByTxid.get(txid) ?? 0n) + leaf.c.value + (leaf.c.fee ?? 0n));
+      }
+
+      const owned =
+        leaf.kind === 'transact'
+          ? await decryptors.transact(leaf.c)
+          : await decryptors.shield?.(leaf.c);
+      if (owned !== undefined) {
+        if (leaf.kind === 'shield') {
+          // Our own shield gross (net note + its shield fee) — subtracted from the txid gross total
+          // below so what remains is the relayer fee note's GROSS.
+          shieldOwnedByTxid.set(txid, (shieldOwnedByTxid.get(txid) ?? 0n) + owned.value + (leaf.c.fee ?? 0n));
+        }
+        const shieldFee = leaf.kind === 'shield' ? leaf.c.fee : undefined;
+        const txo: TXO = {
+          tree,
+          position,
+          tokenHash: owned.tokenHash,
+          value: owned.value,
+          blockNumber,
+          txid,
+          origin: leaf.kind,
+          ...(owned.memo !== undefined ? { memo: owned.memo } : {}),
+          ...(owned.senderShieldedAddress !== undefined
+            ? { senderShieldedAddress: owned.senderShieldedAddress }
+            : {}),
+          ...(shieldFee !== undefined ? { shieldFee } : {}),
+          random: owned.random,
+          notePublicKey: owned.notePublicKey,
+        };
+        this.addOwned(txo);
+        ownedTxos.push(txo);
+      }
+
+      // Sender-side: a note WE authored (transfer/fee output) — recovered for send history. Change
+      // is filtered by the decryptor (it's already handled receive-side as an owned TXO above).
+      if (leaf.kind === 'transact' && decryptors.sentTransact !== undefined) {
+        const sent = await decryptors.sentTransact(leaf.c);
+        if (sent !== undefined) this.addSent(sent);
+      }
+    }
+
+    // Record the relayer fee for shields WE co-authored (issue #88 lever 2): for each txid where we own
+    // a shield note, the remaining (non-owned) shield GROSS is the relayer's fee note — its net value
+    // plus its own protocol shield fee, i.e. what the user actually paid the relayer. A shield tx is
+    // per-user, so a txid's commitments are our note(s) + the fee note only. Zero for a non-gasless shield.
+    for (const [txid, ownedGross] of shieldOwnedByTxid) {
+      const relayerGross = (shieldTotalByTxid.get(txid) ?? ownedGross) - ownedGross;
+      if (relayerGross > 0n) this.setShieldRelayerFee(txid, relayerGross);
+    }
+
+    // Only our own spends are kept: the nullifiers of our notes, and the unshields in those transactions (history
+    // matches them to our spend txids). Every other pool nullifier and unshield is someone else's (SYNC-9).
+    const nullifiers = this.recordSpends(events.nullifiers, events.unshields, decryptors.nullifyingKey);
+
+    return { ownedTxos, nullifiers };
   }
 
   private ownKeys(nullifyingKey: bigint): Set<string> {

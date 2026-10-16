@@ -1,5 +1,5 @@
-// ABOUTME: Tests for scan-state persistence (§4.3/§4.4) — snapshot/restore round-trip and
-// ABOUTME: StorageAdapter save/load, preserving balances, roots, spendable TXOs, and spent nullifiers.
+// ABOUTME: Tests for scan-state persistence (§4.3/§4.4) — snapshot/restore round-trip, and saving/loading the chain
+// ABOUTME: state (checkpoint + tree chunks) and a wallet's notes, with every unreadable record a cache miss.
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initPoseidonPromise, TransactNote } from '../core/index';
@@ -9,8 +9,17 @@ import { ScopedStore } from '../storage/scoped';
 import { WalletScanState } from './scan-engine';
 import type { DecodedPoolEvents, DecodedTransactCommitment } from './event-decoder';
 import type { CommitmentCiphertextV2 } from './note-crypto';
-import { saveScanState, loadScanState, clearScanState, TREE_CHUNK_SIZE } from './scan-persistence';
+import {
+  saveChainState,
+  loadChainState,
+  clearChainState,
+  saveWalletNotes,
+  loadWalletNotes,
+  clearWalletNotes,
+  TREE_CHUNK_SIZE,
+} from './scan-persistence';
 import type { StorageOp } from '../storage/index';
+import { TreeStore } from './tree-store';
 
 const NK = 987654321098765n;
 const TOKEN = 'ee'.repeat(32);
@@ -67,70 +76,95 @@ describe('scan-state persistence (§4.3/§4.4)', () => {
     expect(restored.spendableTxos(NK)).toHaveLength(1);
   });
 
-  it('saves and loads scan state through a StorageAdapter', async () => {
+  const ns = { schemaVersion: 1, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}` as `0x${string}`, deployBlock: 1 };
+  const opened = async (): Promise<MemoryStorageAdapter> => {
     const storage = new MemoryStorageAdapter();
-    await storage.open({ schemaVersion: 1, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1 });
+    await storage.open(ns);
+    return storage;
+  };
+
+  it('saves and loads the chain state and a wallet\'s notes through a StorageAdapter', async () => {
+    const storage = await opened();
     const state = await buildState();
 
-    await saveScanState(storage, state, 500);
-    const loaded = await loadScanState(storage);
+    await saveChainState(storage, state.trees, { syncedThrough: 500 });
+    await saveWalletNotes(new ScopedStore(storage, 'alice'), state.walletNotes, { syncedThrough: 500 });
+    const chain = await loadChainState(storage);
+    const notes = await loadWalletNotes(new ScopedStore(storage, 'alice'));
 
-    expect(loaded).toBeDefined();
-    expect(loaded!.syncedThrough).toBe(500);
-    expect(loaded!.state.treeRoot(0)).toBe(state.treeRoot(0));
-    expect(loaded!.state.balances(NK, BAL)).toEqual(state.balances(NK, BAL));
+    expect(chain?.syncedThrough).toBe(500);
+    expect(chain?.tree.root(0)).toBe(state.treeRoot(0));
+    expect(notes?.syncedThrough).toBe(500);
+    const restored = new WalletScanState(chain!.tree, notes!.notes);
+    expect(restored.balances(NK, BAL)).toEqual(state.balances(NK, BAL));
   });
 
-  it('round-trips the checkpoint block hash, and loads older records without one (#118)', async () => {
-    const storage = new MemoryStorageAdapter();
-    await storage.open({ schemaVersion: 1, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1 });
+  it('round-trips the checkpoint block hash, and loads records without one (#118)', async () => {
+    const storage = await opened();
     const state = await buildState();
     const hash = `0x${'ab'.repeat(32)}`;
 
-    const alice = new ScopedStore(storage, 'alice');
-    await saveScanState(alice, state, 500, hash);
-    expect((await loadScanState(alice))?.syncedThroughHash).toBe(hash);
+    await saveChainState(storage, state.trees, { syncedThrough: 500, syncedThroughHash: hash });
+    expect((await loadChainState(storage))?.syncedThroughHash).toBe(hash);
+    await saveWalletNotes(storage, state.walletNotes, { syncedThrough: 500, syncedThroughHash: hash });
+    expect((await loadWalletNotes(storage))?.syncedThroughHash).toBe(hash);
 
-    // A record written before the hash existed still loads; the reorg check just skips it once.
+    // A record saved when the node didn't return the block still loads; the reorg check just skips it once.
     const bob = new ScopedStore(storage, 'bob');
-    await saveScanState(bob, state, 500);
-    const legacy = await loadScanState(bob);
-    expect(legacy?.syncedThrough).toBe(500);
-    expect(legacy?.syncedThroughHash).toBeUndefined();
+    await saveWalletNotes(bob, state.walletNotes, { syncedThrough: 500 });
+    const noHash = await loadWalletNotes(bob);
+    expect(noHash?.syncedThrough).toBe(500);
+    expect(noHash?.syncedThroughHash).toBeUndefined();
   });
 
-  it('returns undefined for a wallet with no persisted state', async () => {
-    const storage = new MemoryStorageAdapter();
-    await storage.open({ schemaVersion: 1, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1 });
-    expect(await loadScanState(storage)).toBeUndefined();
+  it('returns undefined when nothing is persisted', async () => {
+    const storage = await opened();
+    expect(await loadChainState(storage)).toBeUndefined();
+    expect(await loadWalletNotes(storage)).toBeUndefined();
   });
 
   it('degrades a corrupt (unparseable) record to a cache miss instead of throwing (M4)', async () => {
     // WHY: scan state is chain-derived cache. A bit-flip / interrupted write must rescan, not brick every
     // future sync — the in-process form of the "delete the DB by hand" pitfall §4.3 removes.
-    const storage = new MemoryStorageAdapter();
-    await storage.open({ schemaVersion: 1, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1 });
-    await saveScanState(storage, await buildState(), 500);
+    const storage = await opened();
+    const state = await buildState();
+    await saveChainState(storage, state.trees, { syncedThrough: 500 });
+    await saveWalletNotes(storage, state.walletNotes, { syncedThrough: 500 });
     await storage.put('chain/checkpoint', new TextEncoder().encode('{not valid json'));
-    expect(await loadScanState(storage)).toBeUndefined();
+    await storage.put('chain/notes', new TextEncoder().encode('{not valid json'));
+    expect(await loadChainState(storage)).toBeUndefined();
+    expect(await loadWalletNotes(storage)).toBeUndefined();
   });
 
-  it('degrades an undecryptable encrypted record to a cache miss (M4, GCM auth failure)', async () => {
+  it('degrades undecryptable notes to a cache miss (M4, GCM auth failure)', async () => {
     // A record written under one key and read under another (key rotation / corruption) throws GCM auth
-    // failure inside get(); loadScanState must swallow it and rescan rather than propagate and wedge sync.
-    const inner = new MemoryStorageAdapter();
-    await inner.open({ schemaVersion: 1, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1 });
+    // failure inside get(); loadWalletNotes must swallow it and rescan rather than propagate and wedge sync.
+    const inner = await opened();
     const writer = new EncryptedStore(inner, deriveStorageKey(new Uint8Array(32).fill(1)));
-    await saveScanState(writer, await buildState(), 42);
+    await saveWalletNotes(writer, (await buildState()).walletNotes, { syncedThrough: 42 });
 
     const reader = new EncryptedStore(inner, deriveStorageKey(new Uint8Array(32).fill(2))); // wrong key
-    expect(await loadScanState(reader)).toBeUndefined();
+    expect(await loadWalletNotes(reader)).toBeUndefined();
   });
 
-  describe('records: a checkpoint, the notes, and the tree in chunks (SYNC-9, #143)', () => {
+  it('treats notes of another format version as a cache miss', async () => {
+    const storage = await opened();
+    await saveWalletNotes(storage, (await buildState()).walletNotes, { syncedThrough: 500 });
+    const record = JSON.parse(new TextDecoder().decode((await storage.get('chain/notes'))!)) as { version: number };
+    await storage.put('chain/notes', new TextEncoder().encode(JSON.stringify({ ...record, version: 999 })));
+    expect(await loadWalletNotes(storage)).toBeUndefined();
+  });
+
+  it('clearWalletNotes removes the notes record', async () => {
+    const storage = await opened();
+    await saveWalletNotes(storage, (await buildState()).walletNotes, { syncedThrough: 500 });
+    await clearWalletNotes(storage);
+    expect(await loadWalletNotes(storage)).toBeUndefined();
+  });
+
+  describe('the chain state: a checkpoint and the tree in chunks (SYNC-9, #143)', () => {
     // WHY: the whole scan state — every tree's leaves, every pool nullifier and unshield — was one record, rebuilt,
     // re-encrypted and rewritten on every sync: about 20 MB per wallet at 100k leaves, hitting IndexedDB quota.
-    const ns = { schemaVersion: 1, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}` as `0x${string}`, deployBlock: 1 };
 
     // Records every write, so a test can see exactly which records a save touched and how.
     class RecordingStorage extends MemoryStorageAdapter {
@@ -150,58 +184,46 @@ describe('scan-state persistence (§4.3/§4.4)', () => {
       for await (const { key } of storage.list('chain/')) keys.push(key);
       return keys;
     }
-    async function stateWithLeaves(count: number): Promise<WalletScanState> {
-      const state = new WalletScanState();
-      await state.apply(
-        { ...noEvents(), transacts: Array.from({ length: count }, (_, i) => mkTransact(0, i, leafHex(i + 1))) },
-        { nullifyingKey: NK, transact: async (c) => (c.position === 0 ? owned(100n) : undefined) },
-      );
-      return state;
+    function treeWithLeaves(count: number): TreeStore {
+      const tree = new TreeStore();
+      for (let i = 0; i < count; i += 1) tree.insertLeaf(0, i, leafHex(i + 1));
+      return tree;
     }
 
-    it(`stores the tree in chunks of ${TREE_CHUNK_SIZE} leaves, beside the notes and the checkpoint, in one batch`, async () => {
+    it(`stores the tree in chunks of ${TREE_CHUNK_SIZE} leaves, beside the checkpoint, in one batch`, async () => {
       const storage = new RecordingStorage();
       await storage.open(ns);
-      await saveScanState(storage, await stateWithLeaves(TREE_CHUNK_SIZE + 5), 500);
-      expect(await keysOf(storage)).toEqual(['chain/checkpoint', 'chain/notes', 'chain/tree/0/00', 'chain/tree/0/01']);
+      await saveChainState(storage, treeWithLeaves(TREE_CHUNK_SIZE + 5), { syncedThrough: 500 });
+      expect(await keysOf(storage)).toEqual(['chain/checkpoint', 'chain/tree/0/00', 'chain/tree/0/01']);
       expect(storage.batches).toHaveLength(1);
       expect(storage.puts).toBe(0);
-      const loaded = await loadScanState(storage);
-      expect(loaded?.state.treeLength(0)).toBe(TREE_CHUNK_SIZE + 5);
-      expect(loaded?.state.txoCount).toBe(1);
+      expect((await loadChainState(storage))?.tree.length(0)).toBe(TREE_CHUNK_SIZE + 5);
     });
 
-    it('given the state it saved last, writes only the tree chunks that changed', async () => {
+    it('given the tree it saved last, writes only the chunks that changed', async () => {
       const storage = new RecordingStorage();
       await storage.open(ns);
-      const saved = await stateWithLeaves(TREE_CHUNK_SIZE + 5);
-      await saveScanState(storage, saved, 500);
+      const saved = treeWithLeaves(TREE_CHUNK_SIZE + 5);
+      await saveChainState(storage, saved, { syncedThrough: 500 });
       const next = saved.clone();
-      await next.apply({ ...noEvents(), transacts: [mkTransact(0, TREE_CHUNK_SIZE + 5, leafHex(9999))] }, { nullifyingKey: NK, transact: async () => undefined });
-      await saveScanState(storage, next, 501, undefined, saved);
-      expect(storage.batches[1]).toEqual(['put chain/tree/0/01', 'put chain/notes', 'put chain/checkpoint']);
-      expect((await loadScanState(storage))?.state.treeRoot(0)).toBe(next.treeRoot(0));
+      next.insertLeaf(0, TREE_CHUNK_SIZE + 5, leafHex(9999));
+      await saveChainState(storage, next, { syncedThrough: 501 }, saved);
+      expect(storage.batches[1]).toEqual(['put chain/tree/0/01', 'put chain/checkpoint']);
+      expect((await loadChainState(storage))?.tree.root(0)).toBe(next.root(0));
     });
 
-    it('treats a missing chunk, or notes of another format version, as a cache miss', async () => {
-      const storage = new MemoryStorageAdapter();
-      await storage.open(ns);
-      await saveScanState(storage, await stateWithLeaves(TREE_CHUNK_SIZE + 5), 500);
+    it('treats a missing chunk as a cache miss', async () => {
+      const storage = await opened();
+      await saveChainState(storage, treeWithLeaves(TREE_CHUNK_SIZE + 5), { syncedThrough: 500 });
       await storage.del('chain/tree/0/00');
-      expect(await loadScanState(storage)).toBeUndefined();
-
-      await saveScanState(storage, await stateWithLeaves(3), 500);
-      const notes = JSON.parse(new TextDecoder().decode((await storage.get('chain/notes'))!)) as { version: number };
-      await storage.put('chain/notes', new TextEncoder().encode(JSON.stringify({ ...notes, version: 999 })));
-      expect(await loadScanState(storage)).toBeUndefined();
+      expect(await loadChainState(storage)).toBeUndefined();
     });
 
-    it('clearScanState removes every scan record, chunks included', async () => {
-      const storage = new MemoryStorageAdapter();
-      await storage.open(ns);
-      await saveScanState(storage, await stateWithLeaves(TREE_CHUNK_SIZE + 5), 500);
-      await storage.put('chain/pending-spends', new TextEncoder().encode('[]')); // not a scan record: kept
-      await clearScanState(storage);
+    it('clearChainState removes the checkpoint and every chunk', async () => {
+      const storage = await opened();
+      await saveChainState(storage, treeWithLeaves(TREE_CHUNK_SIZE + 5), { syncedThrough: 500 });
+      await storage.put('chain/pending-spends', new TextEncoder().encode('[]')); // not a chain-state record: kept
+      await clearChainState(storage);
       expect(await keysOf(storage)).toEqual(['chain/pending-spends']);
     });
   });

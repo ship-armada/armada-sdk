@@ -24,8 +24,15 @@ Scan state persists through the [storage adapter](./adapters). A wallet loads it
 you create it, so `balances()`, `history()`, and planning work straight away after a reload, before
 any sync. A later `sync()` resumes from the last checkpoint rather than rescanning from the pool's
 deploy block, so repeat syncs only cover new blocks. Saving is incremental too: a sync writes the
-newest part of the merkle tree, the wallet's notes and the checkpoint together, not the whole state.
-A wallet keeps only its own spends, not every nullifier and unshield in the pool.
+newest part of the merkle tree and the wallet's notes, not the whole state. A wallet keeps only its
+own spends, not every nullifier and unshield in the pool.
+
+The merkle trees belong to the SDK instance, not to each wallet. One sync reads the pool once and
+hands the verified events to every wallet that is up to date, and syncs on one instance run one at a
+time. A wallet that is behind — new, or created after the instance has synced — first catches up:
+it reads the events from its `creationBlock` (or from where its notes stopped) and checks each
+commitment against the trees the instance already verified. Several wallets on one instance therefore
+cost one scan of the pool, not one each.
 
 Each sync builds its result on a copy of the wallet's state and switches over only once the result is
 verified and saved. Reads made while a sync is running — `balances()`, `history()`, `planTransfer` —
@@ -38,6 +45,9 @@ currently in flight. It does no network calls and changes nothing:
 ```ts
 const { syncedThrough, syncing } = await wallet.syncStatus();
 ```
+
+`sdk.sync.status()` is the same for the instance: the block its trees are synced through, and whether
+any wallet's sync is running.
 
 Ephemeral wallets are the exception: they are in-memory only and do not persist a checkpoint (see
 [Wallets](./wallets)).

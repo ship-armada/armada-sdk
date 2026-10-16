@@ -20,6 +20,7 @@ const chain = {
   logs: [] as ChainLog[],
   epochs: new Map<number, number>(), // block → fork epoch (bumped by a reorg)
   lagTo: Infinity as number, // getLogs silently returns only logs <= lagTo (a lagging backend)
+  getLogsRanges: [] as [number, number][], // every getLogs range asked for, in order
   callBlockTags: [] as unknown[],
   // When set, every pool eth_call waits on it — pauses a sync in its verification step, AFTER it applied
   // the new events, so a test can observe what readers see mid-sync. `callEntered` fires on the first wait.
@@ -74,6 +75,7 @@ vi.mock('ethers', async (importActual) => {
       return n > chain.head ? null : { number: n, hash: blockHash(n), timestamp: n };
     }
     async getLogs(f: { fromBlock: number; toBlock: number }): Promise<unknown[]> {
+      chain.getLogsRanges.push([f.fromBlock, f.toBlock]);
       return chain.logs.filter((l) => l.blockNumber >= f.fromBlock && l.blockNumber <= Math.min(f.toBlock, chain.lagTo));
     }
     async call(tx: { data: string; blockTag?: unknown }): Promise<string> {
@@ -110,11 +112,11 @@ vi.mock('ethers', async (importActual) => {
 });
 
 import { Interface } from 'ethers';
-import { createArmadaSdk, resolveWalletStorage } from './sdk';
+import { createArmadaSdk, resolveWalletStorage, resolveChainStorage } from './sdk';
 import { MemoryStorageAdapter, type StorageOp } from './storage/index';
 import { initPoseidonPromise, getTokenDataERC20, getTokenDataHash, ShieldNote, TransactNote } from './core/index';
 import { serializeQuickSync, createTransferNote, encryptNoteToReceiver, type DecodedShieldCommitment } from './sync/index';
-import { POOL_V2_EVENT_ABI, UTXOMerkletree, WalletScanState, saveScanState, walletRecordId } from './internal/index';
+import { POOL_V2_EVENT_ABI, UTXOMerkletree, WalletNotes, TreeStore, saveChainState, saveWalletNotes, walletRecordId } from './internal/index';
 import { deriveKeyset, type Keyset } from './wallet/index';
 import type { ArmadaSdkConfig } from './index';
 import type { Plan } from './tx/index';
@@ -261,6 +263,7 @@ beforeEach(() => {
   chain.logs = [];
   chain.epochs = new Map();
   chain.lagTo = Infinity;
+  chain.getLogsRanges = [];
   chain.callBlockTags = [];
   chain.callGate = undefined;
   chain.callEntered = undefined;
@@ -426,7 +429,9 @@ describe('API-1: creationBlock only limits note discovery; the tree is always bu
     pushTransact(150, [102n]);
     chain.head = 200;
     const storage = new MemoryStorageAdapter();
-    await saveScanState(resolveWalletStorage(storage, keyset.viewingPrivateKey, true), new WalletScanState(), 120); // empty tree @120
+    // An empty tree @120 (and the wallet's notes with it), though the pool had a leaf at 50.
+    await saveChainState(resolveChainStorage(storage), new TreeStore(), { syncedThrough: 120 });
+    await saveWalletNotes(resolveWalletStorage(storage, keyset.viewingPrivateKey, true), new WalletNotes(), { syncedThrough: 120 });
     const events: { event: string; data: unknown }[] = [];
     const sdk = await createArmadaSdk(
       cfg({ storage, dangerouslyAllowPlaintextStorage: true, telemetry: { emit: (event, data) => events.push({ event, data }) } }),
@@ -625,6 +630,115 @@ describe('close() during a sync (#140)', () => {
   });
 });
 
+describe('F1: one chain state per instance, shared by its wallets (#143)', () => {
+  const OTHER_SECRET = new Uint8Array(32).fill(0x22);
+
+  it('scans the pool once for every wallet level with the chain; a later wallet catches up from its creationBlock', async () => {
+    // WHY: each wallet kept its own copy of the trees and scanned the whole pool itself — N wallets, N full scans.
+    const other = await deriveKeyset(OTHER_SECRET);
+    await pushShield(10, keyset, 1_000_000n);
+    await pushShield(60, other, 3_000_000n);
+    chain.head = 100;
+    const sdk = await createArmadaSdk(cfg());
+    const a = await sdk.wallet.fromRootSecret(ROOT_SECRET, { creationBlock: 1 });
+    await a.sync();
+    expect(chain.getLogsRanges).toEqual([[1, 100]]);
+
+    // A wallet created after the chain synced reads only from its creationBlock, and doesn't rescan the tree.
+    chain.getLogsRanges = [];
+    const b = await sdk.wallet.fromRootSecret(OTHER_SECRET, { creationBlock: 50 });
+    await expect(b.sync()).resolves.toMatchObject({ scanned: true, syncedThrough: 100 });
+    expect(chain.getLogsRanges).toEqual([[50, 100]]);
+    expect((await b.balances())[0]?.spendable).toBe(3_000_000n);
+
+    // Both level now: one fetch of the new range serves both.
+    await pushShield(110, keyset, 2_000_000n);
+    chain.head = 120;
+    chain.getLogsRanges = [];
+    await b.sync();
+    expect(chain.getLogsRanges).toEqual([[101, 120]]);
+    expect((await a.syncStatus()).syncedThrough).toBe(120);
+    expect((await a.balances())[0]?.spendable).toBe(3_000_000n);
+    await sdk.close();
+  });
+
+  it('stores the tree once, in plaintext under the shared scope; each wallet stores only its encrypted notes', async () => {
+    await pushShield(10, keyset, 1_000_000n);
+    chain.head = 10;
+    const storage = new MemoryStorageAdapter();
+    const sdk = await createArmadaSdk(cfg({ storage }));
+    const a = await sdk.wallet.fromRootSecret(ROOT_SECRET, { creationBlock: 1 });
+    const b = await sdk.wallet.fromRootSecret(OTHER_SECRET, { creationBlock: 1 });
+    await a.sync();
+    await b.sync();
+    const keys: string[] = [];
+    for await (const { key } of storage.list('chain/')) keys.push(key);
+    const tagA = walletRecordId(keyset.viewingPrivateKey);
+    const tagB = walletRecordId((await deriveKeyset(OTHER_SECRET)).viewingPrivateKey);
+    expect(keys.sort()).toEqual([`chain/${tagA}/notes`, `chain/${tagB}/notes`, 'chain/shared/checkpoint', 'chain/shared/tree/0/00'].sort());
+    const chunk = await storage.get('chain/shared/tree/0/00');
+    expect(JSON.parse(new TextDecoder().decode(chunk!))).toHaveLength(1); // plaintext leaf hashes
+    await sdk.close();
+  });
+
+  it('a wallet behind the chain checks its catch-up batch against the verified tree, falling back to RPC', async () => {
+    const real = await pushShield(10, keyset, 1_000_000n);
+    chain.head = 30;
+    // The indexer later serves our shield with a different leaf hash than the one the chain verified.
+    const forged: DecodedShieldCommitment = { ...real, hash: '7'.repeat(64) };
+    let served = serializeQuickSync({ shields: [real], transacts: [], nullifiers: [], unshields: [] }, 30);
+    const fetchFn = (async () => ({ ok: true, status: 200, json: async () => served }) as Response) as typeof fetch;
+    const sdk = await createArmadaSdk(cfg({ indexer: { url: 'https://idx.example', fetchFn } }));
+    const first = await sdk.wallet.fromRootSecret(OTHER_SECRET, { creationBlock: 1 });
+    await first.sync(); // the chain is verified through 30 with the real leaf
+
+    served = serializeQuickSync({ shields: [forged], transacts: [], nullifiers: [], unshields: [] }, 30);
+    chain.getLogsRanges = [];
+    const wallet = await sdk.wallet.fromRootSecret(ROOT_SECRET, { creationBlock: 1 });
+    await wallet.sync();
+    expect(chain.getLogsRanges).toEqual([[1, 30]]); // re-read from RPC
+    expect((await wallet.balances())[0]?.spendable).toBe(1_000_000n);
+    await sdk.close();
+  });
+
+  it('sdk.sync.status() reports the chain checkpoint and whether a sync is running', async () => {
+    chain.head = 10;
+    pushTransact(5, [101n]);
+    const sdk = await createArmadaSdk(cfg());
+    expect(await sdk.sync.status()).toEqual({ syncedThrough: 0, syncing: false });
+    const wallet = await sdk.wallet.fromRootSecret(ROOT_SECRET, { creationBlock: 1 });
+    let release!: () => void;
+    chain.callGate = new Promise((r) => (release = r));
+    const entered = new Promise<void>((r) => (chain.callEntered = r));
+    const syncing = wallet.sync();
+    await entered;
+    expect((await sdk.sync.status()).syncing).toBe(true);
+    chain.callGate = undefined;
+    release();
+    await syncing;
+    expect(await sdk.sync.status()).toEqual({ syncedThrough: 10, syncing: false });
+    await sdk.close();
+  });
+
+  it('a reorg recovery rescans every wallet on the instance, not just the one syncing', async () => {
+    pushTransact(10, [101n]);
+    await pushShield(20, keyset, 1_000_000n);
+    chain.head = 20;
+    const sdk = await createArmadaSdk(cfg());
+    const a = await sdk.wallet.fromRootSecret(ROOT_SECRET, { creationBlock: 1 });
+    const b = await sdk.wallet.fromRootSecret(OTHER_SECRET, { creationBlock: 1 });
+    await a.sync();
+    expect((await b.syncStatus()).syncedThrough).toBe(20);
+
+    // Our shield at 20 is orphaned; the replacement chain has none for us.
+    await reorgFrom(20, 21, () => pushTransact(21, [102n]));
+    await b.sync();
+    expect((await a.syncStatus()).syncedThrough).toBe(21);
+    expect(await a.balances()).toEqual([]);
+    await sdk.close();
+  });
+});
+
 describe('SYNC-13: balance:updated agrees with balances() on spendable vs pending', () => {
   it('uses the same chain head as balances() when confirmationDepth holds the scan back', async () => {
     await pushShield(10, keyset, 1_000_000n);
@@ -657,7 +771,7 @@ describe('WS-1: stored record keys never contain the 0zk address', () => {
     const keys: string[] = [];
     for await (const { key } of storage.list('')) keys.push(key);
     const id = walletRecordId(keyset.viewingPrivateKey);
-    expect(keys).toContain(`chain/${id}/checkpoint`);
+    expect(keys).toContain(`chain/${id}/notes`);
     expect(keys).toContain(`chain/${id}/pending-spends`);
     expect(keys.some((k) => k.includes(keyset.shieldedAddress))).toBe(false);
     await sdk.close();

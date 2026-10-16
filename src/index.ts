@@ -145,6 +145,14 @@ export interface ArmadaSdkConfig {
  */
 export interface ArmadaSdk {
   readonly wallet: WalletFactory;
+  /** The instance's sync state (SPEC §4.4), shared by its wallets. */
+  readonly sync: {
+    /**
+     * The block the instance's verified trees are synced through, and whether a sync is running. Cheap: no RPC.
+     * Each wallet's own position is `wallet.syncStatus()`.
+     */
+    status(): Promise<{ syncedThrough: number; syncing: boolean }>;
+  };
   /**
    * Shut the instance down (SPEC §4.1): stop every watcher, cancel in-flight work (a running sync or proof rejects
    * with `InstanceClosedError`; the sync saves nothing), dispose every wallet, and release the provider, prover and storage.

@@ -3,6 +3,7 @@
 
 import { UTXOMerkletree, type MerkleProof } from './merkletree';
 import { PositionGapError } from '../errors';
+import type { DecodedPoolEvents } from './event-decoder';
 
 export class TreeStore {
   private readonly trees = new Map<number, UTXOMerkletree>();
@@ -36,6 +37,17 @@ export class TreeStore {
       });
     }
     merkletree.insert(hash);
+  }
+
+  /** Append every commitment in `events` (shields and transacts) in `(tree, position)` order. */
+  applyLeaves(events: DecodedPoolEvents): void {
+    const leaves = [...events.shields, ...events.transacts].sort((a, b) => a.tree - b.tree || a.position - b.position);
+    for (const { tree, position, hash } of leaves) this.insertLeaf(tree, position, hash);
+  }
+
+  /** The leaf at `(tree, position)`, or undefined past the tree's end. */
+  leaf(tree: number, position: number): string | undefined {
+    return this.trees.get(tree)?.getLeaves()[position];
   }
 
   /** Current commitment root of `tree` (no-0x hex); the empty-tree root if unseen. */

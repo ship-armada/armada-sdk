@@ -14,10 +14,11 @@ import {
   scanStateMissingLeaves,
   buildBalanceUpdate,
   buildReceivedNote,
+  resolveChainStorage,
 } from './sdk';
 import { RootMismatchError, QuickSyncSchemaError, IndexerHttpError, PositionGapError } from './errors';
 import { deriveKeyset, LocalSigner, ExternalSigner, encodeShareableViewingKey, type Wallet } from './wallet/index';
-import { saveScanState, WalletScanState, walletRecordId } from './internal/index';
+import { saveChainState, saveWalletNotes, WalletScanState, walletRecordId } from './internal/index';
 import { MemoryStorageAdapter } from './storage/index';
 import { NoSpendCapabilityError, InvalidKeyMaterialError, InvalidRequestError, UnsupportedCircuitShapeError, SignerContractViolationError, InstanceClosedError } from './errors';
 import { initPoseidonPromise, Mnemonic, getTokenDataERC20, getTokenDataHash } from './core/index';
@@ -43,6 +44,13 @@ const stubProver: ProverAdapter = {
 const stubArtifacts: ArtifactSource = {
   resolve: async (): Promise<ArtifactSet> => ({ wasm: new Uint8Array(), zkey: new Uint8Array(), vkey: {} }),
 };
+
+// Seed a store as an instance would have left it: the chain state in the shared scope, the notes in the wallet's (as
+// plaintext — the test instances run with dangerouslyAllowPlaintextStorage), both synced through `syncedThrough`.
+async function seedScanState(store: MemoryStorageAdapter, viewingPrivateKey: Uint8Array, state: WalletScanState, syncedThrough: number): Promise<void> {
+  await saveChainState(resolveChainStorage(store), state.trees, { syncedThrough });
+  await saveWalletNotes(resolveWalletStorage(store, viewingPrivateKey, true), state.walletNotes, { syncedThrough });
+}
 
 const makeConfig = (): ArmadaSdkConfig => ({
   pool: { chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1, usdcAddress: USDC },
@@ -261,9 +269,8 @@ describe('createArmadaSdk (§4.1)', () => {
 
   it('a wallet loads its persisted checkpoint from storage when created (P4.6, #119)', async () => {
     const store = new MemoryStorageAdapter();
-    await store.open({ schemaVersion: 3, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1 });
-    const walletStore = resolveWalletStorage(store, (await deriveKeyset(seed(0x77))).viewingPrivateKey, true);
-    await saveScanState(walletStore, new WalletScanState(), 500); // pre-seed a checkpoint at block 500
+    await store.open({ schemaVersion: 4, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1 });
+    await seedScanState(store, (await deriveKeyset(seed(0x77))).viewingPrivateKey, new WalletScanState(), 500); // checkpoint at 500
     await store.close(); // the SDK opens it itself, as a fresh instance would
 
     // Plaintext storage so the wallet reads the raw adapter we seeded (bypasses the per-wallet key).
@@ -277,7 +284,7 @@ describe('createArmadaSdk (§4.1)', () => {
     // WHY: an operator should see chain-derived state being wiped on a deploy-block change. Pre-open the
     // store under deployBlock 1, then construct an instance at deployBlock 2 → mismatch → reset → emit.
     const store = new MemoryStorageAdapter();
-    await store.open({ schemaVersion: 3, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1 });
+    await store.open({ schemaVersion: 4, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1 });
     await store.close();
     const events: { event: string; data: unknown }[] = [];
     const cfg: ArmadaSdkConfig = {
@@ -739,7 +746,7 @@ describe('wallet.consolidate + planTransferAfter (issue #98)', () => {
   ) {
     await initPoseidonPromise;
     const store = new MemoryStorageAdapter();
-    await store.open({ schemaVersion: 3, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1 });
+    await store.open({ schemaVersion: 4, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1 });
     const trees = Object.entries(notesByTree).map(([tree, values]) => ({
       tree: Number(tree),
       leaves: values.map((_, i) => leaf(Number(tree) * 1000 + i + 1)),
@@ -751,7 +758,7 @@ describe('wallet.consolidate + planTransferAfter (issue #98)', () => {
       })),
     );
     const state = WalletScanState.restore({ trees, txos, spent: [], unshields: [], sent: [] });
-    await saveScanState(resolveWalletStorage(store, (await deriveKeyset(seed(0x55))).viewingPrivateKey, true), state, 500);
+    await seedScanState(store, (await deriveKeyset(seed(0x55))).viewingPrivateKey, state, 500);
     await store.close(); // the SDK opens it itself, as a fresh instance would
     const base = makeConfig();
     const sdk = await createArmadaSdk({

@@ -30,7 +30,7 @@ function typeNames(dts: string): string[] {
 
 // The building blocks moved off the root (the #129 allow-list). They're reachable only via `@armada/sdk/internal`.
 const INTERNAL = [
-  'WalletScanState', 'saveScanState', 'loadScanState', 'clearScanState', 'CHECKPOINT_KEY', 'TreeStore', 'WalletNotes', 'UTXOMerkletree', 'SyncEmitter', 'startAutoSync',
+  'WalletScanState', 'saveChainState', 'loadChainState', 'saveWalletNotes', 'loadWalletNotes', 'CHECKPOINT_KEY', 'ChainState', 'TreeStore', 'WalletNotes', 'UTXOMerkletree', 'SyncEmitter', 'startAutoSync',
   'decodePoolEvents', 'formatShieldEvent', 'formatTransactEvent', 'formatNullifiedEvent', 'formatCommitmentCiphertext',
   'POOL_V2_EVENT_ABI', 'fetchLogsRanged', 'RpcEventSource', 'IndexerEventSource', 'computeBalances', 'withTokenAddresses',
   'newReceivedNotes', 'ownSpendTxids', 'ownedNoteFromTransactNote', 'txoFromNote', 'tryDecryptShield',

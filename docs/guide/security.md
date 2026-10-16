@@ -5,7 +5,7 @@ disables it, what telemetry is allowed to see, and the split between spending an
 
 ## Encryption at rest
 
-Each wallet's persisted data — notes, balances, and scan state — is encrypted before it reaches your
+Each wallet's persisted data — its notes, spends, and history — is encrypted before it reaches your
 storage adapter. Values are AES-256-GCM encrypted under a per-wallet key derived from the wallet's
 viewing key with HKDF-SHA-256, using a fresh random nonce per record. Your
 [storage adapter](./adapters) only ever sees ciphertext; it stores and retrieves bytes and never
@@ -15,6 +15,10 @@ viewing key.
 
 This is on by default and wraps whatever adapter you pass, so plaintext note data never reaches
 disk.
+
+One kind of record is stored unencrypted: the SDK instance's copy of the pool's merkle trees and the
+block they're synced through. Those are public chain data — the leaf hashes anyone can read from the
+pool's events — and are shared by every wallet on the instance, so they don't identify a wallet.
 
 ## Disabling encryption
 

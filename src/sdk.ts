@@ -25,9 +25,6 @@ import {
   shieldCommitmentMatches,
   ownedNoteFromTransactNote,
   newReceivedNotes,
-  saveScanState,
-  loadScanState,
-  clearScanState,
   PendingSpends,
   loadPendingSpends,
   savePendingSpends,
@@ -85,7 +82,6 @@ import {
 import type { ProveOptions, ProverAdapter, ArtifactSource } from './prover/index';
 import {
   NoSpendCapabilityError,
-  RootMismatchError,
   InvalidRequestError,
   QuickSyncSchemaError,
   SignerContractViolationError,
@@ -93,8 +89,21 @@ import {
 } from './errors';
 import { resolveConfig, type ResolvedConfig } from './config';
 import { ChainClient } from './chain/client';
+import { ChainState, assertMatchesTree, assertShieldsMatchLeaves, noEvents, type ChainAdvance } from './chain/state';
+import { WalletNotes } from './sync/wallet-notes';
+import { loadWalletNotes, saveWalletNotes, clearWalletNotes } from './sync/scan-persistence';
+import type { DecodedPoolEvents } from './sync/event-decoder';
 import { startAutoSync } from './sync/auto-sync';
-import type { ArmadaSdk, ArmadaSdkConfig, ReorgRecoveryReason, TelemetrySink } from './index';
+import type { ArmadaSdk, ArmadaSdkConfig, TelemetrySink } from './index';
+// The sync rules live with the chain state; re-exported here, where tests and consumers have always found them.
+export {
+  classifyQuickSyncReason,
+  quickSyncTelemetry,
+  finalRootCheckRequired,
+  shouldRecoverFromReorg,
+  scanStateMissingLeaves,
+} from './chain/sync-rules';
+export type { QuickSyncReason, QuickSyncTelemetry } from './chain/sync-rules';
 
 // Per-instance shared context handed to each wallet.
 interface SdkContext {
@@ -105,6 +114,8 @@ interface SdkContext {
    * before any sync or preflight, so no checkpoint from the wrong chain is ever saved.
    */
   readonly chainClient: ChainClient;
+  /** The instance's verified trees and chain checkpoint, and the one sync driver that advances them. */
+  readonly chainState: ChainState;
   /** Primary event source — the indexer when configured, else the RPC source. */
   readonly eventSource: EventSource;
   /** Always the RPC source: covers any tail the indexer lags, and is the verification fallback. */
@@ -128,88 +139,6 @@ interface SdkContext {
    * can never affect the SDK.
    */
   readonly telemetry?: TelemetrySink;
-}
-
-/**
- * Why an untrusted-indexer quick-sync attempt was discarded for an RPC re-scan. The `outcome` field
- * keeps its two historical values (back-compat); `reason` disambiguates the ≥4 distinct causes that
- * `root-mismatch-fallback` used to conflate (#83). `unknown` is the honest bucket for an unexpected
- * cause — never silently folded into `root-mismatch`.
- */
-export type QuickSyncReason = 'indexer-http-error' | 'schema-mismatch' | 'root-mismatch' | 'position-gap' | 'unknown';
-
-/** Quick-sync observability payload emitted through the telemetry sink (SPEC §8-safe: block numbers + booleans only). */
-export interface QuickSyncTelemetry {
-  /** `served` = the indexer batch verified against the on-chain root; `root-mismatch-fallback` = it
-   *  didn't, so the batch was discarded and the range re-scanned from RPC (truth). */
-  readonly outcome: 'served' | 'root-mismatch-fallback';
-  readonly fromBlock: number;
-  readonly head: number;
-  /** On the `served` path: the indexer lagged the chain head and RPC covered the tail. Always false on fallback. */
-  readonly tailCovered: boolean;
-  /** Set only on fallback: the classified cause of the discard (SPEC §8-safe — an enum, no PII). */
-  readonly reason?: QuickSyncReason;
-  /** Set only for an `indexer-http-error` fallback: the non-OK HTTP status the indexer returned. */
-  readonly status?: number;
-}
-
-/**
- * Map a caught quick-sync fallback cause to its telemetry reason (+ HTTP status when applicable). Pure
- * and keyed on the typed-error `code` (never message text), so a 404 from a legacy endpoint is reported
- * as `indexer-http-error`, not a misleading `root-mismatch`. An unrecognized cause is `unknown` — the
- * classifier never asserts a cause it doesn't actually know (SPEC §8, #83).
- */
-export function classifyQuickSyncReason(cause: unknown): { reason: QuickSyncReason; status?: number } {
-  // Match on the stable `code`, not `instanceof`: identity checks break under the dual-package hazard
-  // (an error thrown by one SDK copy fails `instanceof` in another) and contradict the errors.ts rule.
-  const code = typeof cause === 'object' && cause !== null && 'code' in cause ? (cause as { code: unknown }).code : undefined;
-  switch (code) {
-    case 'INDEXER_HTTP': {
-      const status = (cause as { status?: unknown }).status;
-      return typeof status === 'number' ? { reason: 'indexer-http-error', status } : { reason: 'indexer-http-error' };
-    }
-    case 'QUICK_SYNC_SCHEMA':
-      return { reason: 'schema-mismatch' };
-    case 'ROOT_MISMATCH':
-      return { reason: 'root-mismatch' };
-    case 'POSITION_GAP':
-      return { reason: 'position-gap' };
-    default:
-      return { reason: 'unknown' };
-  }
-}
-
-/**
- * Decide the quick-sync observability event for a completed sync. Pure so the outcome taxonomy is
- * unit-testable without a provider. Returns null when no indexer is in play — a pure RPC sync has
- * nothing quick-sync to report. SPEC §8: the payload carries only block numbers + booleans + a
- * classified `reason` enum, never keys, addresses, or note plaintext.
- */
-export function quickSyncTelemetry(input: {
-  usingIndexer: boolean;
-  tailCovered: boolean;
-  fellBack: boolean;
-  fromBlock: number;
-  head: number;
-  /** The caught fallback cause (only meaningful when `fellBack`); classified into `reason`/`status`. */
-  cause?: unknown;
-}): { event: 'sync.quicksync'; data: QuickSyncTelemetry } | null {
-  if (!input.usingIndexer) return null;
-  // Only fallbacks carry a cause to classify; the served path emits neither reason nor status.
-  const { reason, status } = input.fellBack ? classifyQuickSyncReason(input.cause) : { reason: undefined, status: undefined };
-  return {
-    event: 'sync.quicksync',
-    data: {
-      outcome: input.fellBack ? 'root-mismatch-fallback' : 'served',
-      fromBlock: input.fromBlock,
-      head: input.head,
-      // On a fallback the indexer batch was discarded and the whole range RPC-rescanned, so tail-cover
-      // is only meaningful on the served path.
-      tailCovered: input.fellBack ? false : input.tailCovered,
-      ...(reason !== undefined ? { reason } : {}),
-      ...(status !== undefined ? { status } : {}),
-    },
-  };
 }
 
 // A wallet's keys without the spending PRIVATE key: the wallet only ever needs the public half (for the witness).
@@ -261,7 +190,8 @@ async function assertSignerHoldsKey(signer: SpendSigner, spendingPublicKey: read
 // The storage layout version, part of the deployment namespace: a store written under another version is reset
 // (chain-derived records wiped and rebuilt by a rescan). 2: wallet records moved under per-wallet scopes (#138).
 // 3: scan state split into a checkpoint, the wallet's notes (own spends only), and chunked tree records (#143).
-const STORAGE_SCHEMA_VERSION = 3;
+// 4: one chain state per instance (trees + checkpoint in a shared plaintext scope); each wallet keeps only its notes.
+const STORAGE_SCHEMA_VERSION = 4;
 
 /**
  * Resolve the per-wallet storage handle: the wallet's own scope of the shared adapter (`ScopedStore`, tagged with
@@ -281,15 +211,16 @@ export function resolveWalletStorage(
   return new ScopedStore(values, walletRecordId(viewingPrivateKey));
 }
 
+// The tag of the instance's own scope. Wallet tags are hex record ids, so it can't collide with one.
+const CHAIN_SCOPE_TAG = 'shared';
+
 /**
- * Whether a completed sync still owes a final on-chain root verification (SPEC §4.4: "root
- * verification after each batch"). The indexer-served path already verified before acceptance, so
- * only the RPC baseline path and the post-fallback RPC rescan need the closing check — but every
- * sync ends having confirmed its accepted tree against the pool's root. Pure so the invariant
- * "the RPC baseline path is never left unverified" (the H3 regression) is unit-testable.
+ * Resolve the instance's storage handle for its chain state: its own scope of the shared adapter, in plaintext. The
+ * trees and the chain checkpoint are public (leaf hashes, block numbers), so they aren't encrypted. Exported so tests
+ * can seed or inspect chain state without a live chain.
  */
-export function finalRootCheckRequired(usingIndexer: boolean, fellBack: boolean): boolean {
-  return !usingIndexer || fellBack;
+export function resolveChainStorage(raw: StorageAdapter): StorageAdapter {
+  return new ScopedStore(raw, CHAIN_SCOPE_TAG);
 }
 
 /**
@@ -300,28 +231,6 @@ export function finalRootCheckRequired(usingIndexer: boolean, fellBack: boolean)
  */
 export function effectiveScanHead(rawHead: number, confirmationDepth: number): number {
   return Math.max(0, rawHead - confirmationDepth);
-}
-
-/**
- * Whether a sync should self-heal from a reorg-poisoned PERSISTED tree by resetting + rescanning, rather
- * than rethrowing (SPEC §4.4). True only when the failure is a `RootMismatchError`, the pre-batch (persisted)
- * state ITSELF fails root verification (so the poison predates this batch — a reorg removed an already-scanned
- * leaf), and we are not already inside a recovery (guards an infinite reset loop). Pure for testability.
- */
-export function shouldRecoverFromReorg(error: unknown, persistedRootsInvalid: boolean, recovering: boolean): boolean {
-  return error instanceof RootMismatchError && persistedRootsInvalid && !recovering;
-}
-
-/**
- * Whether a sync failure means the local tree is MISSING leaves: a leaf arrived beyond the tree's next
- * position, so part of the chain was skipped — a checkpoint that advanced past unapplied events, or a tree
- * started after the pool's first commitment. No retry fills that gap; only a rescan can. Keyed on the
- * error's `code` and fields, not identity (dual-package safe). Pure for testability.
- */
-export function scanStateMissingLeaves(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null) return false;
-  const e = error as { code?: unknown; expected?: unknown; received?: unknown };
-  return e.code === 'POSITION_GAP' && typeof e.expected === 'number' && typeof e.received === 'number' && e.received > e.expected;
 }
 
 /**
@@ -378,7 +287,9 @@ const HISTORY_BLOCK_CONCURRENCY = 8;
 const MAX_UNSHIELD_PROBE_RECIPIENT = '0x0000000000000000000000000000000000000001' as const;
 
 class ArmadaWallet implements Wallet {
-  private scanState = new WalletScanState();
+  // The wallet's private notes (owned notes, its own spends, notes it authored). The trees are the instance's, in
+  // `ChainState`; the notes are synced through `syncedThrough`, never past the chain's checkpoint.
+  private notes = new WalletNotes();
   private syncedThrough: number;
   // Hash of block `syncedThrough` when it was scanned — the reorg check compares it with the chain's
   // current hash at that height. Undefined before the first sync (or when the node didn't return it).
@@ -407,6 +318,9 @@ class ArmadaWallet implements Wallet {
   private readonly lifetime = new AbortController();
   // Set by dispose() (directly, or via sdk.close()): every call afterwards throws InstanceClosedError.
   private disposed = false;
+  // Set once load() finishes. The wallet is registered from construction (so close() disposes it even mid-load), but
+  // takes chain batches only once its saved notes are loaded.
+  private ready = false;
   private readonly signer: SpendSigner | undefined;
   private readonly ownsSigner: boolean;
 
@@ -428,6 +342,11 @@ class ArmadaWallet implements Wallet {
     this.signer = attached?.signer;
     this.ownsSigner = attached?.owned === true;
     ctx.wallets.add(this);
+  }
+
+  // The wallet's view of the scan: the instance's verified trees plus its own notes.
+  private get scanState(): WalletScanState {
+    return new WalletScanState(this.ctx.chainState.tree, this.notes);
   }
 
   private assertUsable(): void {
@@ -476,10 +395,19 @@ class ArmadaWallet implements Wallet {
    * synchronous ones) sees the saved state from the start. Ephemeral wallets never touch storage (§6.5).
    */
   async load(): Promise<void> {
-    if (this.ephemeral) return;
-    const persisted = await loadScanState(this.storage);
-    if (persisted !== undefined && persisted.syncedThrough > this.syncedThrough) {
-      this.scanState = persisted.state;
+    if (this.ephemeral) {
+      this.ready = true;
+      return;
+    }
+    const persisted = await loadWalletNotes(this.storage);
+    // Notes saved past the chain's checkpoint (its records were lost or reset) aren't backed by verified trees, so
+    // they're ignored and rescanned.
+    if (
+      persisted !== undefined &&
+      persisted.syncedThrough > this.syncedThrough &&
+      persisted.syncedThrough <= this.ctx.chainState.syncedThrough
+    ) {
+      this.notes = persisted.notes;
       this.syncedThrough = persisted.syncedThrough;
       this.syncedThroughHash = persisted.syncedThroughHash;
       // The saved notes are already known: seed the receive baseline from them, so the first sync reports
@@ -490,6 +418,7 @@ class ArmadaWallet implements Wallet {
     this.holds = await loadPendingSpends(this.storage);
     // A hold whose spend the saved state already confirms is done.
     this.holds.releaseConfirmed(this.scanState.spentNullifiers());
+    this.ready = true;
   }
 
   // Trial-decrypt closures over this wallet's viewing key — shared by the primary + tail applies. Notes
@@ -540,105 +469,106 @@ class ArmadaWallet implements Wallet {
     };
   }
 
-  // Apply a source's batch for [from, to] and report how far it covered. `onProgress` is threaded into
-  // the fetch, so it fires per block-window as the source chunks the range — driving granular progress.
-  private async applyBatch(
-    state: WalletScanState,
-    source: EventSource,
-    from: number,
-    to: number,
-    decryptors: WalletDecryptors,
-    onProgress?: (coveredThroughBlock: number) => void,
-  ): Promise<number> {
-    const batch = await source.getEvents(from, to, onProgress);
-    await state.apply(batch.events, decryptors);
-    return batch.syncedThroughBlock;
-  }
-
-  // Sync [from, head] from the primary source, RPC-covering any tail the (indexer) source lagged.
-  // Returns `tailCovered` — true when the primary (indexer) source stopped short of head and RPC
-  // covered the remainder, for quick-sync observability.
-  private async applyToHead(
-    state: WalletScanState,
-    from: number,
-    head: number,
-    decryptors: WalletDecryptors,
-    onProgress?: (coveredThroughBlock: number) => void,
-  ): Promise<{ tailCovered: boolean }> {
-    const covered = await this.applyBatch(state, this.ctx.eventSource, from, head, decryptors, onProgress);
-    if (covered < head) {
-      await this.applyBatch(state, this.ctx.rpcEventSource, covered + 1, head, decryptors, onProgress);
-      return { tailCovered: true };
-    }
-    return { tailCovered: false };
-  }
-
   /**
-   * Verify EVERY built tree's root is an accepted on-chain root for that tree (`pool.rootHistory`), not
-   * just the current (highest) tree. A dropped tail of a COMPLETED tree does not shift the current tree's
-   * root, so a single-tree check misses it; a per-tree `rootHistory` membership check catches any
-   * dropped/reordered/extra commitment in any tree. `rootHistory` is cumulative, so the current tree's
-   * live root is a member too. `head` is informational (the check is against current chain state).
+   * Bring the notes up to the chain's checkpoint (`target`): fetch the events from where the notes stop — or from
+   * `creationBlock`, if later — and read the wallet's notes from them. The trees are already verified, so the batch
+   * isn't verified again; instead every commitment in it must match the verified leaf at its position. An indexer
+   * batch that doesn't is discarded for an RPC one; an RPC batch that doesn't fails the sync.
    */
-  private async verifyRoots(state: WalletScanState, head: number): Promise<void> {
-    const trees = state.treeNumbers();
-    await Promise.all(
-      trees.map(async (tree) => {
-        const computed = state.treeRoot(tree);
-        const root = BigInt(computed.startsWith('0x') ? computed : `0x${computed}`);
-        if (!(await this.ctx.chainClient.isKnownRoot(tree, root))) {
-          throw new RootMismatchError(`sync: tree ${tree} root ${computed} not in pool rootHistory @block ${head}`);
+  private async catchUp(target: number, onProgress: (coveredThroughBlock: number) => void): Promise<void> {
+    const chain = this.ctx.chainState;
+    const from = Math.max(this.syncedThrough + 1, this.creationBlock);
+    let events = noEvents();
+    if (from <= target) {
+      const usingIndexer = this.ctx.eventSource !== this.ctx.rpcEventSource;
+      let fetched: DecodedPoolEvents | undefined;
+      if (usingIndexer) {
+        try {
+          fetched = (await chain.fetchEvents(this.ctx.eventSource, from, target, onProgress)).events;
+          assertShieldsMatchLeaves(fetched);
+          assertMatchesTree(fetched, chain.tree);
+        } catch {
+          fetched = undefined;
         }
-      }),
-    );
-  }
-
-  /**
-   * Verify the tree a sync built is EXACTLY the pool's tree at the scanned block (SPEC §4.4): the pool's
-   * current tree number, leaf count, and root, read pinned to `blockTag`, must match the local tree — and
-   * every earlier tree must still pass `verifyRoots`. Membership alone isn't enough for the current tree:
-   * the pool records a root after every insert, so a log set cut off at an event boundary (a lagging
-   * getLogs backend, an indexer omitting its tail) has a historical root and would pass, letting the
-   * checkpoint skip the missing events.
-   */
-  private async verifySyncedTree(state: WalletScanState, head: number, blockTag: string | number): Promise<void> {
-    await this.verifyRoots(state, head);
-    const pool = await this.ctx.chainClient.readPoolTree(blockTag);
-    const localRoot = BigInt(`0x${state.treeRoot(pool.treeNumber)}`);
-    const localLeaves = state.treeLength(pool.treeNumber);
-    const aheadOfPool = state.treeNumbers().some((tree) => tree > pool.treeNumber);
-    if (aheadOfPool || localLeaves !== pool.nextLeafIndex || localRoot !== pool.merkleRoot) {
-      throw new RootMismatchError(
-        `sync: tree ${pool.treeNumber} built locally (${localLeaves} leaves, root 0x${localRoot.toString(16)}) does not match ` +
-          `the pool @block ${head} (${pool.nextLeafIndex} leaves, root 0x${pool.merkleRoot.toString(16)})`,
-      );
+      }
+      if (fetched === undefined) {
+        fetched = (await chain.fetchEvents(this.ctx.rpcEventSource, from, target, onProgress)).events;
+        assertMatchesTree(fetched, chain.tree);
+      }
+      events = fetched;
     }
+    await this.ingest(events, target, chain.syncedThroughHash);
   }
 
   /**
-   * Whether the chain was reorganised under the checkpoint: the block hash recorded when `syncedThrough`
-   * was scanned is no longer the chain's hash at that height. A reorg at or below the checkpoint always
-   * changes it — including the commonest shapes (a tx re-included one block later, a same-height
-   * replacement), which otherwise surface as a position gap or as no error at all.
+   * Read the wallet's notes from a batch of events through `through` (whose hash is `throughHash`, when known), save
+   * them, and commit them. The commit happens only once the notes are saved, so a failure leaves the wallet where it
+   * was, and a retry reads the range again.
    */
-  private async checkpointReorged(): Promise<boolean> {
+  private async ingest(events: DecodedPoolEvents, through: number, throughHash: string | undefined): Promise<void> {
+    const next = this.notes.clone();
+    await next.apply(events, this.decryptors());
+    // A wallet disposed mid-sync (or a closing SDK) keeps nothing from it: stop before saving or committing.
+    this.assertUsable();
+    const position = { syncedThrough: through, ...(throughHash !== undefined ? { syncedThroughHash: throughHash } : {}) };
+    // Ephemeral wallets keep their notes in memory only — never write note data to disk (SPEC §6.5).
+    if (!this.ephemeral) await saveWalletNotes(this.storage, next, position);
+    this.notes = next;
+    this.syncedThrough = through;
+    this.syncedThroughHash = throughHash;
+    await this.releaseConfirmedHolds();
+  }
+
+  /**
+   * Whether the notes can't stand on the chain state: saved past its checkpoint, or reorganised under their own
+   * checkpoint (the block hash recorded then is no longer the chain's hash at that height). A wallet created after a
+   * chain-wide reset (which reset the wallets loaded then) can still hold notes from the orphaned chain.
+   */
+  private async notesStale(): Promise<boolean> {
+    const chain = this.ctx.chainState;
+    if (this.syncedThrough > chain.syncedThrough) return true;
     if (this.syncedThroughHash === undefined) return false;
+    // Level with the chain on the same block: the chain has just checked that hash (`resetIfReorged`).
+    if (this.syncedThrough === chain.syncedThrough && this.syncedThroughHash === chain.syncedThroughHash) return false;
     const canonical = await this.ctx.chainClient.getBlockHash(this.syncedThrough);
     return canonical !== undefined && canonical !== this.syncedThroughHash;
   }
 
   /**
-   * Reset chain-derived state and rescan from the deploy block (blunt recovery — a surgical per-tree
-   * rebuild is tracked in issue #75). Callers guard against a loop with `recovering`. `reason` goes to
-   * telemetry (SPEC §8-safe: an enum and a block number) so an operator can see why rescans happen.
+   * Drop the notes (in memory + the saved record) to read them again from the deploy block. Identity and the spend
+   * holds (issue #55) live outside the notes, so they survive — dropping a hold here would let a follow-up spend
+   * reselect an input whose submission is still in flight.
    */
-  private async recoverByRescan(
-    reason: ReorgRecoveryReason,
-  ): Promise<{ fromBlock: number; syncedThrough: number; scanned: boolean }> {
-    this.assertUsable();
-    this.ctx.telemetry?.emit('sync.reorg-recovery', { fromBlock: this.ctx.config.deployBlock, reason });
-    await this.resetChainDerivedState();
-    return this.runSync(true);
+  async resetNotes(): Promise<void> {
+    this.notes = new WalletNotes();
+    this.syncedThrough = this.ctx.config.deployBlock - 1;
+    this.syncedThroughHash = undefined;
+    this.lastBalances.clear();
+    this.seenReceiveKeys.clear();
+    this.receiveBaselined = false;
+    // Delete the poisoned record so a crash mid-rescan can't load it again.
+    if (!this.ephemeral) await clearWalletNotes(this.storage);
+  }
+
+  /**
+   * Hand a batch the chain just verified to every wallet whose notes stop where it starts (this one included), so one
+   * fetch serves them all. Another wallet that fails to take it stays behind and catches up on its own next sync.
+   */
+  private async deliver(batch: ChainAdvance, chainHead: number): Promise<void> {
+    for (const wallet of [...this.ctx.wallets]) {
+      if (!wallet.ready || wallet.syncedThrough !== batch.fromBlock - 1) continue;
+      if (wallet === this) {
+        await this.ingest(batch.events, batch.toBlock, batch.toBlockHash);
+        continue;
+      }
+      try {
+        await wallet.ingest(batch.events, batch.toBlock, batch.toBlockHash);
+        wallet.emitBalanceUpdates(chainHead);
+        wallet.emitReceivedNotes();
+      } catch {
+        // Deliberately swallowed: this sync is the other wallet's to report, not ours.
+      }
+    }
   }
 
   on<K extends keyof SyncEventMap>(event: K, listener: (payload: SyncEventMap[K]) => void): Unsubscribe {
@@ -690,145 +620,54 @@ class ArmadaWallet implements Wallet {
     }
   }
 
-  private async runSync(recovering = false): Promise<{ fromBlock: number; syncedThrough: number; scanned: boolean }> {
+  private async runSync(): Promise<{ fromBlock: number; syncedThrough: number; scanned: boolean }> {
     // Never scan (and so never save a checkpoint) from an RPC that doesn't serve the configured chain/pool.
     await this.ctx.chainClient.ensureChain();
-    // A reorg under the checkpoint (SPEC §4.4) invalidates the persisted tree — the append-only tree can't
-    // un-append an orphaned leaf — so rescan. Checked before the head comparison below: a same-height
-    // reorg leaves the head unchanged but still replaces the checkpoint block.
-    if (!recovering && (await this.checkpointReorged())) return this.recoverByRescan('checkpoint-reorged');
-    // Scan only to head − confirmationDepth so a reorg of that depth or shallower can't remove a leaf we
-    // already persisted (§4.4 reorg safety); `confirmationDepth: 0` (default) scans to head. A deeper
-    // reorg is caught by the checkpoint hash check above.
-    const chainHead = await this.ctx.chainClient.getBlockNumber();
-    const head = effectiveScanHead(chainHead, this.ctx.config.confirmationDepth);
-    const { fromBlock, scanned } = planSyncWindow(this.syncedThrough, head);
-    if (!scanned) return { fromBlock, syncedThrough: this.syncedThrough, scanned: false };
-    // Pin verification to the exact block scanned — by hash when the node returns it — so the pool state
-    // the tree is checked against is the state the logs came from; a reorg of `head` mid-sync makes the
-    // pinned read fail instead of verifying against a different chain.
-    const headHash = await this.ctx.chainClient.getBlockHash(head);
-    const blockTag = headHash ?? head;
+    const chain = this.ctx.chainState;
+    return chain.exclusive(async () => {
+      try {
+        this.assertUsable();
+        // A reorg under the chain's checkpoint resets the chain and every wallet's notes, for a rescan.
+        await chain.resetIfReorged();
+        if (await this.notesStale()) await this.resetNotes();
+        // Scan only to head − confirmationDepth so a reorg of that depth or shallower can't remove a leaf we
+        // already persisted (§4.4 reorg safety); `confirmationDepth: 0` (default) scans to head. A deeper
+        // reorg is caught by the checkpoint hash checks above.
+        const chainHead = await this.ctx.chainClient.getBlockNumber();
+        const head = effectiveScanHead(chainHead, this.ctx.config.confirmationDepth);
+        const { fromBlock, scanned } = planSyncWindow(this.syncedThrough, head);
+        if (!scanned) return { fromBlock, syncedThrough: this.syncedThrough, scanned: false };
+        const headHash = await this.ctx.chainClient.getBlockHash(head);
 
-    const from = fromBlock;
-    const span = head - from + 1;
-    const emitProgress = (coveredThrough: number): void => {
-      const done = Math.max(0, Math.min(span, coveredThrough - from + 1));
-      this.emitter.emit('scan:progress', { syncedThrough: coveredThrough, fraction: span <= 0 ? 1 : done / span });
-    };
+        const span = head - fromBlock + 1;
+        const emitProgress = (coveredThrough: number): void => {
+          const done = Math.max(0, Math.min(span, coveredThrough - fromBlock + 1));
+          this.emitter.emit('scan:progress', { syncedThrough: coveredThrough, fraction: span <= 0 ? 1 : done / span });
+        };
+        this.emitter.emit('scan:started', { fromBlock, toBlock: head });
+        this.emitter.emit('scan:progress', { syncedThrough: fromBlock - 1, fraction: 0 });
 
-    this.emitter.emit('scan:started', { fromBlock, toBlock: head });
-    this.emitter.emit('scan:progress', { syncedThrough: from - 1, fraction: 0 });
+        // Behind the chain (new, or loaded from an older save): catch up to its checkpoint first, so this wallet is
+        // level with the chain when it advances and reads the new batch with the others.
+        if (this.syncedThrough < chain.syncedThrough) await this.catchUp(chain.syncedThrough, emitProgress);
+        const batch = await chain.advance(head, headHash, emitProgress);
+        if (batch !== undefined) await this.deliver(batch, chainHead);
 
-    const decryptors = this.decryptors();
-    const usingIndexer = this.ctx.eventSource !== this.ctx.rpcEventSource;
-    // Apply the batch to a COPY of the committed state; it replaces the live state only once it is verified
-    // and saved. Readers (planning, balances, history) never see a half-applied or unverified batch, and
-    // ANY failure below — a partial apply, a root mismatch, a save error — just discards the copy: the
-    // committed state and checkpoint were never touched, so a retry re-scans the range cleanly.
-    let next = this.scanState.clone();
-    try {
-      let tailCovered = false;
-      let fellBack = false;
-      // Preserved so telemetry can classify WHY the indexer batch was discarded (#83) — an HTTP 404, a
-      // wire-schema skew, a position gap, or a genuine root mismatch, not one mislabel for all four.
-      let fallbackCause: unknown;
-
-      if (usingIndexer) {
-        try {
-          // The indexer is untrusted: its fetch, wire-schema parse, apply, AND root-verify all live
-          // inside this try so ANY failure — malformed/garbage response, HTTP error, position gap, root
-          // mismatch — discards the batch and re-scans from RPC (the source of truth), rather than
-          // failing the whole sync on a degraded indexer (SPEC §4.4).
-          ({ tailCovered } = await this.applyToHead(next, from, head, decryptors, emitProgress));
-          await this.verifySyncedTree(next, head, blockTag);
-        } catch (err) {
-          fellBack = true;
-          fallbackCause = err;
-          next = this.scanState.clone();
-          await this.applyBatch(next, this.ctx.rpcEventSource, from, head, decryptors, emitProgress);
+        this.emitter.emit('scan:complete', { syncedThrough: this.syncedThrough });
+        // Balance events use the chain head, as `balances()` does, so both agree on spendable vs pending.
+        this.emitBalanceUpdates(chainHead);
+        this.emitReceivedNotes();
+        return { fromBlock, syncedThrough: this.syncedThrough, scanned: true };
+      } catch (err) {
+        // Cancelled by dispose()/close() (its RPC calls may fail first, on the destroyed provider): no scan:error —
+        // the caller learns the wallet is closed.
+        if (this.disposed || this.ctx.lifecycle.closed) {
+          throw err instanceof InstanceClosedError ? err : new InstanceClosedError('sync: cancelled by wallet.dispose() or sdk.close()', { cause: err });
         }
-      } else {
-        ({ tailCovered } = await this.applyToHead(next, from, head, decryptors, emitProgress));
+        this.emitter.emit('scan:error', { error: err instanceof Error ? err : new Error(String(err)) });
+        throw err;
       }
-
-      // Final guard (SPEC §4.4): the accepted tree — RPC baseline or post-fallback RPC rescan — must
-      // reproduce the on-chain root. This is the ONLY verification on the pure-RPC path; a mismatch means
-      // the provider returned bad/truncated logs. It throws → the copy is discarded and the checkpoint
-      // doesn't advance, so a retry re-scans the range cleanly instead of persisting a corrupt tree.
-      if (finalRootCheckRequired(usingIndexer, fellBack)) {
-        await this.verifySyncedTree(next, head, blockTag);
-      }
-
-      // Quick-sync observability (SPEC §8): report whether the configured indexer served a
-      // root-verified batch, lagged into an RPC tail, or was rejected for an RPC re-scan — and, on a
-      // rejection, the classified `reason` (+ HTTP status) for it. No-op when no indexer is configured.
-      // Never carries key material / addresses.
-      const qs = quickSyncTelemetry({ usingIndexer, tailCovered, fellBack, fromBlock: from, head, cause: fallbackCause });
-      if (qs !== null) this.ctx.telemetry?.emit(qs.event, qs.data);
-
-      // A wallet disposed mid-sync (or a closing SDK) keeps nothing from it: stop before saving or committing.
-      this.assertUsable();
-      // Ephemeral wallets keep their scan state in memory only — never write note data to disk (SPEC §6.5).
-      // The committed state is what the store holds (loaded, last saved, or empty after a reset or a cache miss),
-      // so passing it writes only the tree chunks that changed.
-      if (!this.ephemeral) {
-        await saveScanState(this.storage, next, head, headHash, this.scanState);
-      }
-      // Commit: only now — verified and saved — does the new state become the one readers see, and the
-      // checkpoint advance. A save failure above leaves both where they were.
-      this.scanState = next;
-      this.syncedThrough = head;
-      this.syncedThroughHash = headHash;
-      await this.releaseConfirmedHolds();
-      this.emitter.emit('scan:complete', { syncedThrough: head });
-      // Balance events use the chain head, as `balances()` does, so both agree on spendable vs pending.
-      this.emitBalanceUpdates(chainHead);
-      this.emitReceivedNotes();
-      return { fromBlock, syncedThrough: head, scanned: true };
-    } catch (err) {
-      // Cancelled by dispose()/close() (its RPC calls may fail first, on the destroyed provider): no recovery, no
-      // scan:error — the caller learns the wallet is closed.
-      if (this.disposed) {
-        throw err instanceof InstanceClosedError ? err : new InstanceClosedError('sync: cancelled by wallet.dispose() or sdk.close()', { cause: err });
-      }
-      // Two failures no retry can fix, so self-heal by rescanning from the deploy block (`recovering`
-      // guards a loop): (1) the local tree is missing leaves — a leaf arrived past its next position, so part
-      // of the chain was skipped; (2) a reorg removed an already-PERSISTED leaf the hash check couldn't see
-      // (a record saved without a hash), so the committed state itself fails root verification.
-      if (!recovering && scanStateMissingLeaves(err)) return this.recoverByRescan('missing-leaves');
-      if (shouldRecoverFromReorg(err, await this.persistedRootsInvalid(head), recovering)) {
-        return this.recoverByRescan('persisted-root-invalid');
-      }
-      this.emitter.emit('scan:error', { error: err instanceof Error ? err : new Error(String(err)) });
-      throw err;
-    }
-  }
-
-  /** True if the committed (= persisted) tree state fails on-chain root verification. */
-  private async persistedRootsInvalid(head: number): Promise<boolean> {
-    try {
-      await this.verifyRoots(this.scanState, head);
-      return false;
-    } catch (err) {
-      return err instanceof RootMismatchError;
-    }
-  }
-
-  /**
-   * Reset chain-derived state (in-memory + persisted record) to rescan from the deploy block. Identity and
-   * the spend holds (issue #55) live outside the scan state, so they survive — dropping a hold here would
-   * let a follow-up spend reselect an input whose submission is still in flight.
-   */
-  private async resetChainDerivedState(): Promise<void> {
-    this.scanState = new WalletScanState();
-    this.syncedThrough = this.ctx.config.deployBlock - 1;
-    this.syncedThroughHash = undefined;
-    this.lastBalances.clear();
-    this.seenReceiveKeys.clear();
-    this.receiveBaselined = false;
-    // Delete the poisoned records so a crash mid-rescan can't load them again.
-    if (!this.ephemeral) await clearScanState(this.storage);
+    });
   }
 
   // Push `note:received` for incoming transfers discovered since the last sync (`newReceivedNotes`
@@ -1392,16 +1231,35 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
       })
     : rpcEventSource;
 
+  // The instance's chain state: one set of verified trees for every wallet, in the adapter's shared scope.
+  const lifecycle = { closed: false };
+  const wallets = new Set<ArmadaWallet>();
+  const chainState = new ChainState({
+    client: chainClient,
+    eventSource,
+    rpcEventSource,
+    storage: resolveChainStorage(config.storage),
+    deployBlock: resolved.deployBlock,
+    ...(telemetry !== undefined ? { telemetry } : {}),
+    isClosed: () => lifecycle.closed,
+  });
+  // A chain reset for a rescan drops every wallet's notes too: a reorg may have orphaned some of them.
+  chainState.onReset = async () => {
+    for (const w of wallets) await w.resetNotes();
+  };
+  await chainState.load();
+
   const ctx: SdkContext = {
     config: resolved,
     chainClient,
+    chainState,
     eventSource,
     rpcEventSource,
     tokenDataGetter,
     chain: { type: ChainType.EVM, id: resolved.chainId },
     watchers: new Set<() => void>(),
-    wallets: new Set<ArmadaWallet>(),
-    lifecycle: { closed: false },
+    wallets,
+    lifecycle,
     usdcHash,
     prover: config.prover,
     artifacts: config.artifacts,
@@ -1474,6 +1332,12 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
 
   return {
     wallet,
+    sync: {
+      async status() {
+        assertOpen();
+        return { syncedThrough: chainState.syncedThrough, syncing: chainState.syncing };
+      },
+    },
     async close() {
       if (ctx.lifecycle.closed) return;
       ctx.lifecycle.closed = true;

@@ -486,7 +486,8 @@ Requirements:
   viewing key.
 - **Per-wallet scopes.** Each wallet's records live under `<area>/<walletTag>/…` (area first, so the
   reset rules above still apply), so wallets sharing an adapter can't list, overwrite or decrypt each
-  other's records; the full scoped key is the AEAD's associated data.
+  other's records; the full scoped key is the AEAD's associated data. The instance's chain state has
+  its own scope (`<area>/shared/…`), which no wallet tag can collide with.
 - **Atomic and durable writes for fund-safety records.** `update` (read-modify-write) and `batch`
   (multi-key) are atomic; `durable` commits to disk before resolving (IndexedDB `strict`, Level
   `sync`). Spend holds are written durably today; the §6.2 claim-seed counter and the §7 journal
@@ -521,12 +522,19 @@ Requirements:
 - **Progress + events.** `sdk.sync.status()` and subscription events
   (`scan:started/progress/complete/error`, `balance:updated`, `note:received` — see §5.2)
   replace the single global `setOnBalanceUpdateCallback` multiplexer.
-- **Checkpointing.** Scan state per (wallet, chain) lives in storage (replacing the
-  localStorage `history-checkpoint.ts`), covered by the schema-version reset rule, as three kinds of
-  record: a checkpoint (synced block, its hash, each tree's length), the wallet's notes (its owned
-  notes and only its own spends — not every pool nullifier and unshield), and each tree's leaves in
-  1,024-leaf chunks. A save writes the changed chunks, the notes and the checkpoint in one atomic
-  batch; any unreadable or inconsistent record is a cache miss, and the wallet rescans.
+- **One chain state per instance.** The instance holds the verified trees and the chain checkpoint,
+  and one sync driver (serialized across the instance) fetches, applies, verifies and saves each
+  range once, with the reorg and root checks done once. It hands each verified batch to every wallet
+  level with the chain; a wallet behind it catches up from its own checkpoint or `creationBlock`,
+  checking every commitment against the verified leaf at its position. A chain reset (reorg or
+  missing-leaves recovery) resets every loaded wallet's notes too.
+- **Checkpointing.** Scan state lives in storage (replacing the localStorage
+  `history-checkpoint.ts`), covered by the schema-version reset rule. The chain state is a
+  checkpoint (synced block, its hash, each tree's length) plus each tree's leaves in 1,024-leaf
+  chunks, in the instance's own scope and in plaintext (public data); a save writes the changed
+  chunks and the checkpoint in one atomic batch. Each wallet's notes (its owned notes and only its
+  own spends — not every pool nullifier and unshield) are one encrypted record carrying the block
+  they're synced through. Any unreadable or inconsistent record is a cache miss, and it rescans.
 - **Quick-sync interface (optional, deferred within Phase 2):**
   `interface EventSource { getEvents(fromBlock, toBlock): Promise<AccumulatedEvents> }` — an
   indexer-backed implementation can later serve snapshots to cut first-scan time (the crowdfund

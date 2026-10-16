@@ -9,7 +9,21 @@ export { RpcEventSource, IndexerEventSource } from '../sync/event-source';
 export type { EventBatch, EventSource, IndexerEventSourceOptions } from '../sync/event-source';
 export { WalletScanState, ownedNoteFromTransactNote } from '../sync/scan-engine';
 export type { WalletDecryptors, Decryptor, OwnedNote, ApplyResult, ScanStateSnapshot } from '../sync/scan-engine';
-export { saveScanState, loadScanState, clearScanState, CHECKPOINT_KEY, NOTES_KEY, TREE_PREFIX, TREE_CHUNK_SIZE } from '../sync/scan-persistence';
+export {
+  saveChainState,
+  loadChainState,
+  clearChainState,
+  saveWalletNotes,
+  loadWalletNotes,
+  clearWalletNotes,
+  CHECKPOINT_KEY,
+  NOTES_KEY,
+  TREE_PREFIX,
+  TREE_CHUNK_SIZE,
+} from '../sync/scan-persistence';
+export type { SyncedThrough } from '../sync/scan-persistence';
+export { ChainState } from '../chain/state';
+export type { ChainAdvance, ChainStateDeps } from '../chain/state';
 export { TreeStore } from '../sync/tree-store';
 export { WalletNotes, WALLET_NOTES_VERSION } from '../sync/wallet-notes';
 export type { WalletNotesSnapshot } from '../sync/wallet-notes';
