@@ -9,7 +9,6 @@ import {
   encodeSelfMetadata,
   type SyncEventMap,
   type TXO,
-  type TokenAddressResolver,
   type Unsubscribe,
   type HistoryEntry,
   type ReceiverNoteKeys,
@@ -19,16 +18,13 @@ import {
   WalletScanState,
   RpcEventSource,
   IndexerEventSource,
-  SyncEmitter,
   decryptedCommitmentMatches,
   tryDecryptShield,
   shieldCommitmentMatches,
   ownedNoteFromTransactNote,
-  newReceivedNotes,
   PendingSpends,
   loadPendingSpends,
   savePendingSpends,
-  tokenHashKey,
   withTokenAddresses,
   EncryptedStore,
   deriveWalletStorageKey,
@@ -91,6 +87,7 @@ import { resolveConfig, type ResolvedConfig } from './config';
 import { ChainClient } from './chain/client';
 import { ChainState, CHAIN_CHUNK_BLOCKS, assertMatchesTree, assertShieldsMatchLeaves, noEvents, type ChainAdvance } from './chain/state';
 import { WalletNotes } from './sync/wallet-notes';
+import { WalletEvents, resolveTokenAddress } from './sync/wallet-events';
 import { loadWalletNotes, saveWalletNotes, clearWalletNotes } from './sync/scan-persistence';
 import type { DecodedPoolEvents } from './sync/event-decoder';
 import { startAutoSync } from './sync/auto-sync';
@@ -104,6 +101,8 @@ export {
   scanStateMissingLeaves,
 } from './chain/sync-rules';
 export type { QuickSyncReason, QuickSyncTelemetry } from './chain/sync-rules';
+// The event payload builders live with the wallet's event stream; re-exported here, where tests have found them.
+export { buildBalanceUpdate, buildReceivedNote } from './sync/wallet-events';
 
 // Per-instance shared context handed to each wallet.
 interface SdkContext {
@@ -234,40 +233,6 @@ export function effectiveScanHead(rawHead: number, confirmationDepth: number): n
 }
 
 /**
- * Build a `balance:updated` payload for a token, resolving its address via `resolve`. The payload
- * carries BOTH the canonical `tokenHash` (normalized to the `balances()` join key) and the resolved
- * `tokenAddress`. Returns `undefined` for a hash with no registered token — an address can't be
- * recovered, so the caller skips the emit. Pure so the payload shape is unit-testable without a wallet.
- */
-export function buildBalanceUpdate(
-  tokenHash: string,
-  spendable: bigint,
-  pending: bigint,
-  resolve: TokenAddressResolver,
-): SyncEventMap['balance:updated'] | undefined {
-  const tokenAddress = resolve(tokenHash);
-  if (tokenAddress === undefined) return undefined; // unregistered token — no address to report
-  return { tokenHash: tokenHashKey(tokenHash), tokenAddress, spendable, pending };
-}
-
-/**
- * Build a `note:received` payload from a freshly discovered owned TXO, resolving its token address
- * via `resolve`. Carries both `tokenHash` and `tokenAddress`, plus memo/sender when the sender
- * disclosed them. Returns `undefined` for an unregistered token (skipped — no address to report).
- */
-export function buildReceivedNote(txo: TXO, resolve: TokenAddressResolver): SyncEventMap['note:received'] | undefined {
-  const tokenAddress = resolve(txo.tokenHash);
-  if (tokenAddress === undefined) return undefined; // unregistered token — no address to report
-  return {
-    tokenHash: tokenHashKey(txo.tokenHash),
-    tokenAddress,
-    value: txo.value,
-    ...(txo.memo !== undefined ? { memo: txo.memo } : {}),
-    ...(txo.senderShieldedAddress !== undefined ? { senderShieldedAddress: txo.senderShieldedAddress } : {}),
-  };
-}
-
-/**
  * Decide a sync's resume window from the last synced block + current chain head. Pure so the
  * resume decision (the thing that must never regress to a genesis rescan) is unit-testable without
  * a provider. `fromBlock` is the resume point (checkpoint + 1); `scanned` is false when the head
@@ -294,15 +259,7 @@ class ArmadaWallet implements Wallet {
   // Optimistic in-flight spend holds (issue #55) — the wallet's own intent, kept apart from the chain-derived
   // scan state (which a sync replaces wholesale) and written durably whenever a hold changes.
   private holds = new PendingSpends();
-  private readonly emitter = new SyncEmitter();
-  // Last-emitted per-token balance (keyed by tokenHash, no 0x) so a sync only pushes `balance:updated`
-  // for tokens that actually changed — the diff that lets consumers avoid redundant re-reads.
-  private readonly lastBalances = new Map<string, { spendable: bigint; pending: bigint }>();
-  // Received-transfer keys already emitted as `note:received`. A loaded wallet seeds this from its saved
-  // notes; a wallet with no saved state seeds it on its first sync WITHOUT emitting (so a fresh wallet
-  // doesn't replay its history as "received"). Later syncs emit only genuinely-new incoming notes.
-  private readonly seenReceiveKeys = new Set<string>();
-  private receiveBaselined = false;
+  private readonly events = new WalletEvents();
   // The in-flight sync run, if any — concurrent sync() calls coalesce onto it instead of both building on
   // the same committed state (which would double-apply a range and throw a position gap).
   private syncInFlight: Promise<{ fromBlock: number; syncedThrough: number; scanned: boolean }> | undefined;
@@ -409,8 +366,7 @@ class ArmadaWallet implements Wallet {
       this.syncedThroughHash = persisted.syncedThroughHash;
       // The saved notes are already known: seed the receive baseline from them, so the first sync reports
       // exactly the notes that arrived since the checkpoint (e.g. while the app was closed).
-      newReceivedNotes(this.scanState.ownedTxos(), this.scanState.spentNullifiers(), this.keyset.nullifyingKey, this.seenReceiveKeys);
-      this.receiveBaselined = true;
+      this.events.baselineReceives(this.notes.ownedTxos(), this.notes.spentNullifiers(), this.keyset.nullifyingKey);
     }
     this.holds = await loadPendingSpends(this.storage);
     // A hold whose spend the saved state already confirms is done.
@@ -557,9 +513,7 @@ class ArmadaWallet implements Wallet {
     this.notes = new WalletNotes();
     this.syncedThrough = this.ctx.config.deployBlock - 1;
     this.syncedThroughHash = undefined;
-    this.lastBalances.clear();
-    this.seenReceiveKeys.clear();
-    this.receiveBaselined = false;
+    this.events.reset();
     // Delete the poisoned record so a crash mid-rescan can't load it again.
     if (!this.ephemeral) await clearWalletNotes(this.storage);
   }
@@ -577,8 +531,7 @@ class ArmadaWallet implements Wallet {
       }
       try {
         await wallet.ingest(batch.events, batch.timestamps, batch.toBlock, batch.toBlockHash);
-        wallet.emitBalanceUpdates(chainHead);
-        wallet.emitReceivedNotes();
+        wallet.emitUpdates(chainHead);
       } catch {
         // Deliberately swallowed: this sync is the other wallet's to report, not ours.
       }
@@ -587,7 +540,7 @@ class ArmadaWallet implements Wallet {
 
   on<K extends keyof SyncEventMap>(event: K, listener: (payload: SyncEventMap[K]) => void): Unsubscribe {
     this.assertUsable();
-    return this.emitter.on(event, listener);
+    return this.events.on(event, listener);
   }
 
   watch(options?: { intervalMs?: number; immediate?: boolean; onError?: (err: Error) => void }): Unsubscribe {
@@ -656,20 +609,18 @@ class ArmadaWallet implements Wallet {
         const span = head - fromBlock + 1;
         const emitProgress = (coveredThrough: number): void => {
           const done = Math.max(0, Math.min(span, coveredThrough - fromBlock + 1));
-          this.emitter.emit('scan:progress', { syncedThrough: coveredThrough, fraction: span <= 0 ? 1 : done / span });
+          this.events.emit('scan:progress', { syncedThrough: coveredThrough, fraction: span <= 0 ? 1 : done / span });
         };
-        this.emitter.emit('scan:started', { fromBlock, toBlock: head });
-        this.emitter.emit('scan:progress', { syncedThrough: fromBlock - 1, fraction: 0 });
+        this.events.emit('scan:started', { fromBlock, toBlock: head });
+        this.events.emit('scan:progress', { syncedThrough: fromBlock - 1, fraction: 0 });
 
         // Behind the chain (new, or loaded from an older save): catch up to its checkpoint first, so this wallet is
         // level with the chain when it advances and reads the new batch with the others.
         if (this.syncedThrough < chain.syncedThrough) await this.catchUp(chain.syncedThrough, emitProgress);
         await chain.advance(head, headHash, emitProgress, (batch) => this.deliver(batch, chainHead));
 
-        this.emitter.emit('scan:complete', { syncedThrough: this.syncedThrough });
-        // Balance events use the chain head, as `balances()` does, so both agree on spendable vs pending.
-        this.emitBalanceUpdates(chainHead);
-        this.emitReceivedNotes();
+        this.events.emit('scan:complete', { syncedThrough: this.syncedThrough });
+        this.emitUpdates(chainHead);
         return { fromBlock, syncedThrough: this.syncedThrough, scanned: true };
       } catch (err) {
         // Cancelled by dispose()/close() (its RPC calls may fail first, on the destroyed provider): no scan:error —
@@ -677,67 +628,20 @@ class ArmadaWallet implements Wallet {
         if (this.disposed || this.ctx.lifecycle.closed) {
           throw err instanceof InstanceClosedError ? err : new InstanceClosedError('sync: cancelled by wallet.dispose() or sdk.close()', { cause: err });
         }
-        this.emitter.emit('scan:error', { error: err instanceof Error ? err : new Error(String(err)) });
+        this.events.emit('scan:error', { error: err instanceof Error ? err : new Error(String(err)) });
         throw err;
       }
     });
   }
 
-  // Push `note:received` for incoming transfers discovered since the last sync (`newReceivedNotes`
-  // handles the classification + `tree:position` de-dup, mutating `seenReceiveKeys`). A wallet with no
-  // saved state seeds the baseline on its first sync WITHOUT emitting, so it doesn't replay history.
-  private emitReceivedNotes(): void {
-    const fresh = newReceivedNotes(
-      this.scanState.ownedTxos(),
-      this.scanState.spentNullifiers(),
-      this.keyset.nullifyingKey,
-      this.seenReceiveKeys,
-    );
-    if (!this.receiveBaselined) {
-      this.receiveBaselined = true;
-      return; // baseline: `seenReceiveKeys` is now seeded; don't emit historical receives on first load
-    }
-    for (const txo of fresh) {
-      const payload = buildReceivedNote(txo, (h) => this.resolveTokenAddress(h));
-      if (payload === undefined) continue; // unregistered token — can't resolve an address
-      this.emitter.emit('note:received', payload);
-    }
-  }
-
-  // Push `balance:updated` for each token whose (spendable, pending) changed since the last emit —
-  // including a token fully spent (drops out of `balances()`, so we emit a zero). Unregistered tokens
-  // (unknown hash → no address) are skipped. First sync after load emits the baseline for held tokens.
-  private emitBalanceUpdates(head: number): void {
+  // Push `balance:updated` for the tokens whose balance changed, then `note:received` for new incoming notes. Balance
+  // events use the chain head, as `balances()` does, so both agree on spendable vs pending.
+  private emitUpdates(chainHead: number): void {
     this.prunePendingSpends();
-    const balances = this.scanState.balances(this.keyset.nullifyingKey, { currentBlock: head, finalityThreshold: this.ctx.config.finalityThreshold }, this.holds.list());
-    const seen = new Set<string>();
-    for (const b of balances) {
-      seen.add(b.tokenHash);
-      const prev = this.lastBalances.get(b.tokenHash);
-      if (prev !== undefined && prev.spendable === b.spendable && prev.pending === b.pending) continue;
-      this.lastBalances.set(b.tokenHash, { spendable: b.spendable, pending: b.pending });
-      this.emitTokenBalance(b.tokenHash, b.spendable, b.pending);
-    }
-    for (const [tokenHash, prev] of this.lastBalances) {
-      if (seen.has(tokenHash) || (prev.spendable === 0n && prev.pending === 0n)) continue;
-      this.lastBalances.set(tokenHash, { spendable: 0n, pending: 0n });
-      this.emitTokenBalance(tokenHash, 0n, 0n);
-    }
-  }
-
-  private emitTokenBalance(tokenHash: string, spendable: bigint, pending: bigint): void {
-    const payload = buildBalanceUpdate(tokenHash, spendable, pending, (h) => this.resolveTokenAddress(h));
-    if (payload === undefined) return; // unregistered token — can't resolve an address to emit
-    this.emitter.emit('balance:updated', payload);
-  }
-
-  // Resolve an owned-note token hash to its registered ERC-20 address, or undefined when the hash
-  // isn't in the SDK's token registry. Shared by `balances()` and the `balance:updated`/`note:received`
-  // emit paths so all three surfaces speak the same hash↔address mapping.
-  private resolveTokenAddress(tokenHash: string): `0x${string}` | undefined {
-    // ERC20 token hashes are self-describing (the hash IS the padded address) — resolve any pool token
-    // directly, no registry (issue #90). Non-ERC20 (NFT) hashes are out of scope and return undefined.
-    return erc20AddressFromHash(tokenHash);
+    this.events.balancesChanged(
+      this.scanState.balances(this.keyset.nullifyingKey, { currentBlock: chainHead, finalityThreshold: this.ctx.config.finalityThreshold }, this.holds.list()),
+    );
+    this.events.notesReceived(this.notes.ownedTxos(), this.notes.spentNullifiers(), this.keyset.nullifyingKey);
   }
 
   async balances(): Promise<TokenBalance[]> {
@@ -745,7 +649,7 @@ class ArmadaWallet implements Wallet {
     this.prunePendingSpends();
     const head = await this.ctx.chainClient.getBlockNumber();
     const raw = this.scanState.balances(this.keyset.nullifyingKey, { currentBlock: head, finalityThreshold: this.ctx.config.finalityThreshold }, this.holds.list());
-    return withTokenAddresses(raw, (h) => this.resolveTokenAddress(h));
+    return withTokenAddresses(raw, resolveTokenAddress);
   }
 
   spendableNullifiers(): readonly { readonly tree: number; readonly nullifier: bigint }[] {
@@ -794,7 +698,7 @@ class ArmadaWallet implements Wallet {
       shieldRelayerFees: this.scanState.shieldRelayerFees(),
       nullifyingKey: this.keyset.nullifyingKey,
       shieldedAddress: this.keyset.shieldedAddress,
-      resolveToken: (h) => this.resolveTokenAddress(h),
+      resolveToken: resolveTokenAddress,
       usdcHash: this.ctx.usdcHash,
       ...(this.ctx.config.yieldAdapterAddress !== undefined ? { yieldAdapterAddress: this.ctx.config.yieldAdapterAddress } : {}),
     });
