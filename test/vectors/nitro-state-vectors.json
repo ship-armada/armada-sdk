@@ -1,0 +1,31 @@
+{
+  "_provenance": {
+    "source": "test/vectors/tools/NitroVectors.s.sol (forge script); run it in an armada-nitro checkout as test/vectors/tools/README.md describes",
+    "contracts": "src/nitro/libraries/NitroUtils.sol (getChannelId, hashState, prefixedHash, recoverSigner), lib/exit-format/contracts/ExitFormat.sol",
+    "armada_nitro_commit": "edc1de96ba81e674dabe3ff737756c261f9996d6",
+    "note": "Values computed by the go-nitro Solidity contracts, not by armada-sdk. src/disclosure/nitro.test.ts recomputes them in TypeScript and asserts equality."
+  },
+  "vectors": [
+    {
+      "amtHub": 400000000,
+      "amtUser": 10000000000,
+      "appData": "0xc0ffee",
+      "appDefinition": "0xdEADbeEF00000000000000000000000000000001",
+      "asset": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      "challengeDuration": 86400,
+      "channelId": "0xd5cdfc0e6f0b964d46d92b5d378eb603063d8c578fc9557fa91e90fa0c4793d1",
+      "channelNonce": 424242,
+      "destHub": "0x0000000000000000000000000376aac07ad725e01357b1725b5cec61ae10473c",
+      "destUser": "0x000000000000000000000000e05fcc23807536bee418f142d19fa0d21bb0cff7",
+      "hub": "0x0376AAc07Ad725E01357B1725B5ceC61aE10473c",
+      "isFinal": false,
+      "sigR": "0x5f197b3038420e3ddc5b7a9e936ff206a3b002264d98e0c8875b4f502f9e8571",
+      "sigS": "0x47f8cbfb1b9a5aeaa56df1c114bf990423bfb3d054c32d7d55cc58c0da21253c",
+      "sigV": 28,
+      "signer": "0xe05fcC23807536bEe418f142D19fa0d21BB0cfF7",
+      "stateHash": "0xadc7278bb33d1a559cf95d865bdac43468442844ff65ca9bf513e403de8e1ce3",
+      "turnNum": 7,
+      "user": "0xe05fcC23807536bEe418f142D19fa0d21BB0cfF7"
+    }
+  ]
+}

@@ -56,6 +56,7 @@ export default withMermaid({
             { text: 'Adapters', link: '/guide/adapters' },
             { text: 'Security', link: '/guide/security' },
             { text: 'Errors', link: '/guide/errors' },
+            { text: 'Selective disclosure', link: '/guide/selective-disclosure' },
           ],
         },
       ],

@@ -3,3 +3,5 @@
 
 export { FilesystemArtifactSource } from './filesystem-artifact-source';
 export type { FilesystemArtifactSourceOptions } from './filesystem-artifact-source';
+// Selective disclosure (ADR-0020) — load the compiled circuit artifacts from a local directory.
+export { loadDisclosureArtifacts } from './disclosure-artifacts';

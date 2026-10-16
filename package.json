@@ -27,6 +27,9 @@
       ],
       "ops": [
         "./dist/ops/index.d.ts"
+      ],
+      "disclosure": [
+        "./dist/disclosure/index.d.ts"
       ]
     }
   },
@@ -99,6 +102,16 @@
       "require": {
         "types": "./dist/internal/index.d.cts",
         "default": "./dist/internal/index.cjs"
+      }
+    },
+    "./disclosure": {
+      "import": {
+        "types": "./dist/disclosure/index.d.ts",
+        "default": "./dist/disclosure/index.js"
+      },
+      "require": {
+        "types": "./dist/disclosure/index.d.cts",
+        "default": "./dist/disclosure/index.cjs"
       }
     }
   },

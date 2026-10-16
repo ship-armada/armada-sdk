@@ -62,6 +62,7 @@ describe('public export surface (#129)', () => {
         './wallet': runtimeNames('wallet/index.cjs'),
         './prover': runtimeNames('prover/index.cjs'),
         './node': runtimeNames('node/index.cjs'),
+        './disclosure': runtimeNames('disclosure/index.cjs'),
       },
       types: {
         '.': typeNames('index.d.ts'),
@@ -69,6 +70,7 @@ describe('public export surface (#129)', () => {
         './wallet': typeNames('wallet/index.d.ts'),
         './prover': typeNames('prover/index.d.ts'),
         './node': typeNames('node/index.d.ts'),
+        './disclosure': typeNames('disclosure/index.d.ts'),
       },
     };
     await expect(`${JSON.stringify(surface, null, 2)}\n`).toMatchFileSnapshot('./__snapshots__/public-surface.json');
