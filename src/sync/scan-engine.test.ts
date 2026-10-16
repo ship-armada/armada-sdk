@@ -1,7 +1,7 @@
 // ABOUTME: Tests for the wallet scan orchestrator (§4.4) — tree routing/root-verify, position-gap
 // ABOUTME: integrity, shield seam, nullifier exclusion, incremental batches, real-crypto TXO detection.
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { initPoseidonPromise, getTokenDataERC20, TransactNote, type TokenData } from '../core/index';
 import { deriveKeyset } from '../wallet/derive';
 import { UTXOMerkletree } from './merkletree';
@@ -381,6 +381,21 @@ describe('wallet scan orchestrator (§4.4)', () => {
   });
 
   describe('clone — a sync builds on an independent copy (#119)', () => {
+    it('copies each tree as it is, without re-inserting (and so rehashing) its leaves (#143)', async () => {
+      // WHY: every sync clones the state. Re-inserting the leaves into an incrementally hashed tree would rehash the
+      // whole tree on every sync.
+      const original = new WalletScanState();
+      await original.apply({ ...noEvents(), transacts: [mkTransact(0, 0, leafHex(80))] }, { transact: async () => undefined });
+      const reinsert = vi.spyOn(UTXOMerkletree.prototype, 'insertMany');
+      try {
+        const copy = original.clone();
+        expect(reinsert).not.toHaveBeenCalled();
+        expect(copy.treeRoot(0)).toBe(original.treeRoot(0));
+      } finally {
+        reinsert.mockRestore();
+      }
+    });
+
     it('applying to the clone leaves the original untouched', async () => {
       const original = new WalletScanState();
       await original.apply({ ...noEvents(), transacts: [mkTransact(0, 0, leafHex(80))] }, { transact: async () => owned(TOKEN, 100n) });

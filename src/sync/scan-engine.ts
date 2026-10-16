@@ -368,15 +368,11 @@ export class WalletScanState {
   /**
    * An independent copy of this state. A sync applies its batch to a copy and replaces the live state
    * only once the copy is verified and saved, so readers never see a half-applied batch and a failed
-   * sync simply discards its copy. Tree hashing is lazy, so this is array copies, not re-hashing.
+   * sync simply discards its copy. Each tree copies its levels as they are, so this is array copies, not re-hashing.
    */
   clone(): WalletScanState {
     const copy = new WalletScanState();
-    for (const [tree, merkletree] of this.trees) {
-      const t = new UTXOMerkletree();
-      t.insertMany(merkletree.getLeaves());
-      copy.trees.set(tree, t);
-    }
+    for (const [tree, merkletree] of this.trees) copy.trees.set(tree, merkletree.clone());
     for (const [tree, next] of this.nextPosition) copy.nextPosition.set(tree, next);
     copy.txos.push(...this.txos);
     copy.spent.push(...this.spent);
