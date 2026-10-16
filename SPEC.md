@@ -195,12 +195,16 @@ existing memo field.
 │  ops/        operation journal, cross-chain lifecycle,     │
 │              sweep scheduler                   (§6.6, §7)  │
 │  wallet/     enrollment, wallet lifecycle, balances,       │
-│              TXO set, importNote, sync orchestration (§4)  │
+│              TXO set, importNote, signers          (§4)    │
 │  tx/         TransactionBatch, ProofHandle, fee binding,   │
-│              preflight, calldata encode/decode (§4.6–4.7)  │
+│              spend planning, prove assembly, preflight,    │
+│              calldata encode/decode            (§4.6–4.7)  │
+│  chain/      RPC client; the instance's chain state and    │
+│              its one sync driver for every wallet (§4.4)   │
 │  prover/     worker-based Groth16, artifact registry (§4.5)│
 │  storage/    versioned, encrypted, env-adapted     (§4.3)  │
-│  sync/       event scan, bisecting RPC, merkle build (§4.4)│
+│  sync/       event scan, bisecting RPC, merkle build,      │
+│              wallet notes and events            (§4.4)     │
 │ ┌──────────────────────────────────────────────────────┐   │
 │ │ core/  — PINNED, vendored from engine 9.5.1 (§2)     │   │
 │ │ keys · notes · poseidon · merkle math · nullifiers   │   │

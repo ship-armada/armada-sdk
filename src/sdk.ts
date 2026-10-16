@@ -6,7 +6,6 @@ import {
   tryDecryptSentCommitment,
   reconstructHistory,
   erc20AddressFromHash,
-  encodeSelfMetadata,
   type SyncEventMap,
   type TXO,
   type Unsubscribe,
@@ -29,7 +28,6 @@ import {
   EncryptedStore,
   deriveWalletStorageKey,
   walletRecordId,
-  planWitnessInputs,
   prove,
   proveAll,
   runPreflight,
@@ -41,7 +39,6 @@ import type { StorageAdapter } from './storage/index';
 import { ScopedStore } from './storage/scoped';
 import { isCrossChainUnshield, type Plan, type PlanSelection, type ProofHandle, type PreflightResult } from './tx/index';
 import { planList } from './tx/plan';
-import type { WitnessOutputRequest } from './tx/witness';
 import {
   deriveKeyset,
   deriveKeysetFromMnemonic,
@@ -85,6 +82,7 @@ import { ChainState, CHAIN_CHUNK_BLOCKS, assertMatchesTree, assertShieldsMatchLe
 import { WalletNotes } from './sync/wallet-notes';
 import { WalletEvents, resolveTokenAddress } from './sync/wallet-events';
 import { SpendPlanner } from './tx/spend-planner';
+import { proveParamsFor } from './tx/prove-assembler';
 import { loadWalletNotes, saveWalletNotes, clearWalletNotes } from './sync/scan-persistence';
 import type { DecodedPoolEvents } from './sync/event-decoder';
 import { startAutoSync } from './sync/auto-sync';
@@ -783,74 +781,9 @@ class ArmadaWallet implements Wallet {
     }
   }
 
-  // The prove() inputs for one plan: its captured witness inputs, fee-first outputs, and the bound params.
+  // The prove() inputs for one plan (see `proveParamsFor`).
   private proveParams(plan: Plan, signer: SpendSigner, options?: ProveOptions): ProveParams {
-    // Use the proofs the plan captured at plan time (NOT a fresh scan-state read) so the path elements
-    // match `plan.merkleRoot` even if a sync advanced the tree since planning (SPEC §4.6).
-    const inputs = planWitnessInputs(plan);
-    // Emit order (Spike 2): broadcaster fee note FIRST, then recipients, then change back to self. Each
-    // output carries its OutputType so sender-side recovery can tell fee/recipient/change apart later.
-    const outputs: WitnessOutputRequest[] = [];
-    if (plan.summary.feeOutput) outputs.push({ receiverAddress: plan.summary.feeOutput.toShieldedAddress, value: plan.summary.feeOutput.value, outputType: OutputType.BroadcasterFee });
-    for (const o of plan.summary.outputs) outputs.push({ receiverAddress: o.toShieldedAddress, value: o.value, outputType: OutputType.Transfer, ...(o.memo !== undefined ? { memo: o.memo } : {}) });
-    if (plan.summary.changeValue > 0n) {
-      // Optionally stash caller metadata in the change note's memo (issue #88 lever 3). The change note
-      // is self-owned, so a fresh scan recovers this on history() even after local storage is cleared.
-      const changeMemo = options?.selfMetadata !== undefined ? encodeSelfMetadata(options.selfMetadata) : undefined;
-      outputs.push({
-        receiverAddress: this.keyset.shieldedAddress,
-        value: plan.summary.changeValue,
-        outputType: OutputType.Change,
-        ...(changeMemo !== undefined ? { memo: changeMemo } : {}),
-      });
-    }
-
-    return {
-      witness: {
-        inputs,
-        outputs,
-        // The spent token comes from the plan (defaults to USDC; e.g. yield-share token on redeem).
-        tokenAddress: plan.summary.tokenAddress,
-        sender: {
-          masterPublicKey: this.keyset.masterPublicKey,
-          viewingPublicKey: this.keyset.viewingPublicKey,
-          viewingPrivateKey: this.keyset.viewingPrivateKey,
-          nullifyingKey: this.keyset.nullifyingKey,
-          spendingPublicKey: this.keyset.spendingPublicKey,
-          senderAddress: this.keyset.shieldedAddress,
-        },
-        signer,
-        summary: plan.summary,
-        merkleRoot: plan.merkleRoot,
-        treeNumber: plan.boundParams.treeNumber,
-        chainType: ChainType.EVM,
-        chainId: this.ctx.config.chainId,
-        unshield: plan.boundParams.unshield,
-        // adaptContract/adaptParams are SNARK public inputs (bound-params hash + spend signature);
-        // pass the plan's values so a cross-chain unshield's CCTP binding is committed by the proof.
-        adaptContract: plan.boundParams.adaptContract,
-        adaptParams: plan.boundParams.adaptParams,
-        // Decoded CCTP binding (inspection-only) so the signer sees the destination it authorizes (§4.2.1).
-        ...(plan.boundParams.decodedAdaptParams ? { decodedAdaptParams: plan.boundParams.decodedAdaptParams } : {}),
-        ...(plan.summary.unshield ? { unshieldOutput: plan.summary.unshield } : {}),
-      },
-      artifacts: this.ctx.artifacts,
-      prover: this.ctx.prover,
-      poolAddress: this.ctx.config.poolAddress,
-      ...(options?.expiresAt !== undefined ? { expiresAt: options.expiresAt } : {}),
-      // The public unshield preimage the contract pays out on (npk = recipient EVM address).
-      ...(plan.summary.unshield
-        ? {
-            unshieldPreimage: {
-              npk: BigInt(plan.summary.unshield.recipient),
-              tokenType: 0,
-              tokenAddress: plan.summary.tokenAddress,
-              tokenSubID: 0n,
-              value: plan.summary.unshield.value,
-            },
-          }
-        : {}),
-    };
+    return proveParamsFor(plan, this.keyset, signer, this.ctx.config, this.ctx, options);
   }
 
   async markSpendPending(plan: Plan | readonly Plan[], txid: string): Promise<void> {

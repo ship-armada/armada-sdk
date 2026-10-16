@@ -10,7 +10,6 @@ import { MemoryStorageAdapter } from '../storage/index';
 import { InvalidRequestError } from '../errors';
 import { deriveKeyset } from '../wallet/derive';
 import type { TXO } from '../sync/balances';
-import type { ArmadaSdkConfig } from '../index';
 import type { ProverAdapter, ArtifactSource } from '../prover/index';
 
 const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' as const;
@@ -18,9 +17,9 @@ const POOL = `0x${'11'.repeat(20)}` as const;
 
 const leaf = (n: number): string => poseidon([BigInt(n)]).toString(16).padStart(64, '0');
 
-function config(pool: Partial<ArmadaSdkConfig['pool']> = {}): ResolvedConfig {
+function config(withShapes: boolean): ResolvedConfig {
   return resolveConfig({
-    pool: { chainId: 31337, poolAddress: POOL, deployBlock: 1, usdcAddress: USDC, supportedShapes: ['1x2', '2x2', '2x3'], ...pool },
+    pool: { chainId: 31337, poolAddress: POOL, deployBlock: 1, usdcAddress: USDC, ...(withShapes ? { supportedShapes: ['1x2', '2x2', '2x3'] } : {}) },
     rpc: { urls: ['http://127.0.0.1:8545'] },
     storage: new MemoryStorageAdapter(),
     prover: {} as ProverAdapter,
@@ -49,10 +48,10 @@ beforeAll(async () => {
 });
 
 describe('SpendPlanner (F1, #143)', () => {
-  function planner(pool: Partial<ArmadaSdkConfig['pool']> = {}): { planner: SpendPlanner; tree: TreeStore } {
+  function planner(withShapes = true): { planner: SpendPlanner; tree: TreeStore } {
     const tree = new TreeStore();
     for (let i = 0; i < 4; i += 1) tree.insertLeaf(0, i, leaf(i + 1));
-    return { planner: new SpendPlanner(config(pool), tree), tree };
+    return { planner: new SpendPlanner(config(withShapes), tree), tree };
   }
 
   it('binds the current root and captures each input\'s merkle proof from the same trees', () => {
@@ -75,7 +74,7 @@ describe('SpendPlanner (F1, #143)', () => {
   });
 
   it('needs pool.supportedShapes to consolidate', () => {
-    const { planner: p } = planner({ supportedShapes: undefined });
+    const { planner: p } = planner(false);
     expect(() => p.consolidate({}, [note(0, 1n), note(1, 1n)])).toThrow(/supportedShapes is required/);
   });
 });
