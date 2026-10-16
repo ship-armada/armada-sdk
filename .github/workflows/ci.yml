@@ -25,7 +25,8 @@ jobs:
       - run: npm test
       - name: PPOI strip guard (no proof-of-innocence code in src/ or vendor/)
         run: |
-          if grep -rn 'POI' src/ vendor/ | grep -v 'POINTS'; then
+          # POI not followed by NT, so POINT/POINTS/CHECKPOINT don't trip it.
+          if grep -rnP 'POI(?!NT)' src/ vendor/; then
             echo "::error::PPOI reference found in src/ or vendor/ — must be stripped (SPEC §3.5)"; exit 1
           fi
       - name: Vendored files that diverge from upstream are marked (SPEC §3.4)

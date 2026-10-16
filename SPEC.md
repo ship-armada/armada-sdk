@@ -280,8 +280,9 @@ them entirely — no POI code exists to stub:
   flag or `preTransactionPOIsPerTxidLeafPerList` return on transaction generation; no POI
   status fields in TXO storage records; the balance model collapses from Railgun's
   `WalletBalanceBucket` POI buckets to a simple spendable/pending model.
-- **Guard:** Phase 1 acceptance includes `rg "POI" src/ vendor/` (case-sensitive — POI is
-  uppercase in all upstream identifiers) returning nothing in the SDK repo.
+- **Guard:** Phase 1 acceptance includes `rg --pcre2 "POI(?!NT)" src/ vendor/` (case-sensitive —
+  POI is uppercase in all upstream identifiers; not followed by `NT`, so words like `CHECKPOINT`
+  don't match) returning nothing in the SDK repo. CI runs the same check.
 - **Rationale:** PPOI is Railgun-network compliance infrastructure; nothing in Armada's
   contracts or circuits consumes POI data, and Armada's compliance story is voluntary
   selective disclosure (§5.3). Note: the 9.5.4 upstream fix titled "POI spentTXO filtering by
