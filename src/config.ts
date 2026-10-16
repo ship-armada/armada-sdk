@@ -1,5 +1,5 @@
-// ABOUTME: Static validation of an ArmadaSdkConfig at createArmadaSdk (#121) — malformed URLs, addresses, block
-// ABOUTME: numbers, TTLs, and circuit shapes fail fast with InvalidConfigError, with no network access.
+// ABOUTME: Validates an ArmadaSdkConfig with no network access (#121) and resolves it (F1, #143): every default applied
+// ABOUTME: in one place, so the rest of the SDK reads settled values. Bad input throws InvalidConfigError.
 
 import { InvalidConfigError } from './errors';
 import type { ArmadaSdkConfig } from './index';
@@ -61,4 +61,59 @@ export function validateConfig(config: ArmadaSdkConfig): void {
   for (const shape of pool.supportedShapes ?? []) {
     if (!SHAPE.test(shape)) fail(`pool.supportedShapes entries must look like "2x3", got ${JSON.stringify(shape)}`);
   }
+}
+
+/**
+ * The settings the SDK runs on: a validated `ArmadaSdkConfig` with every default applied. The adapters (storage,
+ * prover, artifacts, telemetry) stay on the config; this carries only values.
+ */
+export interface ResolvedConfig {
+  readonly chainId: number;
+  readonly poolAddress: `0x${string}`;
+  readonly usdcAddress: `0x${string}`;
+  /** Pool deploy block — where every wallet's scan (and merkle tree) starts. */
+  readonly deployBlock: number;
+  readonly rpcUrls: readonly string[];
+  readonly indexer?: { readonly url: string; readonly fetchFn?: typeof fetch };
+  /** Confirmations before a commitment is spendable vs pending in the balance view (default 0). */
+  readonly finalityThreshold: number;
+  /** Blocks to stay behind head when scanning — reorg safety (default 0). */
+  readonly confirmationDepth: number;
+  /** TTL (ms) for optimistic in-flight spend holds before auto-release (issue #55; default 300000). */
+  readonly pendingSpendTtlMs: number;
+  /** Default cadence (ms) for `wallet.watch()` auto-sync (issue #59; default 10000). */
+  readonly autoSyncIntervalMs: number;
+  /** Spendable-note count from which single-proof spends sweep the tree's smallest notes (issue #108; default 5, 0 = off). */
+  readonly sweepNoteThreshold: number;
+  /** Circuit shapes the deployment can prove — plan-time fail-fast set, or undefined to skip the check. */
+  readonly supportedShapes: ReadonlySet<string> | undefined;
+  /** Yield adapter address (lowercased), when configured — an unshield to it marks a yield op. */
+  readonly yieldAdapterAddress?: string;
+  /** CCTP messenger address, when configured — preflight checks its liveness for cross-chain plans. */
+  readonly cctpMessenger?: `0x${string}`;
+  /** When true, wallets persist through the raw adapter unencrypted — the §4.3 escape hatch. */
+  readonly allowPlaintextStorage: boolean;
+}
+
+/** Validate `config` (see `validateConfig`) and apply every default. */
+export function resolveConfig(config: ArmadaSdkConfig): ResolvedConfig {
+  validateConfig(config);
+  const { pool } = config;
+  return {
+    chainId: pool.chainId,
+    poolAddress: pool.poolAddress,
+    usdcAddress: pool.usdcAddress,
+    deployBlock: pool.deployBlock,
+    rpcUrls: [...config.rpc.urls],
+    ...(config.indexer !== undefined ? { indexer: config.indexer } : {}),
+    finalityThreshold: pool.finalityThreshold ?? 0,
+    confirmationDepth: pool.confirmationDepth ?? 0,
+    pendingSpendTtlMs: pool.pendingSpendTtlMs ?? 300_000,
+    autoSyncIntervalMs: pool.autoSyncIntervalMs ?? 10_000,
+    sweepNoteThreshold: pool.sweepNoteThreshold ?? 5,
+    supportedShapes: pool.supportedShapes !== undefined ? new Set(pool.supportedShapes) : undefined,
+    ...(pool.wrappers?.yieldAdapter !== undefined ? { yieldAdapterAddress: pool.wrappers.yieldAdapter.toLowerCase() } : {}),
+    ...(pool.cctp?.messenger !== undefined ? { cctpMessenger: pool.cctp.messenger } : {}),
+    allowPlaintextStorage: config.dangerouslyAllowPlaintextStorage === true,
+  };
 }

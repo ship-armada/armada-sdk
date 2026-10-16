@@ -1,7 +1,6 @@
-// ABOUTME: createArmadaSdk instance (SPEC §4.1) — composes provider + sync + prover + tx + wallet into a
+// ABOUTME: createArmadaSdk instance (SPEC §4.1) — composes chain client + sync + prover + tx + wallet into a
 // ABOUTME: per-instance handle (no singletons). Wallets sync from RPC, report balances, plan, and prove.
 
-import { JsonRpcProvider, FallbackProvider, Interface, type Provider } from 'ethers';
 import {
   tryDecryptCommitment,
   tryDecryptSentCommitment,
@@ -34,7 +33,6 @@ import {
   savePendingSpends,
   tokenHashKey,
   withTokenAddresses,
-  POOL_V2_EVENT_ABI,
   EncryptedStore,
   deriveWalletStorageKey,
   walletRecordId,
@@ -45,7 +43,6 @@ import {
   runPreflight,
   type EventSource,
   type WalletDecryptors,
-  type ParsedPoolLog,
   type ProveParams,
 } from './internal/index';
 import type { StorageAdapter } from './storage/index';
@@ -90,75 +87,42 @@ import {
   NoSpendCapabilityError,
   RootMismatchError,
   InvalidRequestError,
-  InvalidConfigError,
   QuickSyncSchemaError,
   SignerContractViolationError,
   InstanceClosedError,
 } from './errors';
-import { validateConfig } from './config';
+import { resolveConfig, type ResolvedConfig } from './config';
+import { ChainClient } from './chain/client';
 import { startAutoSync } from './sync/auto-sync';
 import type { ArmadaSdk, ArmadaSdkConfig, ReorgRecoveryReason, TelemetrySink } from './index';
 
 // Per-instance shared context handed to each wallet.
 interface SdkContext {
-  readonly provider: Provider;
+  /** The validated config with every default applied. */
+  readonly config: ResolvedConfig;
+  /**
+   * The RPC: the chain/pool check, pool logs and view reads, block hashes/timestamps. Its `ensureChain()` is awaited
+   * before any sync or preflight, so no checkpoint from the wrong chain is ever saved.
+   */
+  readonly chainClient: ChainClient;
   /** Primary event source — the indexer when configured, else the RPC source. */
   readonly eventSource: EventSource;
   /** Always the RPC source: covers any tail the indexer lags, and is the verification fallback. */
   readonly rpcEventSource: RpcEventSource;
-  /** Sync root-verify + preflight (§4.4/§4.7): is `root` a member of the pool's accepted history for `treeNumber`? */
-  readonly isKnownRoot: (treeNumber: number, root: bigint) => Promise<boolean>;
-  /** Preflight (§4.7): has `(treeNumber, nullifier)` already been spent on-chain? */
-  readonly isNullifierSpent: (treeNumber: number, nullifier: bigint) => Promise<boolean>;
-  /**
-   * Resolves once the RPC is confirmed to serve `pool.chainId` and `pool.poolAddress` has code (checked once
-   * per instance; a transient RPC failure is retried next call). Rejects with `InvalidConfigError` on a
-   * mismatch. Awaited before any sync or preflight, so no checkpoint from the wrong chain is ever saved.
-   */
-  readonly ensureChain: () => Promise<void>;
-  /** Reorg check (§4.4): the chain's current hash for block `n`, or undefined if the node doesn't return it. */
-  readonly getBlockHash: (n: number) => Promise<string | undefined>;
-  /** Sync verification (§4.4): the pool's current tree number, root, and leaf count as of `blockTag`. */
-  readonly readPoolTree: (
-    blockTag: string | number,
-  ) => Promise<{ treeNumber: number; merkleRoot: bigint; nextLeafIndex: number }>;
   readonly tokenDataGetter: TokenDataGetter;
   readonly chain: Chain;
-  readonly chainId: number;
-  readonly usdcAddress: `0x${string}`;
-  /** Pool deploy block — where every wallet's scan (and merkle tree) starts; a wallet's creationBlock only bounds note discovery. */
-  readonly deployBlock: number;
-  /** Confirmations before a commitment is spendable vs pending in the balance view (default 0). */
-  readonly finalityThreshold: number;
-  /** Blocks to stay behind head when scanning — reorg safety (default 0). */
-  readonly confirmationDepth: number;
-  /** TTL (ms) for optimistic in-flight spend holds before auto-release (issue #55; default 300000). */
-  readonly pendingSpendTtlMs: number;
-  /** Default cadence (ms) for `wallet.watch()` auto-sync (issue #59; default 10000, matching stock). */
-  readonly autoSyncIntervalMs: number;
   /** Active `wallet.watch()` stop functions for this SDK instance — stopped on `close()`. */
   readonly watchers: Set<() => void>;
   /** Every wallet the instance has handed out and not yet disposed — `close()` disposes them. */
   readonly wallets: Set<ArmadaWallet>;
   /** Set once `close()` starts; from then on the factory refuses new wallets. */
   readonly lifecycle: { closed: boolean };
-  /** Circuit shapes the deployment can prove — plan-time fail-fast set, or undefined to skip the check. */
-  readonly supportedShapes: ReadonlySet<string> | undefined;
-  /** Spendable-note count from which single-proof spends sweep the tree's smallest notes (issue #108; default 5, 0 = off). */
-  readonly sweepNoteThreshold: number;
   /** Canonical 32-byte hash (no 0x) of USDC — maps owned-note token hashes back to the address. */
   readonly usdcHash: string;
-  /** Yield adapter address (lowercased), when configured — an unshield to it marks a yield op. */
-  readonly yieldAdapterAddress?: string;
-  /** CCTP messenger address, when configured — preflight checks its liveness for cross-chain plans. */
-  readonly cctpMessenger?: `0x${string}`;
-  readonly poolAddress: `0x${string}`;
   readonly prover: ProverAdapter;
   readonly artifacts: ArtifactSource;
   /** Raw environment adapter (already opened). Per-wallet stores wrap this with at-rest encryption. */
   readonly storage: StorageAdapter;
-  /** When true, wallets persist through the raw adapter unencrypted — the §4.3 escape hatch. */
-  readonly allowPlaintextStorage: boolean;
   /**
    * Optional operational telemetry sink (SPEC §8), wrapped by `safeTelemetry` — a consumer's sink that throws
    * can never affect the SDK.
@@ -457,9 +421,9 @@ class ArmadaWallet implements Wallet {
     // The tree is always built from the pool's deploy block: it is append-only from leaf 0, so starting
     // later would hit the first earlier commitment as a position gap. `creationBlock` only limits which
     // notes the wallet looks for (see `decryptors`).
-    this.syncedThrough = ctx.deployBlock - 1;
+    this.syncedThrough = ctx.config.deployBlock - 1;
     // This wallet's own scope of the shared adapter, encrypted at rest by default (§4.3).
-    this.storage = resolveWalletStorage(ctx.storage, keyset.viewingPrivateKey, ctx.allowPlaintextStorage);
+    this.storage = resolveWalletStorage(ctx.storage, keyset.viewingPrivateKey, ctx.config.allowPlaintextStorage);
     this.signer = attached?.signer;
     this.ownsSigner = attached?.owned === true;
     ctx.wallets.add(this);
@@ -620,7 +584,7 @@ class ArmadaWallet implements Wallet {
       trees.map(async (tree) => {
         const computed = state.treeRoot(tree);
         const root = BigInt(computed.startsWith('0x') ? computed : `0x${computed}`);
-        if (!(await this.ctx.isKnownRoot(tree, root))) {
+        if (!(await this.ctx.chainClient.isKnownRoot(tree, root))) {
           throw new RootMismatchError(`sync: tree ${tree} root ${computed} not in pool rootHistory @block ${head}`);
         }
       }),
@@ -637,7 +601,7 @@ class ArmadaWallet implements Wallet {
    */
   private async verifySyncedTree(state: WalletScanState, head: number, blockTag: string | number): Promise<void> {
     await this.verifyRoots(state, head);
-    const pool = await this.ctx.readPoolTree(blockTag);
+    const pool = await this.ctx.chainClient.readPoolTree(blockTag);
     const localRoot = BigInt(`0x${state.treeRoot(pool.treeNumber)}`);
     const localLeaves = state.treeLength(pool.treeNumber);
     const aheadOfPool = state.treeNumbers().some((tree) => tree > pool.treeNumber);
@@ -657,7 +621,7 @@ class ArmadaWallet implements Wallet {
    */
   private async checkpointReorged(): Promise<boolean> {
     if (this.syncedThroughHash === undefined) return false;
-    const canonical = await this.ctx.getBlockHash(this.syncedThrough);
+    const canonical = await this.ctx.chainClient.getBlockHash(this.syncedThrough);
     return canonical !== undefined && canonical !== this.syncedThroughHash;
   }
 
@@ -670,7 +634,7 @@ class ArmadaWallet implements Wallet {
     reason: ReorgRecoveryReason,
   ): Promise<{ fromBlock: number; syncedThrough: number; scanned: boolean }> {
     this.assertUsable();
-    this.ctx.telemetry?.emit('sync.reorg-recovery', { fromBlock: this.ctx.deployBlock, reason });
+    this.ctx.telemetry?.emit('sync.reorg-recovery', { fromBlock: this.ctx.config.deployBlock, reason });
     await this.resetChainDerivedState();
     return this.runSync(true);
   }
@@ -685,7 +649,7 @@ class ArmadaWallet implements Wallet {
     if (this.watchStop !== undefined) {
       throw new InvalidRequestError('watch: this wallet is already watching (stop the existing watcher first)');
     }
-    const intervalMs = options?.intervalMs ?? this.ctx.autoSyncIntervalMs;
+    const intervalMs = options?.intervalMs ?? this.ctx.config.autoSyncIntervalMs;
     const stop = startAutoSync(() => this.sync(), {
       intervalMs,
       ...(options?.immediate !== undefined ? { immediate: options.immediate } : {}),
@@ -726,7 +690,7 @@ class ArmadaWallet implements Wallet {
 
   private async runSync(recovering = false): Promise<{ fromBlock: number; syncedThrough: number; scanned: boolean }> {
     // Never scan (and so never save a checkpoint) from an RPC that doesn't serve the configured chain/pool.
-    await this.ctx.ensureChain();
+    await this.ctx.chainClient.ensureChain();
     // A reorg under the checkpoint (SPEC §4.4) invalidates the persisted tree — the append-only tree can't
     // un-append an orphaned leaf — so rescan. Checked before the head comparison below: a same-height
     // reorg leaves the head unchanged but still replaces the checkpoint block.
@@ -734,14 +698,14 @@ class ArmadaWallet implements Wallet {
     // Scan only to head − confirmationDepth so a reorg of that depth or shallower can't remove a leaf we
     // already persisted (§4.4 reorg safety); `confirmationDepth: 0` (default) scans to head. A deeper
     // reorg is caught by the checkpoint hash check above.
-    const chainHead = await this.ctx.provider.getBlockNumber();
-    const head = effectiveScanHead(chainHead, this.ctx.confirmationDepth);
+    const chainHead = await this.ctx.chainClient.getBlockNumber();
+    const head = effectiveScanHead(chainHead, this.ctx.config.confirmationDepth);
     const { fromBlock, scanned } = planSyncWindow(this.syncedThrough, head);
     if (!scanned) return { fromBlock, syncedThrough: this.syncedThrough, scanned: false };
     // Pin verification to the exact block scanned — by hash when the node returns it — so the pool state
     // the tree is checked against is the state the logs came from; a reorg of `head` mid-sync makes the
     // pinned read fail instead of verifying against a different chain.
-    const headHash = await this.ctx.getBlockHash(head);
+    const headHash = await this.ctx.chainClient.getBlockHash(head);
     const blockTag = headHash ?? head;
 
     const from = fromBlock;
@@ -854,7 +818,7 @@ class ArmadaWallet implements Wallet {
    */
   private async resetChainDerivedState(): Promise<void> {
     this.scanState = new WalletScanState();
-    this.syncedThrough = this.ctx.deployBlock - 1;
+    this.syncedThrough = this.ctx.config.deployBlock - 1;
     this.syncedThroughHash = undefined;
     this.lastBalances.clear();
     this.seenReceiveKeys.clear();
@@ -889,7 +853,7 @@ class ArmadaWallet implements Wallet {
   // (unknown hash → no address) are skipped. First sync after load emits the baseline for held tokens.
   private emitBalanceUpdates(head: number): void {
     this.prunePendingSpends();
-    const balances = this.scanState.balances(this.keyset.nullifyingKey, { currentBlock: head, finalityThreshold: this.ctx.finalityThreshold }, this.holds.list());
+    const balances = this.scanState.balances(this.keyset.nullifyingKey, { currentBlock: head, finalityThreshold: this.ctx.config.finalityThreshold }, this.holds.list());
     const seen = new Set<string>();
     for (const b of balances) {
       seen.add(b.tokenHash);
@@ -923,8 +887,8 @@ class ArmadaWallet implements Wallet {
   async balances(): Promise<TokenBalance[]> {
     this.assertUsable();
     this.prunePendingSpends();
-    const head = await this.ctx.provider.getBlockNumber();
-    const raw = this.scanState.balances(this.keyset.nullifyingKey, { currentBlock: head, finalityThreshold: this.ctx.finalityThreshold }, this.holds.list());
+    const head = await this.ctx.chainClient.getBlockNumber();
+    const raw = this.scanState.balances(this.keyset.nullifyingKey, { currentBlock: head, finalityThreshold: this.ctx.config.finalityThreshold }, this.holds.list());
     return withTokenAddresses(raw, (h) => this.resolveTokenAddress(h));
   }
 
@@ -941,20 +905,23 @@ class ArmadaWallet implements Wallet {
     // note may already be spent on-chain, and (if a deadline is given) the fee quote must still be usable —
     // turning the 30-second-proof-then-revert failure into a typed finding. Nullifiers are derived from
     // THIS plan's selected inputs (not the whole wallet), so it works view-only too.
-    await this.ctx.ensureChain();
+    await this.ctx.chainClient.ensureChain();
     const plans = planList(plan);
     const nullifiers = this.planNullifiers(plans);
     // Cross-chain unshield (a CCTP adaptParams binding) → add a messenger-liveness check when configured.
-    const messenger = this.ctx.cctpMessenger;
-    const isCrossChain = plans.some((p) => isCrossChainUnshield(p.boundParams, this.ctx.yieldAdapterAddress));
+    const messenger = this.ctx.config.cctpMessenger;
+    const isCrossChain = plans.some((p) => isCrossChainUnshield(p.boundParams, this.ctx.config.yieldAdapterAddress));
     const cctpLiveness =
       isCrossChain && messenger !== undefined
-        ? async (): Promise<boolean> => (await this.ctx.provider.getCode(messenger)) !== '0x'
+        ? (): Promise<boolean> => this.ctx.chainClient.hasCode(messenger)
         : undefined;
     return runPreflight({
       plan,
       nullifiers,
-      queries: { isKnownRoot: this.ctx.isKnownRoot, isNullifierSpent: this.ctx.isNullifierSpent },
+      queries: {
+        isKnownRoot: (tree, root) => this.ctx.chainClient.isKnownRoot(tree, root),
+        isNullifierSpent: (tree, nullifier) => this.ctx.chainClient.isNullifierSpent(tree, nullifier),
+      },
       ...(options?.quoteDeadline !== undefined ? { quoteDeadline: options.quoteDeadline } : {}),
       ...(cctpLiveness !== undefined ? { cctpLiveness } : {}),
       now: Date.now(),
@@ -973,7 +940,7 @@ class ArmadaWallet implements Wallet {
       shieldedAddress: this.keyset.shieldedAddress,
       resolveToken: (h) => this.resolveTokenAddress(h),
       usdcHash: this.ctx.usdcHash,
-      ...(this.ctx.yieldAdapterAddress !== undefined ? { yieldAdapterAddress: this.ctx.yieldAdapterAddress } : {}),
+      ...(this.ctx.config.yieldAdapterAddress !== undefined ? { yieldAdapterAddress: this.ctx.config.yieldAdapterAddress } : {}),
     });
     if (options?.sinceBlock !== undefined) {
       const since = options.sinceBlock;
@@ -987,8 +954,8 @@ class ArmadaWallet implements Wallet {
       const chunk = distinctBlocks.slice(i, i + HISTORY_BLOCK_CONCURRENCY);
       await Promise.all(
         chunk.map(async (b) => {
-          const block = await this.ctx.provider.getBlock(b);
-          if (block !== null) times.set(b, block.timestamp);
+          const timestamp = await this.ctx.chainClient.getBlockTimestamp(b);
+          if (timestamp !== undefined) times.set(b, timestamp);
         }),
       );
     }
@@ -1054,7 +1021,7 @@ class ArmadaWallet implements Wallet {
   async consolidate(request: ConsolidateRequest): Promise<Plan[]> {
     this.assertUsable();
     if (!this.canSpend) throw new NoSpendCapabilityError('consolidate: wallet has no SpendSigner');
-    const supportedShapes = this.ctx.supportedShapes;
+    const supportedShapes = this.ctx.config.supportedShapes;
     if (supportedShapes === undefined) {
       throw new InvalidRequestError('consolidate: pool.supportedShapes is required (it sizes the merge groups)');
     }
@@ -1066,19 +1033,19 @@ class ArmadaWallet implements Wallet {
     return this.withMerkleProofs(
       planConsolidate({
         txos,
-        tokenAddress: request.tokenAddress ?? this.ctx.usdcAddress,
+        tokenAddress: request.tokenAddress ?? this.ctx.config.usdcAddress,
         ...(fee !== undefined && fee.perProof > 0n
           ? {
               fee: {
                 broadcasterShieldedAddress: fee.broadcasterShieldedAddress,
                 value: fee.perProof,
-                tokenAddress: this.ctx.usdcAddress,
+                tokenAddress: this.ctx.config.usdcAddress,
               },
             }
           : {}),
         roots: this.rootsFor(txos),
         currentTree: this.currentTree(),
-        chainID: BigInt(this.ctx.chainId),
+        chainID: BigInt(this.ctx.config.chainId),
         supportedShapes,
       }),
     );
@@ -1116,7 +1083,7 @@ class ArmadaWallet implements Wallet {
       (unshield.adaptParams !== undefined &&
         isCrossChainUnshield(
           { adaptContract: unshield.adaptContract ?? `0x${'00'.repeat(20)}`, adaptParams: unshield.adaptParams },
-          this.ctx.yieldAdapterAddress,
+          this.ctx.config.yieldAdapterAddress,
         ));
     if (!crossChain) return;
     if (unshield.adaptBinding === undefined) {
@@ -1125,10 +1092,10 @@ class ArmadaWallet implements Wallet {
     if (unshield.adaptContract !== undefined && BigInt(unshield.adaptContract) !== 0n) {
       throw new InvalidRequestError('cross-chain unshield: must not name an adaptContract (the pool rejects it)');
     }
-    if ((request.tokenAddress ?? this.ctx.usdcAddress).toLowerCase() !== this.ctx.usdcAddress.toLowerCase()) {
+    if ((request.tokenAddress ?? this.ctx.config.usdcAddress).toLowerCase() !== this.ctx.config.usdcAddress.toLowerCase()) {
       throw new InvalidRequestError('cross-chain unshield: must spend USDC (CCTP bridges USDC only)');
     }
-    if (unshield.recipient.toLowerCase() !== this.ctx.poolAddress.toLowerCase()) {
+    if (unshield.recipient.toLowerCase() !== this.ctx.config.poolAddress.toLowerCase()) {
       throw new InvalidRequestError(
         'cross-chain unshield: must pay the pool (unshield.recipient is the pool address; the final recipient is in the CCTP binding)',
       );
@@ -1142,7 +1109,7 @@ class ArmadaWallet implements Wallet {
    */
   private assertUsdcFee(request: PlanTransferRequest): void {
     if (request.fee === undefined || request.fee.perProof <= 0n) return;
-    if ((request.tokenAddress ?? this.ctx.usdcAddress).toLowerCase() === this.ctx.usdcAddress.toLowerCase()) return;
+    if ((request.tokenAddress ?? this.ctx.config.usdcAddress).toLowerCase() === this.ctx.config.usdcAddress.toLowerCase()) return;
     throw new InvalidRequestError(
       'a non-USDC spend can\'t carry an in-proof fee: the fee note is paid in the spent token and the relayer only ' +
         'counts USDC. A yield redeem pays its fee contract-side (omit `fee`); merge non-USDC notes with consolidate, ' +
@@ -1160,7 +1127,7 @@ class ArmadaWallet implements Wallet {
     return {
       txos,
       // Defaults to USDC; a caller can spend any pool token (e.g. yield vault shares on redeem).
-      tokenAddress: request.tokenAddress ?? this.ctx.usdcAddress,
+      tokenAddress: request.tokenAddress ?? this.ctx.config.usdcAddress,
       outputs: request.outputs.map((o) => ({ toShieldedAddress: o.to0zk, value: o.amount, ...(o.memo !== undefined ? { memo: o.memo } : {}) })),
       ...(fee !== undefined && fee.perProof > 0n ? { fee: { broadcasterShieldedAddress: fee.broadcasterShieldedAddress, value: fee.perProof } } : {}),
       ...(request.unshield
@@ -1175,9 +1142,9 @@ class ArmadaWallet implements Wallet {
           }
         : {}),
       roots,
-      chainID: BigInt(this.ctx.chainId),
-      ...(this.ctx.supportedShapes !== undefined ? { supportedShapes: this.ctx.supportedShapes } : {}),
-      sweepNoteThreshold: this.ctx.sweepNoteThreshold,
+      chainID: BigInt(this.ctx.config.chainId),
+      ...(this.ctx.config.supportedShapes !== undefined ? { supportedShapes: this.ctx.config.supportedShapes } : {}),
+      sweepNoteThreshold: this.ctx.config.sweepNoteThreshold,
     };
   }
 
@@ -1271,7 +1238,7 @@ class ArmadaWallet implements Wallet {
         merkleRoot: plan.merkleRoot,
         treeNumber: plan.boundParams.treeNumber,
         chainType: ChainType.EVM,
-        chainId: this.ctx.chainId,
+        chainId: this.ctx.config.chainId,
         unshield: plan.boundParams.unshield,
         // adaptContract/adaptParams are SNARK public inputs (bound-params hash + spend signature);
         // pass the plan's values so a cross-chain unshield's CCTP binding is committed by the proof.
@@ -1283,7 +1250,7 @@ class ArmadaWallet implements Wallet {
       },
       artifacts: this.ctx.artifacts,
       prover: this.ctx.prover,
-      poolAddress: this.ctx.poolAddress,
+      poolAddress: this.ctx.config.poolAddress,
       ...(options?.expiresAt !== undefined ? { expiresAt: options.expiresAt } : {}),
       // The public unshield preimage the contract pays out on (npk = recipient EVM address).
       ...(plan.summary.unshield
@@ -1337,7 +1304,7 @@ class ArmadaWallet implements Wallet {
   private prunePendingSpends(): void {
     // In memory only: the saved record is pruned by the same TTL whenever it's loaded, and rewritten on
     // the next hold change.
-    this.holds.prune(Date.now() - this.ctx.pendingSpendTtlMs);
+    this.holds.prune(Date.now() - this.ctx.config.pendingSpendTtlMs);
   }
 
   shareViewingKey(): string {
@@ -1384,56 +1351,20 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
   await Promise.all([initPoseidonPromise, initCurve25519Promise]);
 
   // Fail fast on a malformed config (no network) — before opening storage or dialing anything.
-  validateConfig(config);
+  const resolved = resolveConfig(config);
   const telemetry = safeTelemetry(config.telemetry);
 
   // Namespace the store by (schema, chain, pool, deployBlock); a mismatch resets chain-derived state.
-  const { reset } = await config.storage.open({ schemaVersion: STORAGE_SCHEMA_VERSION, chainId: config.pool.chainId, poolAddress: config.pool.poolAddress, deployBlock: config.pool.deployBlock });
+  const { reset } = await config.storage.open({ schemaVersion: STORAGE_SCHEMA_VERSION, chainId: resolved.chainId, poolAddress: resolved.poolAddress, deployBlock: resolved.deployBlock });
   if (reset) {
     // Surface redeploy resets so an operator can see chain-derived state being wiped (SPEC §8-safe:
     // public chain config only, no keys/addresses/amounts).
-    telemetry?.emit('storage.chain-reset', { chainId: config.pool.chainId, deployBlock: config.pool.deployBlock });
+    telemetry?.emit('storage.chain-reset', { chainId: resolved.chainId, deployBlock: resolved.deployBlock });
   }
 
-  // Several URLs fail over (quorum 1): ethers' default quorum of ceil(n/2) makes one node lagging near head
-  // fail getLogs/call outright instead of falling through to a healthy one.
-  const provider: Provider =
-    config.rpc.urls.length > 1
-      ? new FallbackProvider(config.rpc.urls.map((u) => new JsonRpcProvider(u)), undefined, { quorum: 1 })
-      : new JsonRpcProvider(config.rpc.urls[0]);
+  const chainClient = ChainClient.fromRpcUrls(resolved.rpcUrls, { chainId: resolved.chainId, poolAddress: resolved.poolAddress });
 
-  // Checked lazily (creating an SDK stays offline-capable) and once per instance. A failed RPC read isn't
-  // remembered — only a confirmed match is — so a transient outage is retried on the next sync/preflight.
-  let chainConfirmed: Promise<void> | undefined;
-  const ensureChain = (): Promise<void> => {
-    chainConfirmed ??= (async () => {
-      const network = await provider.getNetwork();
-      if (Number(network.chainId) !== config.pool.chainId) {
-        throw new InvalidConfigError(`rpc serves chain ${network.chainId}, but pool.chainId is ${config.pool.chainId}`);
-      }
-      if ((await provider.getCode(config.pool.poolAddress)) === '0x') {
-        throw new InvalidConfigError(`pool.poolAddress ${config.pool.poolAddress} has no contract code on chain ${config.pool.chainId}`);
-      }
-    })().catch((err: unknown) => {
-      chainConfirmed = undefined;
-      throw err;
-    });
-    return chainConfirmed;
-  };
-
-  const iface = new Interface(POOL_V2_EVENT_ABI as unknown as string[]);
-  const getLogs = async (fromBlock: number, toBlock: number): Promise<ParsedPoolLog[]> => {
-    const logs = await provider.getLogs({ address: config.pool.poolAddress, fromBlock, toBlock });
-    const parsed: ParsedPoolLog[] = [];
-    for (const log of logs) {
-      const desc = iface.parseLog({ topics: [...log.topics], data: log.data });
-      if (desc === null) continue;
-      parsed.push({ name: desc.name, args: desc.args as unknown as ParsedPoolLog['args'], blockNumber: log.blockNumber, txid: log.transactionHash });
-    }
-    return parsed;
-  };
-
-  const usdcTokenData = getTokenDataERC20(config.pool.usdcAddress);
+  const usdcTokenData = getTokenDataERC20(resolved.usdcAddress);
   const usdcHash = getTokenDataHash(usdcTokenData);
   // Resolve a note's token hash → tokenData for ANY pool ERC20 (issue #90). An ERC20 hash IS the padded
   // address (mirrors the stock engine's TokenDataGetter), so every ERC20 is self-describing — no registry
@@ -1448,82 +1379,29 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
 
   // RPC source is always built (source of truth + tail/verification fallback). An indexer, when
   // configured, becomes the primary fast path serving the native `/v2/quick-sync` wire contract.
-  const rpcEventSource = new RpcEventSource(getLogs);
-  const eventSource: EventSource = config.indexer
+  const rpcEventSource = new RpcEventSource((fromBlock, toBlock) => chainClient.getLogs(fromBlock, toBlock));
+  const eventSource: EventSource = resolved.indexer
     ? new IndexerEventSource({
-        baseUrl: config.indexer.url,
-        chainId: config.pool.chainId,
-        ...(config.indexer.fetchFn !== undefined ? { fetchFn: config.indexer.fetchFn } : {}),
+        baseUrl: resolved.indexer.url,
+        chainId: resolved.chainId,
+        ...(resolved.indexer.fetchFn !== undefined ? { fetchFn: resolved.indexer.fetchFn } : {}),
       })
     : rpcEventSource;
 
-  // Pool view getters for sync root-verification + preflight (per-tree accepted roots + spent nullifiers).
-  const rootIface = new Interface([
-    'function rootHistory(uint256, bytes32) view returns (bool)',
-    'function nullifiers(uint256, bytes32) view returns (bool)',
-    'function treeNumber() view returns (uint256)',
-    'function merkleRoot() view returns (bytes32)',
-    'function nextLeafIndex() view returns (uint256)',
-  ]);
-  const bytes32 = (n: bigint): string => `0x${n.toString(16).padStart(64, '0')}`;
-  const isKnownRoot = async (treeNumber: number, root: bigint): Promise<boolean> => {
-    const data = rootIface.encodeFunctionData('rootHistory', [treeNumber, bytes32(root)]);
-    const res = await provider.call({ to: config.pool.poolAddress, data });
-    return rootIface.decodeFunctionResult('rootHistory', res)[0] as boolean;
-  };
-  const isNullifierSpent = async (treeNumber: number, nullifier: bigint): Promise<boolean> => {
-    const data = rootIface.encodeFunctionData('nullifiers', [treeNumber, bytes32(nullifier)]);
-    const res = await provider.call({ to: config.pool.poolAddress, data });
-    return rootIface.decodeFunctionResult('nullifiers', res)[0] as boolean;
-  };
-
-  const getBlockHash = async (n: number): Promise<string | undefined> => (await provider.getBlock(n))?.hash ?? undefined;
-  // Read at a pinned block: a hash tag needs only recent state (well within a non-archive node's window for
-  // any sensible confirmationDepth); an orphaned hash fails the read rather than answering from another fork.
-  const readPoolTree = async (
-    blockTag: string | number,
-  ): Promise<{ treeNumber: number; merkleRoot: bigint; nextLeafIndex: number }> => {
-    const read = async (fn: 'treeNumber' | 'merkleRoot' | 'nextLeafIndex'): Promise<unknown> => {
-      const res = await provider.call({ to: config.pool.poolAddress, data: rootIface.encodeFunctionData(fn, []), blockTag });
-      return rootIface.decodeFunctionResult(fn, res)[0];
-    };
-    const [treeNumber, merkleRoot, nextLeafIndex] = await Promise.all([read('treeNumber'), read('merkleRoot'), read('nextLeafIndex')]);
-    return { treeNumber: Number(treeNumber), merkleRoot: BigInt(merkleRoot as string), nextLeafIndex: Number(nextLeafIndex) };
-  };
-
   const ctx: SdkContext = {
-    provider,
-    isKnownRoot,
-    isNullifierSpent,
-    ensureChain,
-    getBlockHash,
-    readPoolTree,
+    config: resolved,
+    chainClient,
     eventSource,
     rpcEventSource,
     tokenDataGetter,
-    chain: { type: ChainType.EVM, id: config.pool.chainId },
-    chainId: config.pool.chainId,
-    usdcAddress: config.pool.usdcAddress,
-    deployBlock: config.pool.deployBlock,
-    finalityThreshold: config.pool.finalityThreshold ?? 0,
-    confirmationDepth: config.pool.confirmationDepth ?? 0,
-    pendingSpendTtlMs: config.pool.pendingSpendTtlMs ?? 300_000,
-    autoSyncIntervalMs: config.pool.autoSyncIntervalMs ?? 10_000,
+    chain: { type: ChainType.EVM, id: resolved.chainId },
     watchers: new Set<() => void>(),
     wallets: new Set<ArmadaWallet>(),
     lifecycle: { closed: false },
-    supportedShapes: config.pool.supportedShapes !== undefined ? new Set(config.pool.supportedShapes) : undefined,
-    sweepNoteThreshold: config.pool.sweepNoteThreshold ?? 5,
     usdcHash,
-    ...(config.pool.wrappers?.yieldAdapter !== undefined
-      ? { yieldAdapterAddress: config.pool.wrappers.yieldAdapter.toLowerCase() }
-      : {}),
-    ...(config.pool.cctp?.messenger !== undefined ? { cctpMessenger: config.pool.cctp.messenger } : {}),
-    poolAddress: config.pool.poolAddress,
     prover: config.prover,
     artifacts: config.artifacts,
     storage: config.storage,
-    allowPlaintextStorage: config.dangerouslyAllowPlaintextStorage === true,
     ...(telemetry !== undefined ? { telemetry } : {}),
   };
 
@@ -1568,7 +1446,7 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
       assertOpen();
       const keyset = await deriveKeyset(seed);
       const signer: AttachedSigner = { signer: LocalSigner.fromKeyset(keyset), owned: true };
-      return loaded(new ArmadaWallet(withoutSpendKey(keyset), config.pool.deployBlock, signer, ctx, true));
+      return loaded(new ArmadaWallet(withoutSpendKey(keyset), resolved.deployBlock, signer, ctx, true));
     },
     async viewOnlyFromViewingKey(shareableViewingKey, opts) {
       assertOpen();
@@ -1603,7 +1481,7 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
       try {
         // Cancel in-flight work first: a destroyed provider fails a running sync's next RPC call, and a closed
         // prover fails a running proof, so the wallets below settle promptly.
-        provider.destroy();
+        chainClient.destroy();
       } finally {
         try {
           await config.prover.close();
