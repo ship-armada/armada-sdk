@@ -2,7 +2,7 @@
 // ABOUTME: with position-gap checks, roots, proofs and cheap clones. Holds nothing about any wallet.
 
 import { UTXOMerkletree, type MerkleProof } from './merkletree';
-import { PositionGapError } from '../errors';
+import { InternalError, PositionGapError } from '../errors';
 import type { DecodedPoolEvents } from './event-decoder';
 
 export class TreeStore {
@@ -74,7 +74,7 @@ export class TreeStore {
   merkleProof(tree: number, position: number): MerkleProof {
     const merkletree = this.trees.get(tree);
     if (merkletree === undefined) {
-      throw new Error(`merkleProof: unknown tree ${tree}`);
+      throw new InternalError(`merkleProof: unknown tree ${tree}`);
     }
     return merkletree.merkleProof(position);
   }

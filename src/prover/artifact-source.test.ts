@@ -64,6 +64,7 @@ describe('HttpArtifactSource (§4.5)', () => {
       fetchFn: (async (): Promise<Response> => ({ ok: false, status: 404 } as unknown as Response)) as unknown as typeof fetch,
     });
     await expect(source.resolve(SHAPE)).rejects.toThrow(/fetch failed \(404\)/);
+    await expect(source.resolve(SHAPE)).rejects.toMatchObject({ code: 'ARTIFACT_FETCH', status: 404 });
   });
 
   // A fetch that never answers: it settles only by rejecting when its request signal aborts.
@@ -93,6 +94,7 @@ describe('HttpArtifactSource (§4.5)', () => {
   it('HttpArtifactSource times out a stalled download instead of hanging the proof forever', async () => {
     const source = new HttpArtifactSource('https://cdn.example/artifacts', { manifest, fetchFn: hangingFetch(), timeoutMs: 20 });
     await expect(source.resolve(SHAPE)).rejects.toThrow(/timed out after 20 ms/);
+    await expect(source.resolve(SHAPE)).rejects.toMatchObject({ code: 'ARTIFACT_FETCH' });
   });
 
   describe('default fetch `this` binding', () => {

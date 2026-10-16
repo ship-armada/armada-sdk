@@ -77,18 +77,18 @@ Calling a spend-path method — `planTransfer`, `prove`, or `proveAll` — on a 
 `NoSpendCapabilityError`:
 
 ```ts
-import { ArmadaError } from '@armada/sdk';
+import { isArmadaError } from '@armada/sdk';
 
 try {
   await viewOnly.planTransfer(request);
 } catch (err) {
-  (err as ArmadaError).code === 'NO_SPEND_CAPABILITY'; // true
+  isArmadaError(err, 'NO_SPEND_CAPABILITY'); // true
 }
 ```
 
-Match SDK errors on their `code`, not with `instanceof` or on the message. Every SDK error carries a
-stable `code`, while `instanceof` can be false when the SDK is loaded twice — for example once as an
-ES module and once as CommonJS.
+Match SDK errors on their `code` — `isArmadaError` does — not with `instanceof` or on the message.
+Every SDK error carries a stable `code`, while `instanceof` can be false when the SDK is loaded twice —
+for example once as an ES module and once as CommonJS. [Errors](./errors) lists every code.
 
 ## Signers
 

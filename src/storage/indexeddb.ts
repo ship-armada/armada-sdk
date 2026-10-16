@@ -7,14 +7,14 @@
 
 import type { StorageAdapter, StorageNamespace, StorageOp, StorageWriteOptions } from './index';
 import { NAMESPACE_KEY, isPreserved, encodeNamespace, bytesEqual, assertSameBinding, assertNotClosed } from './namespace';
-import { StorageConflictError } from '../errors';
+import { InternalError, StorageConflictError, StorageUnavailableError } from '../errors';
 
 const STORE = 'kv';
 
 function toUint8Array(value: unknown): Uint8Array {
   if (value instanceof Uint8Array) return value;
   if (value instanceof ArrayBuffer) return new Uint8Array(value);
-  throw new Error('IndexedDBStorageAdapter: stored value is not binary');
+  throw new InternalError('IndexedDBStorageAdapter: stored value is not binary (a record this SDK did not write)');
 }
 
 function promisify<T>(request: IDBRequest<T>): Promise<T> {
@@ -49,7 +49,7 @@ export interface IndexedDBStorageAdapterOptions {
  * read-modify-write is not safe across instances, so a second live instance on the same DB fails loud
  * with `StorageConflictError` instead of silently corrupting shared scan state. Where the browser has no
  * Web Locks API (an insecure context, or a very old browser) `open()` fails closed with
- * `StorageConflictError` too, unless the adapter was built with `dangerouslySkipLock`.
+ * `StorageUnavailableError`, unless the adapter was built with `dangerouslySkipLock`.
  */
 export class IndexedDBStorageAdapter implements StorageAdapter {
   private db: IDBDatabase | undefined;
@@ -77,7 +77,7 @@ export class IndexedDBStorageAdapter implements StorageAdapter {
     const locks: LockManager | undefined =
       typeof navigator !== 'undefined' && 'locks' in navigator ? navigator.locks : undefined;
     if (locks === undefined) {
-      throw new StorageConflictError(
+      throw new StorageUnavailableError(
         `IndexedDBStorageAdapter: this environment has no Web Locks API (navigator.locks), so "${this.dbName}" can't be ` +
           `locked against a second instance; refusing to open unlocked (set dangerouslySkipLock only for test harnesses)`,
       );

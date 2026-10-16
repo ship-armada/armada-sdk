@@ -6,6 +6,7 @@ import msgpack from 'msgpack-lite';
 import { initPoseidonPromise, Babyjubjub } from '../core/index';
 import { deriveKeyset } from './derive';
 import { encodeShareableViewingKey, decodeShareableViewingKey } from './shareable-viewing-key';
+import { InvalidKeyMaterialError } from '../errors';
 
 describe('shareable viewing key codec (§4.2.2)', () => {
   beforeAll(async () => {
@@ -48,6 +49,12 @@ describe('shareable viewing key — rejects crafted/malformed material (SPEC §4
   it('rejects an off-curve / malformed spending public key (unpackPoint → null)', () => {
     const svk = encodeRaw('11'.repeat(32), 'ff'.repeat(32)); // 0xff*32 unpacks to null
     expect(() => decodeShareableViewingKey(svk)).toThrow(/off-curve|malformed encoding/i);
+  });
+
+  it('rejects a truncated key with InvalidKeyMaterialError, not the msgpack decoder\'s own error (F4)', () => {
+    // WHY: msgpack threw its BUFFER_SHORTAGE error, which has no SDK code.
+    expect(() => decodeShareableViewingKey('82a4')).toThrow(InvalidKeyMaterialError);
+    expect(() => decodeShareableViewingKey('zz')).toThrow(InvalidKeyMaterialError);
   });
 
   it('rejects a malformed payload (missing fields)', () => {

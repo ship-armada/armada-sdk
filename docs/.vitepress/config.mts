@@ -55,6 +55,7 @@ export default withMermaid({
             { text: 'Transactions', link: '/guide/transactions' },
             { text: 'Adapters', link: '/guide/adapters' },
             { text: 'Security', link: '/guide/security' },
+            { text: 'Errors', link: '/guide/errors' },
           ],
         },
       ],

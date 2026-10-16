@@ -1,10 +1,10 @@
-// ABOUTME: IndexedDBStorageAdapter exclusive-lock guard — a second live instance on the same DB fails
-// ABOUTME: loud with StorageConflictError (Web Locks), and the lock releases on close so re-open works.
+// ABOUTME: IndexedDBStorageAdapter exclusive-lock guard — a second live instance on the same DB fails loud with
+// ABOUTME: StorageConflictError, no Web Locks API fails closed (StorageUnavailableError), and close releases the lock.
 
 import 'fake-indexeddb/auto';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { IndexedDBStorageAdapter } from './indexeddb';
-import { StorageConflictError } from '../errors';
+import { StorageConflictError, StorageUnavailableError } from '../errors';
 import type { StorageNamespace } from './index';
 
 const ns: StorageNamespace = { schemaVersion: 1, chainId: 31337, poolAddress: `0x${'11'.repeat(20)}`, deployBlock: 1 };
@@ -68,7 +68,8 @@ describe('IndexedDBStorageAdapter — exclusive-lock guard', () => {
     // WHY: without Web Locks there's no guard against a second instance corrupting shared scan state; it used to
     // skip the lock silently. Now it refuses to open, and only an explicit, greppable opt-out runs unlocked.
     vi.stubGlobal('navigator', {}); // no `locks`
-    await expect(new IndexedDBStorageAdapter('lock-db-5').open(ns)).rejects.toBeInstanceOf(StorageConflictError);
+    // Its own code (F4): this isn't another instance holding the database — the browser can't lock it at all.
+    await expect(new IndexedDBStorageAdapter('lock-db-5').open(ns)).rejects.toBeInstanceOf(StorageUnavailableError);
     const harness = new IndexedDBStorageAdapter('lock-db-5', { dangerouslySkipLock: true });
     await expect(harness.open(ns)).resolves.toEqual({ reset: false });
     await harness.close();

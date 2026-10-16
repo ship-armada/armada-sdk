@@ -3,7 +3,7 @@
 
 import type { ProverAdapter, ArtifactSet, Groth16Proof, ProveOptions } from './index';
 import { toGroth16Proof, toSnarkjsProof, type SnarkjsProof } from './groth16-format';
-import { AbortedError } from '../errors';
+import { AbortedError, InternalError, isArmadaError } from '../errors';
 
 // snarkjs ships no types — model just the surface we use. We drive witness-calculation and proving as
 // SEPARATE steps (not `fullProve`) so we can emit a real witness→proving phase boundary for progress.
@@ -48,6 +48,17 @@ async function withCurve<T>(operation: () => Promise<T>): Promise<T> {
   }
 }
 
+// snarkjs's own errors (an unsatisfied constraint, artifacts it can't parse) have no SDK code. The inputs and
+// artifacts come from the SDK, so a failure there is an SDK bug or a corrupted artifact: InternalError.
+async function snarkjsStep<T>(what: string, step: () => Promise<T>): Promise<T> {
+  try {
+    return await step();
+  } catch (err) {
+    if (isArmadaError(err)) throw err;
+    throw new InternalError(`${what}: snarkjs failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+  }
+}
+
 function throwIfAborted(signal: AbortSignal | undefined, when: string): void {
   if (signal?.aborted) throw new AbortedError(`prove: aborted ${when}`);
 }
@@ -80,11 +91,11 @@ export function createSnarkjsProver(): ProverAdapter {
         // meaningful milestone for a large circuit) instead of the old start/end-only `proving` signal.
         const wtns: { type: 'mem' } = { type: 'mem' };
         options?.onProgress?.({ phase: 'witness', fraction: 0 });
-        await snarkjs.wtns.calculate(formattedInputs, artifacts.wasm, wtns);
+        await snarkjsStep('prove: witness calculation', () => snarkjs.wtns.calculate(formattedInputs, artifacts.wasm, wtns));
         options?.onProgress?.({ phase: 'witness', fraction: WITNESS_SHARE });
         throwIfAborted(signal, 'after witness calculation');
         options?.onProgress?.({ phase: 'proving', fraction: WITNESS_SHARE });
-        const { proof } = await snarkjs.groth16.prove(artifacts.zkey, wtns);
+        const { proof } = await snarkjsStep('prove', () => snarkjs.groth16.prove(artifacts.zkey, wtns));
         throwIfAborted(signal, 'after proving');
         options?.onProgress?.({ phase: 'proving', fraction: 1 });
         // No self-check here: `prove()` (SPEC §4.6) verifies every proof against the public signals of
@@ -96,7 +107,7 @@ export function createSnarkjsProver(): ProverAdapter {
     async verify(proof: Groth16Proof, publicSignals: bigint[], vkey: object): Promise<boolean> {
       return withCurve(async () => {
         const snarkjs = await loadSnarkjs();
-        return snarkjs.groth16.verify(vkey, publicSignals.map((s) => s.toString()), toSnarkjsProof(proof));
+        return snarkjsStep('verify', () => snarkjs.groth16.verify(vkey, publicSignals.map((s) => s.toString()), toSnarkjsProof(proof)));
       });
     },
 

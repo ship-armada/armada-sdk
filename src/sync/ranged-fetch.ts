@@ -1,6 +1,8 @@
 // ABOUTME: First-class bisecting ranged log fetch (SPEC §4.4) — replaces the eth_getLogs bisecting
 // ABOUTME: currently monkey-patched into ethers. Provider-agnostic: adapts to per-provider range limits.
 
+import { InternalError } from '../errors';
+
 export type GetLogsFn<T> = (fromBlock: number, toBlock: number) => Promise<T[]>;
 
 export interface RangedFetchOptions {
@@ -23,7 +25,10 @@ const DEFAULT_MIN_RANGE = 1;
 const TRANSPORT_ERROR_CODES = new Set(['NETWORK_ERROR', 'TIMEOUT', 'SERVER_ERROR']);
 
 function isTransportError(error: unknown): boolean {
-  const code = typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : undefined;
+  if (typeof error !== 'object' || error === null) return false;
+  // An RpcError (the ChainClient's) says so itself; a raw provider error carries ethers' code.
+  if ((error as { transport?: unknown }).transport === true) return true;
+  const code = (error as { code?: unknown }).code;
   return typeof code === 'string' && TRANSPORT_ERROR_CODES.has(code);
 }
 
@@ -40,7 +45,7 @@ export async function fetchLogsRanged<T>(
   const { fromBlock, toBlock } = options;
   const maxRange = options.maxRange ?? DEFAULT_MAX_RANGE;
   const minRange = options.minRange ?? DEFAULT_MIN_RANGE;
-  if (maxRange < 1) throw new Error('fetchLogsRanged: maxRange must be >= 1');
+  if (maxRange < 1) throw new InternalError('fetchLogsRanged: maxRange must be >= 1');
   if (fromBlock > toBlock) return [];
 
   const results: T[] = [];

@@ -3,7 +3,8 @@
 
 import type { ProverAdapter, ArtifactSet, Groth16Proof, ProveOptions, ProofProgress } from './index';
 import { createSnarkjsProver } from './snarkjs-prover';
-import { AbortedError, ProverWorkerError } from '../errors';
+import { AbortedError, ProverWorkerError, isArmadaError } from '../errors';
+import { armadaErrorFromCode } from '../error-transport';
 
 /**
  * Why not worker_threads here: snarkjs/ffjavascript pulls in the `web-worker` polyfill, which fails
@@ -22,7 +23,8 @@ export type ProverWorkerReply =
   | { readonly id: number; readonly proof: Groth16Proof }
   | { readonly id: number; readonly ok: boolean }
   | { readonly id: number; readonly progress: ProofProgress } // intermediate — does NOT settle the request
-  | { readonly id: number; readonly error: string };
+  // A failed request: the error's message, and its SDK `code` when it had one, so the caller gets the same class.
+  | { readonly id: number; readonly error: string; readonly code?: string };
 
 // Distributive omit so each request union member keeps its discriminant-specific fields.
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
@@ -65,7 +67,8 @@ export function createProverWorkerHandler(
         await prover.close();
       }
     } catch (err) {
-      post({ id: request.id, error: err instanceof Error ? err.message : String(err) });
+      const message = err instanceof Error ? err.message : String(err);
+      post({ id: request.id, error: message, ...(isArmadaError(err) ? { code: err.code } : {}) });
     }
   };
 }
@@ -121,7 +124,8 @@ export function createWorkerProver(spawn: () => WorkerChannel): ProverAdapter {
         return;
       }
       worker.pending.delete(reply.id);
-      if ('error' in reply) p.reject(new Error(reply.error));
+      // Rebuild the worker's typed error; one it couldn't type (or an unknown code) is a ProverWorkerError.
+      if ('error' in reply) p.reject((reply.code !== undefined ? armadaErrorFromCode(reply.code, reply.error) : undefined) ?? new ProverWorkerError(reply.error));
       else p.resolve(reply);
     });
     // A worker crash/exit/transport error must reject in-flight requests, not leave them hanging forever.

@@ -15,6 +15,7 @@ import {
   type Chain,
   type TokenDataGetter,
 } from '../core/index';
+import { InternalError, InvalidRequestError, QuickSyncSchemaError } from '../errors';
 
 /**
  * On-chain V2 commitment ciphertext (the shape emitted by the pool's Transact event, per the captured
@@ -90,7 +91,7 @@ export async function encryptNoteToReceiver(
   receiverViewingPublicKey: Uint8Array,
 ): Promise<CommitmentCiphertextV2> {
   if (note.senderRandom === undefined) {
-    throw new Error('encryptNoteToReceiver: note.senderRandom must be set (use createTransferNote)');
+    throw new InvalidRequestError('encryptNoteToReceiver: note.senderRandom must be set (use createTransferNote)');
   }
   const { blindedSenderViewingKey, blindedReceiverViewingKey } = getNoteBlindingKeys(
     sender.viewingPublicKey,
@@ -100,7 +101,7 @@ export async function encryptNoteToReceiver(
   );
   const sharedKey = await getSharedSymmetricKey(sender.viewingPrivateKey, blindedReceiverViewingKey);
   if (sharedKey === undefined) {
-    throw new Error('encryptNoteToReceiver: failed to derive shared symmetric key');
+    throw new InternalError('encryptNoteToReceiver: failed to derive shared symmetric key');
   }
   const { noteCiphertext, noteMemo, annotationData } = note.encryptV2(
     TXIDVersion.V2_PoseidonMerkle,
@@ -122,7 +123,7 @@ export async function encryptNoteToReceiver(
 /** Split the packed on-chain ciphertext array back into the AES `{ iv, tag, data }` envelope. */
 function unpackCiphertext(packed: readonly string[]): Ciphertext {
   if (packed.length !== 4) {
-    throw new Error(`unpackCiphertext: expected 4 elements, got ${packed.length}`);
+    throw new QuickSyncSchemaError(`unpackCiphertext: expected 4 elements, got ${packed.length}`);
   }
   // Non-null assertions are safe: the length check above guarantees indices 0..3 are present.
   const ivTag = strip0x(packed[0]!);

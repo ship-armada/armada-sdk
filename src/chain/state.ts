@@ -9,7 +9,7 @@ import type { EventSource } from '../sync/event-source';
 import type { StorageAdapter } from '../storage/index';
 import type { ChainClient } from './client';
 import type { ReorgRecoveryReason, TelemetrySink } from '../index';
-import { InstanceClosedError, QuickSyncSchemaError, RootMismatchError } from '../errors';
+import { InstanceClosedError, QuickSyncSchemaError, RootMismatchError, isArmadaError } from '../errors';
 import { finalRootCheckRequired, quickSyncTelemetry, scanStateMissingLeaves, shouldRecoverFromReorg } from './sync-rules';
 
 export interface ChainStateDeps {
@@ -177,7 +177,7 @@ export class ChainState {
         batch = await this.advanceChunk(toBlock, toBlockHash, atHead, !recovered, onProgress);
       } catch (err) {
         if (this.deps.isClosed()) {
-          throw err instanceof InstanceClosedError ? err : new InstanceClosedError('sync: cancelled by sdk.close()', { cause: err });
+          throw isArmadaError(err, 'INSTANCE_CLOSED') ? err : new InstanceClosedError('sync: cancelled by sdk.close()', { cause: err });
         }
         // Two failures no retry can fix, so self-heal by rescanning from the deploy block: (1) the local tree is missing
         // leaves — a leaf arrived past its next position, so part of the chain was skipped; (2) a reorg removed an
@@ -316,7 +316,7 @@ export class ChainState {
       await this.verifyRoots(this.committed, head);
       return false;
     } catch (err) {
-      return err instanceof RootMismatchError;
+      return isArmadaError(err, 'ROOT_MISMATCH');
     }
   }
 

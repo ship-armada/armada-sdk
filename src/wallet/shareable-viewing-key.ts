@@ -32,7 +32,13 @@ export function encodeShareableViewingKey(material: ShareableViewingKeyMaterial)
  * A malformed or crafted key throws `InvalidKeyMaterialError` rather than silently yielding a wrong wallet.
  */
 export function decodeShareableViewingKey(shareableViewingKey: string): ShareableViewingKeyMaterial {
-  const decoded = msgpack.decode(Buffer.from(shareableViewingKey, 'hex')) as unknown;
+  let decoded: unknown;
+  try {
+    decoded = msgpack.decode(Buffer.from(shareableViewingKey, 'hex')) as unknown;
+  } catch (err) {
+    // Truncated or non-hex input: msgpack's own error (e.g. BUFFER_SHORTAGE) has no SDK code.
+    throw new InvalidKeyMaterialError('shareableViewingKey: not a valid encoded key', { cause: err });
+  }
   if (
     typeof decoded !== 'object' || decoded === null ||
     typeof (decoded as { vpriv?: unknown }).vpriv !== 'string' ||

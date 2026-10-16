@@ -2,7 +2,7 @@
 // ABOUTME: wallet's notes, fee included: checks each "whole notes minus k per-proof fees" candidate against planSpend itself.
 
 import { getTokenDataERC20, getTokenDataHash } from '../core/index';
-import { InsufficientBalanceError, TooFragmentedError, UnsupportedCircuitShapeError } from '../errors';
+import { isArmadaError } from '../errors';
 import { MAX_SPLIT_GROUPS, planSpend, type PlanTransferParams } from './plan';
 import { maxSupportedInputCount } from './shapes';
 
@@ -116,9 +116,9 @@ function plans(spend: PlanTransferParams): boolean {
     return true;
   } catch (err) {
     if (
-      err instanceof InsufficientBalanceError ||
-      err instanceof TooFragmentedError ||
-      err instanceof UnsupportedCircuitShapeError
+      isArmadaError(err, 'INSUFFICIENT_BALANCE') ||
+      isArmadaError(err, 'TOO_FRAGMENTED') ||
+      isArmadaError(err, 'UNSUPPORTED_CIRCUIT_SHAPE')
     ) {
       return false;
     }

@@ -3,6 +3,7 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { fetchLogsRanged } from './ranged-fetch';
+import { RpcError } from '../errors';
 
 // A fake getLogs returning one "log" per block (the block number), optionally throwing when a
 // window exceeds `limit` blocks (simulating a provider range cap).
@@ -44,6 +45,10 @@ describe('fetchLogsRanged', () => {
   it('throws a transport failure at once instead of bisecting it (SYNC-11, #143)', async () => {
     // WHY: every error was bisected as "range too large", so a dead RPC took about 10,000 failing calls per 5,000-block
     // window (each possibly a timeout) before the error surfaced.
+    const wrapped = new RpcError('getLogs', Object.assign(new Error('down'), { code: 'NETWORK_ERROR' }));
+    const getRpcLogs = vi.fn(async (): Promise<number[]> => { throw wrapped; });
+    await expect(fetchLogsRanged(getRpcLogs, { fromBlock: 0, toBlock: 4999, maxRange: 5000 })).rejects.toBe(wrapped);
+    expect(getRpcLogs).toHaveBeenCalledTimes(1);
     for (const code of ['NETWORK_ERROR', 'TIMEOUT', 'SERVER_ERROR']) {
       const getLogs = vi.fn(async (): Promise<number[]> => {
         throw Object.assign(new Error(`transport: ${code}`), { code });

@@ -75,6 +75,7 @@ import {
   QuickSyncSchemaError,
   SignerContractViolationError,
   InstanceClosedError,
+  isArmadaError,
 } from './errors';
 import { resolveConfig, type ResolvedConfig } from './config';
 import { ChainClient } from './chain/client';
@@ -618,7 +619,7 @@ class ArmadaWallet implements Wallet {
         // Cancelled by dispose()/close() (its RPC calls may fail first, on the destroyed provider): no scan:error —
         // the caller learns the wallet is closed.
         if (this.disposed || this.ctx.lifecycle.closed) {
-          throw err instanceof InstanceClosedError ? err : new InstanceClosedError('sync: cancelled by wallet.dispose() or sdk.close()', { cause: err });
+          throw isArmadaError(err, 'INSTANCE_CLOSED') ? err : new InstanceClosedError('sync: cancelled by wallet.dispose() or sdk.close()', { cause: err });
         }
         this.events.emit('scan:error', { error: err instanceof Error ? err : new Error(String(err)) });
         throw err;
@@ -891,7 +892,7 @@ export async function createArmadaSdk(config: ArmadaSdkConfig): Promise<ArmadaSd
   const tokenDataGetter: TokenDataGetter = {
     getTokenDataFromHash: async (_v: unknown, _c: unknown, tokenHash: string): Promise<TokenData> => {
       const address = erc20AddressFromHash(tokenHash);
-      if (address === undefined) throw new Error(`createArmadaSdk: unsupported non-ERC20 token hash ${tokenHash}`);
+      if (address === undefined) throw new InvalidRequestError(`createArmadaSdk: unsupported non-ERC20 token hash ${tokenHash}`);
       return getTokenDataERC20(address);
     },
   };

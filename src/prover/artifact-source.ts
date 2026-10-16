@@ -3,7 +3,7 @@
 
 import type { ArtifactResolveOptions, ArtifactSet, ArtifactSource, CircuitShape } from './index';
 import { verifyArtifactIntegrity, type ArtifactManifest } from './manifest';
-import { AbortedError } from '../errors';
+import { AbortedError, ArtifactFetchError, isArmadaError } from '../errors';
 
 /** How long `HttpArtifactSource` waits for one shape's artifacts to download before giving up. */
 const DEFAULT_HTTP_TIMEOUT_MS = 120_000;
@@ -75,9 +75,11 @@ export class HttpArtifactSource implements ArtifactSource {
     } catch (err) {
       if (callerSignal?.aborted) throw new AbortedError('artifact resolve: aborted', { cause: err });
       if (timeout.aborted) {
-        throw new Error(`HttpArtifactSource: download for shape ${shapeDir(shape)} timed out after ${this.timeoutMs} ms`, { cause: err });
+        throw new ArtifactFetchError(`HttpArtifactSource: download for shape ${shapeDir(shape)} timed out after ${this.timeoutMs} ms`, { cause: err });
       }
-      throw err;
+      if (isArmadaError(err)) throw err;
+      // A network failure (the fetch itself rejected).
+      throw new ArtifactFetchError(`HttpArtifactSource: download for shape ${shapeDir(shape)} failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
     // Fail-closed integrity: unless the caller explicitly opted out at construction, a wasm/zkey whose
     // SHA-256 doesn't match the pinned manifest throws ArtifactIntegrityError before it reaches the prover.
@@ -95,7 +97,7 @@ export class HttpArtifactSource implements ArtifactSource {
     ]);
     for (const [name, res] of [['wasm', wasmRes], ['zkey', zkeyRes], ['vkey', vkeyRes]] as const) {
       if (!res.ok) {
-        throw new Error(`HttpArtifactSource: ${name} fetch failed (${res.status}) for shape ${shapeDir(shape)}`);
+        throw new ArtifactFetchError(`HttpArtifactSource: ${name} fetch failed (${res.status}) for shape ${shapeDir(shape)}`, { status: res.status });
       }
     }
     // Read the vkey as raw bytes (not `.json()`) so its SHA-256 can be verified against the manifest;

@@ -3,12 +3,7 @@
 
 import { getTokenDataERC20, getTokenDataHash } from '../core/index';
 import type { TXO } from '../sync/index';
-import {
-  InsufficientBalanceError,
-  UnsupportedCircuitShapeError,
-  TooFragmentedError,
-  InvalidRequestError,
-} from '../errors';
+import { InsufficientBalanceError, UnsupportedCircuitShapeError, TooFragmentedError, InvalidRequestError, InternalError } from '../errors';
 import { shapeKey, type CircuitShape } from '../prover/index';
 import type { Plan, PlanSelection, PlanOutput, PlanSummary, DecodedBoundParams, CctpBinding } from './index';
 import { verifyCctpBinding } from './adapt-params';
@@ -135,7 +130,7 @@ function pickFewestInputCover(params: PlanTransferParams, target: bigint): Cover
   }
   if (best === undefined) return undefined;
   const merkleRoot = params.roots.get(best.tree);
-  if (merkleRoot === undefined) throw new Error(`planTransfer: no merkle root supplied for tree ${best.tree}`);
+  if (merkleRoot === undefined) throw new InternalError(`planTransfer: no merkle root supplied for tree ${best.tree}`);
   return { ...best, merkleRoot };
 }
 
@@ -523,7 +518,7 @@ export function planWitnessInputs(plan: Plan): WitnessInput[] {
   return plan.selectedInputs.map((txo, i) => {
     const merkleProofElements = plan.merkleProofs[i];
     if (merkleProofElements === undefined) {
-      throw new Error(`planWitnessInputs: plan is missing a captured merkle proof for input ${i}`);
+      throw new InvalidRequestError(`planWitnessInputs: plan is missing a captured merkle proof for input ${i}`);
     }
     return { random: txo.random, value: txo.value, position: txo.position, merkleProofElements };
   });

@@ -3,7 +3,7 @@
 
 import { getTokenDataERC20, getTokenDataHash } from '../core/index';
 import type { TXO } from '../sync/index';
-import { InsufficientBalanceError, NothingToConsolidateError } from '../errors';
+import { InsufficientBalanceError, InternalError, NothingToConsolidateError } from '../errors';
 import {
   MAX_SPLIT_GROUPS,
   assembleSelection,
@@ -104,7 +104,7 @@ function selectionContext(params: PlanConsolidateParams, tokenAddress: `0x${stri
 
 function coverOf(params: PlanConsolidateParams, tree: number, selected: TXO[]): Cover {
   const merkleRoot = params.roots.get(tree);
-  if (merkleRoot === undefined) throw new Error(`planConsolidate: no merkle root supplied for tree ${tree}`);
+  if (merkleRoot === undefined) throw new InternalError(`planConsolidate: no merkle root supplied for tree ${tree}`);
   return { tree, selected, total: selected.reduce((s, t) => s + t.value, 0n), merkleRoot };
 }
 

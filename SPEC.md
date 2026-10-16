@@ -500,7 +500,8 @@ Requirements:
   (pool, origin), held by an exclusive Web Lock, failing closed where Web Locks are unavailable;
   Node: per-instance path from config with advisory locking. Either way, a conflict is a clear
   typed error (`StorageConflictError`), and an open adapter refuses to rebind to another
-  deployment.
+  deployment. A browser with no Web Locks API gets `StorageUnavailableError` (not a conflict: the
+  database can't be locked at all).
 - **Closed means closed.** After `close()`, an adapter rejects every call except `open()` with
   `InstanceClosedError` (rather than, say, IndexedDB reopening its database without the lock).
 - Ephemeral wallets (§6) never touch the StorageAdapter.
@@ -900,9 +901,17 @@ implement it against the same spec later.
 ## 8. Observability & errors
 
 - **Typed error taxonomy**, exported: `RootMismatchError`, `NoteAlreadySpentError`,
-  `FeeQuoteExpiredError`, `ArtifactIntegrityError`, `StorageConflictError`,
-  `NonDeterministicSignerError`, `ClaimSeedCounterError`, etc. Every SDK error carries a stable
-  `code` string; consuming code and tests match on codes, never message text.
+  `FeeQuoteExpiredError`, `ArtifactIntegrityError`, `StorageConflictError`, etc. (the full list is
+  `ERROR_CODES` / `ErrorCode`, documented in the errors guide). Every SDK error carries a stable
+  `code` string; consuming code and tests match on codes — `isArmadaError(err, code?)`, which works
+  across duplicate SDK copies — never classes or message text. No SDK code path throws an untyped
+  error (a test enforces it): provider failures become `RpcError` (`method`, `cause`, and a
+  `transport` flag telling an unreachable node from one that answered with an error), artifact
+  downloads `ArtifactFetchError`, a missing Web Locks API `StorageUnavailableError`, a malformed key
+  `InvalidKeyMaterialError`, and a broken SDK invariant (or state the SDK didn't write) `InternalError`.
+  Typed errors keep their class and code across the prover worker boundary. Errors for features not
+  built yet (enrollment's non-deterministic-signer check, the §6.2 claim-seed counter) arrive with
+  those features.
 - **TelemetrySink interface** (injected, no-op default), typed by `TelemetryEventMap` — `emit(event,
   data)` takes an event name and its payload as a typed pair, so every event's payload is declared in
   one reviewed place: structured events for scan progress and durations, proof timings per shape, RPC

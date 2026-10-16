@@ -10,7 +10,7 @@ import {
 } from './worker-prover';
 import { createSnarkjsProver } from './snarkjs-prover';
 import type { ArtifactSet } from './index';
-import { AbortedError, ProverWorkerError } from '../errors';
+import { AbortedError, ArtifactIntegrityError, InternalError, ProverWorkerError } from '../errors';
 
 const fixture = (name: string): string => fileURLToPath(new URL(`../../test/fixtures/prover/${name}`, import.meta.url));
 const artifacts: ArtifactSet = {
@@ -62,11 +62,32 @@ describe('worker prover protocol + adapter (§4.5)', () => {
     }
   });
 
-  it('propagates worker-side errors back to the caller', async () => {
+  it('propagates worker-side errors back to the caller, as a coded error', async () => {
     const prover = createWorkerProver(inProcessChannel);
     try {
-      // Empty artifacts make snarkjs.fullProve throw inside the handler → surfaced as a rejection.
-      await expect(prover.prove({ a: '3', b: '11' }, { wasm: new Uint8Array(), zkey: new Uint8Array(), vkey: {} })).rejects.toThrow();
+      // Empty artifacts make snarkjs throw inside the handler. The prover reports that as InternalError (the SDK's own
+      // inputs or artifacts failed), and the class survives the trip back across the channel.
+      await expect(prover.prove({ a: '3', b: '11' }, { wasm: new Uint8Array(), zkey: new Uint8Array(), vkey: {} })).rejects.toBeInstanceOf(InternalError);
+    } finally {
+      await prover.close();
+    }
+  });
+
+  it('keeps a typed error\'s class and code across the worker boundary (PROVER-6)', async () => {
+    // WHY: the worker sent only the message, so an SDK error thrown inside it reached the caller as a plain Error.
+    let deliver: (reply: ProverWorkerReply) => void = () => {};
+    const failing = {
+      prove: async () => { throw new ArtifactIntegrityError('zkey digest mismatch'); },
+      verify: async () => true,
+      close: async () => {},
+    };
+    const handle = createProverWorkerHandler((reply) => deliver(reply), () => failing);
+    const channel: WorkerChannel = { post: (r) => { void handle(r); }, onMessage: (h) => { deliver = h; }, terminate: () => {} };
+    const prover = createWorkerProver(() => channel);
+    try {
+      const err = await prover.prove({}, artifacts).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ArtifactIntegrityError);
+      expect(err).toMatchObject({ code: 'ARTIFACT_INTEGRITY', message: 'zkey digest mismatch' });
     } finally {
       await prover.close();
     }

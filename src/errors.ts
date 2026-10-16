@@ -24,11 +24,14 @@ export class ArtifactIntegrityError extends ArmadaError {
 export class StorageConflictError extends ArmadaError {
   readonly code = 'STORAGE_CONFLICT';
 }
-export class NonDeterministicSignerError extends ArmadaError {
-  readonly code = 'NON_DETERMINISTIC_SIGNER';
-}
-export class ClaimSeedCounterError extends ArmadaError {
-  readonly code = 'CLAIM_SEED_COUNTER';
+
+/**
+ * The storage can't be used safely in this environment: the browser has no Web Locks API (an insecure context, or a
+ * very old browser), so the IndexedDB adapter can't lock its database against a second instance and refuses to open
+ * (SPEC §4.3). Not a conflict — no other instance holds the database; this one can never lock it.
+ */
+export class StorageUnavailableError extends ArmadaError {
+  readonly code = 'STORAGE_UNAVAILABLE';
 }
 /** Thrown by any spend-path call on a view-only wallet (no `SpendSigner` attached) — SPEC §4.2.2. */
 export class NoSpendCapabilityError extends ArmadaError {
@@ -37,6 +40,26 @@ export class NoSpendCapabilityError extends ArmadaError {
 /** Thrown when no single tree's spendable notes can cover a planned spend (amount + fee). */
 export class InsufficientBalanceError extends ArmadaError {
   readonly code = 'INSUFFICIENT_BALANCE';
+}
+
+// ethers' codes for a failure to reach the node at all: connection, timeout, HTTP-level error.
+const TRANSPORT_CODES = new Set(['NETWORK_ERROR', 'TIMEOUT', 'SERVER_ERROR']);
+
+/**
+ * An RPC call failed (SPEC §8). `method` is the call; `cause` is the provider's own error. `transport` is true when
+ * the node wasn't reached (connection, timeout, HTTP error) — worth retrying later or on another node — and false
+ * when the node answered with an error (a range limit, a revert, a bad request).
+ */
+export class RpcError extends ArmadaError {
+  readonly code = 'RPC';
+  readonly method: string;
+  readonly transport: boolean;
+  constructor(method: string, cause: unknown) {
+    super(`rpc: ${method} failed: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    this.method = method;
+    const causeCode = typeof cause === 'object' && cause !== null ? (cause as { code?: unknown }).code : undefined;
+    this.transport = typeof causeCode === 'string' && TRANSPORT_CODES.has(causeCode);
+  }
 }
 
 /** A quick-sync response failed schema validation (unknown version, missing/mistyped fields). */
@@ -75,6 +98,20 @@ export class PositionGapError extends ArmadaError {
     super(message, options?.cause !== undefined ? { cause: options.cause } : undefined);
     if (options?.expected !== undefined) this.expected = options.expected;
     if (options?.received !== undefined) this.received = options.received;
+  }
+}
+
+/**
+ * A proving-artifact download (wasm/zkey/vkey) failed: a non-OK HTTP response (`status`), a network error, or a
+ * timeout (SPEC §4.5). A retry may succeed; `ArtifactIntegrityError` is the different case of bytes that arrived but
+ * don't match the manifest.
+ */
+export class ArtifactFetchError extends ArmadaError {
+  readonly code = 'ARTIFACT_FETCH';
+  readonly status?: number;
+  constructor(message: string, options?: { status?: number; cause?: unknown }) {
+    super(message, options?.cause !== undefined ? { cause: options.cause } : undefined);
+    if (options?.status !== undefined) this.status = options.status;
   }
 }
 
@@ -143,7 +180,8 @@ export class InstanceClosedError extends ArmadaError {
 /**
  * The prover worker stopped before replying (SPEC §4.5): it crashed or failed to load, it was terminated
  * to cancel another in-flight request, or the prover was closed. Unless the prover was closed, the next
- * request starts a fresh worker, so the operation can be retried.
+ * request starts a fresh worker, so the operation can be retried. Also the class for a worker reply that
+ * carried no SDK code (a typed error keeps its own class across the worker boundary).
  */
 export class ProverWorkerError extends ArmadaError {
   readonly code = 'PROVER_WORKER';
@@ -176,4 +214,93 @@ export class InvalidConfigError extends ArmadaError {
 /** A `SpendSigner` violated its contract (wrong signature count, or returned none). */
 export class SignerContractViolationError extends ArmadaError {
   readonly code = 'SIGNER_CONTRACT_VIOLATION';
+}
+
+/**
+ * An SDK invariant broke: a bug, or state the SDK didn't write (a corrupted or foreign storage record, artifacts the
+ * prover can't use). Not something the caller did; report it.
+ */
+export class InternalError extends ArmadaError {
+  readonly code = 'INTERNAL';
+}
+
+/** Every SDK error code (SPEC §8). Consumers match on these, never on classes or message text. */
+export const ERROR_CODES = [
+  'ROOT_MISMATCH',
+  'NOTE_ALREADY_SPENT',
+  'FEE_QUOTE_EXPIRED',
+  'ARTIFACT_INTEGRITY',
+  'ARTIFACT_FETCH',
+  'STORAGE_CONFLICT',
+  'STORAGE_UNAVAILABLE',
+  'NO_SPEND_CAPABILITY',
+  'INSUFFICIENT_BALANCE',
+  'RPC',
+  'QUICK_SYNC_SCHEMA',
+  'INDEXER_HTTP',
+  'POSITION_GAP',
+  'INVALID_KEY_MATERIAL',
+  'PROOF_VERIFICATION',
+  'UNSUPPORTED_CIRCUIT_SHAPE',
+  'TOO_FRAGMENTED',
+  'NOTHING_TO_CONSOLIDATE',
+  'ABORTED',
+  'INSTANCE_CLOSED',
+  'PROVER_WORKER',
+  'PROOF_HANDLE_INVALIDATED',
+  'PROOF_EXPIRED',
+  'INVALID_REQUEST',
+  'INVALID_CONFIG',
+  'SIGNER_CONTRACT_VIOLATION',
+  'INTERNAL',
+] as const;
+
+export type ErrorCode = (typeof ERROR_CODES)[number];
+
+/** The error class for each code — what `isArmadaError(err, code)` narrows to. */
+export interface ArmadaErrorByCode {
+  ROOT_MISMATCH: RootMismatchError;
+  NOTE_ALREADY_SPENT: NoteAlreadySpentError;
+  FEE_QUOTE_EXPIRED: FeeQuoteExpiredError;
+  ARTIFACT_INTEGRITY: ArtifactIntegrityError;
+  ARTIFACT_FETCH: ArtifactFetchError;
+  STORAGE_CONFLICT: StorageConflictError;
+  STORAGE_UNAVAILABLE: StorageUnavailableError;
+  NO_SPEND_CAPABILITY: NoSpendCapabilityError;
+  INSUFFICIENT_BALANCE: InsufficientBalanceError;
+  RPC: RpcError;
+  QUICK_SYNC_SCHEMA: QuickSyncSchemaError;
+  INDEXER_HTTP: IndexerHttpError;
+  POSITION_GAP: PositionGapError;
+  INVALID_KEY_MATERIAL: InvalidKeyMaterialError;
+  PROOF_VERIFICATION: ProofVerificationError;
+  UNSUPPORTED_CIRCUIT_SHAPE: UnsupportedCircuitShapeError;
+  TOO_FRAGMENTED: TooFragmentedError;
+  NOTHING_TO_CONSOLIDATE: NothingToConsolidateError;
+  ABORTED: AbortedError;
+  INSTANCE_CLOSED: InstanceClosedError;
+  PROVER_WORKER: ProverWorkerError;
+  PROOF_HANDLE_INVALIDATED: ProofHandleInvalidatedError;
+  PROOF_EXPIRED: ProofExpiredError;
+  INVALID_REQUEST: InvalidRequestError;
+  INVALID_CONFIG: InvalidConfigError;
+  SIGNER_CONTRACT_VIOLATION: SignerContractViolationError;
+  INTERNAL: InternalError;
+}
+
+const KNOWN_CODES: ReadonlySet<string> = new Set(ERROR_CODES);
+
+/**
+ * Whether `err` is an SDK error — and, given `code`, one with that code (narrowed to its class, so its own fields,
+ * like `RpcError.transport`, are typed). Matches on the `code` field, so it also recognises an error from another
+ * copy of the SDK (ESM and CJS builds, or two bundled copies), where `instanceof` is false. Another library's error
+ * with a `code` field (ethers' `NETWORK_ERROR`, say) isn't one.
+ */
+export function isArmadaError(err: unknown): err is ArmadaError;
+export function isArmadaError<C extends ErrorCode>(err: unknown, code: C): err is ArmadaErrorByCode[C];
+export function isArmadaError(err: unknown, code?: ErrorCode): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  const errCode = (err as { code?: unknown }).code;
+  if (typeof errCode !== 'string' || !KNOWN_CODES.has(errCode)) return false;
+  return code === undefined || errCode === code;
 }

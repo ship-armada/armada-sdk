@@ -4,7 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import { Interface, type Provider } from 'ethers';
 import { ChainClient } from './client';
-import { InvalidConfigError } from '../errors';
+import { InvalidConfigError, RpcError } from '../errors';
 import { POOL_V2_EVENT_ABI } from '../sync/event-decoder';
 
 const POOL = `0x${'11'.repeat(20)}` as const;
@@ -124,6 +124,18 @@ describe('ChainClient (F1, #143)', () => {
     expect(await c.getBlockTimestamp(99)).toBeUndefined();
     expect(await c.hasCode(POOL)).toBe(true);
     expect(await client(fakeProvider({ code: '0x' }).asProvider).hasCode(POOL)).toBe(false);
+  });
+
+  it('wraps a provider failure in RpcError, telling an unreachable node from one that answered with an error (F4)', async () => {
+    // WHY: raw ethers errors reached consumers, their `code` field sharing the namespace with the SDK's codes.
+    const failing = (error: unknown): Provider => ({ getLogs: async () => { throw error; } }) as unknown as Provider;
+    const down = Object.assign(new Error('connect ECONNREFUSED'), { code: 'NETWORK_ERROR' });
+    const limited = Object.assign(new Error('query returned more than 10000 results'), { code: 'UNKNOWN_ERROR' });
+    const a = await client(failing(down)).getLogs(1, 2).catch((e: unknown) => e);
+    expect(a).toBeInstanceOf(RpcError);
+    expect(a).toMatchObject({ code: 'RPC', method: 'getLogs', transport: true, cause: down });
+    const b = await client(failing(limited)).getLogs(1, 2).catch((e: unknown) => e);
+    expect(b).toMatchObject({ code: 'RPC', method: 'getLogs', transport: false, cause: limited });
   });
 
   it('destroy() releases the provider', () => {

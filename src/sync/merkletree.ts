@@ -2,6 +2,7 @@
 // ABOUTME: depth-16 Poseidon root, and generates proofs verifiable by core.verifyMerkleProof.
 
 import { hashLeftRight, MERKLE_ZERO_VALUE, TREE_DEPTH } from '../core/index';
+import { InternalError } from '../errors';
 
 export interface MerkleProof {
   readonly leaf: string;
@@ -80,7 +81,7 @@ export class UTXOMerkletree {
 
   merkleProof(index: number): MerkleProof {
     if (index < 0 || index >= this.length) {
-      throw new Error(`merkleProof: index ${index} out of range [0, ${this.length})`);
+      throw new InternalError(`merkleProof: index ${index} out of range [0, ${this.length})`);
     }
     const elements: string[] = [];
     let indicesBig = 0n;

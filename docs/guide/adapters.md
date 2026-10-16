@@ -29,7 +29,8 @@ new LevelStorageAdapter(db);            // Node; wraps an abstract-level databas
 
 Only one live instance may use a store at a time. `IndexedDBStorageAdapter` takes an exclusive Web Lock
 on its database, and a second instance gets `StorageConflictError`; if the browser has no Web Locks
-API (an insecure context, or a very old browser), it refuses to open rather than run unlocked. A test
+API (an insecure context, or a very old browser), it refuses to open rather than run unlocked, with
+`StorageUnavailableError`. A test
 harness without Web Locks (jsdom, or Node with fake-indexeddb) passes
 `new IndexedDBStorageAdapter(name, { dangerouslySkipLock: true })`. `LevelStorageAdapter` relies on the
 database's own lock and reports a second process as `StorageConflictError` too. Opening an adapter

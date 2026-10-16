@@ -1,7 +1,7 @@
 // ABOUTME: The chain sync's pure decision rules (SPEC §4.4/§8): quick-sync telemetry and its fallback reasons, when a
 // ABOUTME: sync owes a final root check, and when a failure means rescan (a missing-leaves tree, a reorg-poisoned one).
 
-import { RootMismatchError } from '../errors';
+import { isArmadaError } from '../errors';
 
 /**
  * Why an untrusted-indexer quick-sync attempt was discarded for an RPC re-scan. The `outcome` field
@@ -103,7 +103,7 @@ export function finalRootCheckRequired(usingIndexer: boolean, fellBack: boolean)
  * leaf), and we are not already inside a recovery (guards an infinite reset loop). Pure for testability.
  */
 export function shouldRecoverFromReorg(error: unknown, persistedRootsInvalid: boolean, recovering: boolean): boolean {
-  return error instanceof RootMismatchError && persistedRootsInvalid && !recovering;
+  return isArmadaError(error, 'ROOT_MISMATCH') && persistedRootsInvalid && !recovering;
 }
 
 /**

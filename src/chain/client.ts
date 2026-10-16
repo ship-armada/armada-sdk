@@ -1,8 +1,8 @@
 // ABOUTME: ChainClient (F1, #143) — the SDK's one connection to the RPC: the chain/pool check, parsed pool logs, pool
-// ABOUTME: view reads (accepted roots, spent nullifiers, the tree pinned to a block), block hashes/timestamps, teardown.
+// ABOUTME: view reads (accepted roots, spent nullifiers, the tree pinned to a block), block hashes/timestamps. Failures are RpcErrors.
 
 import { FallbackProvider, Interface, JsonRpcProvider, type Provider } from 'ethers';
-import { InvalidConfigError } from '../errors';
+import { InvalidConfigError, RpcError } from '../errors';
 import { POOL_V2_EVENT_ABI, type ParsedPoolLog } from '../sync/event-decoder';
 
 /** The pool a client reads: the chain the RPC must serve, and the pool contract on it. */
@@ -27,6 +27,15 @@ const POOL_VIEWS = new Interface([
 ]);
 const POOL_EVENTS = new Interface(POOL_V2_EVENT_ABI as unknown as string[]);
 const bytes32 = (n: bigint): string => `0x${n.toString(16).padStart(64, '0')}`;
+
+// Run one provider call, turning its failure into an RpcError naming the call (the provider's error is the cause).
+async function rpc<T>(method: string, call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (err) {
+    throw new RpcError(method, err);
+  }
+}
 
 export class ChainClient {
   // A confirmed chain/pool check, shared by concurrent callers. A failed check isn't kept, so it's retried.
@@ -56,11 +65,11 @@ export class ChainClient {
    */
   ensureChain(): Promise<void> {
     this.chainConfirmed ??= (async () => {
-      const network = await this.provider.getNetwork();
+      const network = await rpc('getNetwork', () => this.provider.getNetwork());
       if (Number(network.chainId) !== this.pool.chainId) {
         throw new InvalidConfigError(`rpc serves chain ${network.chainId}, but pool.chainId is ${this.pool.chainId}`);
       }
-      if ((await this.provider.getCode(this.pool.poolAddress)) === '0x') {
+      if ((await rpc('getCode', () => this.provider.getCode(this.pool.poolAddress))) === '0x') {
         throw new InvalidConfigError(`pool.poolAddress ${this.pool.poolAddress} has no contract code on chain ${this.pool.chainId}`);
       }
     })().catch((err: unknown) => {
@@ -72,7 +81,7 @@ export class ChainClient {
 
   /** The pool's event logs in `[fromBlock, toBlock]`, parsed; logs that aren't pool events are skipped. */
   async getLogs(fromBlock: number, toBlock: number): Promise<ParsedPoolLog[]> {
-    const logs = await this.provider.getLogs({ address: this.pool.poolAddress, fromBlock, toBlock });
+    const logs = await rpc('getLogs', () => this.provider.getLogs({ address: this.pool.poolAddress, fromBlock, toBlock }));
     const parsed: ParsedPoolLog[] = [];
     for (const log of logs) {
       const desc = POOL_EVENTS.parseLog({ topics: [...log.topics], data: log.data });
@@ -83,35 +92,35 @@ export class ChainClient {
   }
 
   getBlockNumber(): Promise<number> {
-    return this.provider.getBlockNumber();
+    return rpc('getBlockNumber', () => this.provider.getBlockNumber());
   }
 
   /** Block `n`'s hash, or undefined when the node doesn't return the block. */
   async getBlockHash(n: number): Promise<string | undefined> {
-    return (await this.provider.getBlock(n))?.hash ?? undefined;
+    return (await rpc('getBlock', () => this.provider.getBlock(n)))?.hash ?? undefined;
   }
 
   /** Block `n`'s timestamp (seconds), or undefined when the node doesn't return the block. */
   async getBlockTimestamp(n: number): Promise<number | undefined> {
-    return (await this.provider.getBlock(n))?.timestamp;
+    return (await rpc('getBlock', () => this.provider.getBlock(n)))?.timestamp;
   }
 
   /** Whether `address` has contract code. */
   async hasCode(address: string): Promise<boolean> {
-    return (await this.provider.getCode(address)) !== '0x';
+    return (await rpc('getCode', () => this.provider.getCode(address))) !== '0x';
   }
 
   /** Whether `root` is in the pool's accepted root history for `treeNumber` (SPEC §4.4/§4.7). */
   async isKnownRoot(treeNumber: number, root: bigint): Promise<boolean> {
     const data = POOL_VIEWS.encodeFunctionData('rootHistory', [treeNumber, bytes32(root)]);
-    const res = await this.provider.call({ to: this.pool.poolAddress, data });
+    const res = await rpc('call', () => this.provider.call({ to: this.pool.poolAddress, data }));
     return POOL_VIEWS.decodeFunctionResult('rootHistory', res)[0] as boolean;
   }
 
   /** Whether `(treeNumber, nullifier)` is already spent on-chain (SPEC §4.7). */
   async isNullifierSpent(treeNumber: number, nullifier: bigint): Promise<boolean> {
     const data = POOL_VIEWS.encodeFunctionData('nullifiers', [treeNumber, bytes32(nullifier)]);
-    const res = await this.provider.call({ to: this.pool.poolAddress, data });
+    const res = await rpc('call', () => this.provider.call({ to: this.pool.poolAddress, data }));
     return POOL_VIEWS.decodeFunctionResult('nullifiers', res)[0] as boolean;
   }
 
@@ -122,7 +131,7 @@ export class ChainClient {
    */
   async readPoolTree(blockTag: string | number): Promise<PoolTreeState> {
     const read = async (fn: 'treeNumber' | 'merkleRoot' | 'nextLeafIndex'): Promise<unknown> => {
-      const res = await this.provider.call({ to: this.pool.poolAddress, data: POOL_VIEWS.encodeFunctionData(fn, []), blockTag });
+      const res = await rpc('call', () => this.provider.call({ to: this.pool.poolAddress, data: POOL_VIEWS.encodeFunctionData(fn, []), blockTag }));
       return POOL_VIEWS.decodeFunctionResult(fn, res)[0];
     };
     const [treeNumber, merkleRoot, nextLeafIndex] = await Promise.all([read('treeNumber'), read('merkleRoot'), read('nextLeafIndex')]);
