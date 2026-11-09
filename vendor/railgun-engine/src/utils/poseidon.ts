@@ -1,4 +1,6 @@
-import circom from '@railgun-community/circomlibjs';
+// DIVERGES FROM UPSTREAM: imports circomlibjs' Poseidon module directly, not its index — the index requires every
+// module it has (contract generators, sparse Merkle trees, the slow Poseidon + its constants), dead weight in a browser bundle.
+import circomPoseidon from '@railgun-community/circomlibjs/src/poseidon';
 import EngineDebug from '../debugger/debugger';
 import { ByteLength, ByteUtils } from './bytes';
 import { isReactNative } from './runtime';
@@ -32,7 +34,7 @@ export const initPoseidonPromise = initPoseidon();
 export const poseidon = (args: Array<bigint>): bigint => {
   if (isReactNative || !poseidonWasm) {
     // Fallback to JavaScript if this module is running directly in React Native
-    return circom.poseidon(args);
+    return circomPoseidon(args);
   }
   try {
     // Try WASM implementation.
@@ -44,14 +46,14 @@ export const poseidon = (args: Array<bigint>): bigint => {
     // Fallback to Javascript.
     EngineDebug.log('poseidon in WASM failed: Fallback to JavaScript');
     EngineDebug.error(cause);
-    return circom.poseidon(args);
+    return circomPoseidon(args);
   }
 };
 
 export const poseidonHex = (args: Array<string>): string => {
   if (isReactNative || !poseidonHexWasm) {
     return ByteUtils.nToHex(
-      circom.poseidon(args.map((x) => ByteUtils.hexToBigInt(x))),
+      circomPoseidon(args.map((x) => ByteUtils.hexToBigInt(x))),
       ByteLength.UINT_256,
     );
   }
@@ -70,7 +72,7 @@ export const poseidonHex = (args: Array<string>): string => {
     EngineDebug.log('poseidonHex in WASM failed: Fallback to JavaScript');
     EngineDebug.error(cause);
     return ByteUtils.nToHex(
-      circom.poseidon(args.map((x) => ByteUtils.hexToBigInt(x))),
+      circomPoseidon(args.map((x) => ByteUtils.hexToBigInt(x))),
       ByteLength.UINT_256,
     );
   }

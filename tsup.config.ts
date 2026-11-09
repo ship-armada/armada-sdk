@@ -38,7 +38,7 @@ const entry = {
   // The SDK's building blocks (scan engine, storage keys, planning/proving pipeline) — unstable, no compatibility promise.
   'internal/index': 'src/internal/index.ts',
   // Lean prover entry — prover code + snarkjs only, NO vendored engine/core/wasm. A browser Web
-  // Worker imports this (not the 13MB wasm-inlined root) so the worker chunk stays small + bundles fast.
+  // Worker imports this (not the ~8 MB wasm-inlined root) so the worker chunk stays small + bundles fast.
   'prover/index': 'src/prover/index.ts',
   // Prebuilt Web Worker entry — self-wires the prover handler; point a browser Worker at it directly.
   'prover/worker': 'src/prover/worker-entry.ts',
@@ -48,7 +48,7 @@ export default defineConfig([
   // ── Browser ESM ──────────────────────────────────────────────────────────
   // The vendored Railgun engine is CJS; esbuild wraps every `require()` in a `__require` shim that
   // throws "Dynamic require … not supported" in a browser bundler. So the browser build must resolve
-  // ALL requires: bundle the crypto deps + ethers, and POLYFILL Node builtins (crypto/buffer/…) with
+  // ALL requires: bundle the crypto deps + ethers, and POLYFILL Node builtins (buffer/process/…; crypto is a stand-in) with
   // browser shims. Goal: zero `__require` in the ESM output. snarkjs stays external — it's a lazy
   // `await import` in the prover (a real dynamic import Vite handles, never hit on the read path).
   // Code splitting puts shared modules (the engine, its inlined wasm, the error classes) in shared chunks, so
@@ -70,6 +70,9 @@ export default defineConfig([
     // locale for `process.env.LANG`, so fix it at build time.
     esbuildOptions(options) {
       options.define = { ...options.define, 'navigator.language': '"en-US"' }
+      // Node's `crypto` → a small stand-in (randomBytes + sha512) instead of the 3.6 MB @jspm/core polyfill. Bundled code
+      // only reaches it on paths without WebCrypto globals; see the shim for who and when.
+      options.alias = { ...options.alias, crypto: './src/crypto/node-crypto-shim.ts' }
     },
     // tsup externalizes package `dependencies` by default; force the crypto/serialization deps to be
     // bundled so none survive as a `__require` shim. (ethers is bundled too — self-contained browser SDK.)
@@ -90,7 +93,8 @@ export default defineConfig([
     ],
     // `assert: false` → the plugin defers to the real (callable) `assert` npm package; its built-in
     // shim exports a non-callable namespace, but ffjavascript calls `assert(cond)` as a function.
-    esbuildPlugins: [inlineWasmUrl, polyfillNode({ polyfills: { crypto: true, assert: false } })],
+    // `crypto: false` → the alias above resolves it instead.
+    esbuildPlugins: [inlineWasmUrl, polyfillNode({ polyfills: { crypto: false, assert: false } })],
   },
   // ── Node CJS ─────────────────────────────────────────────────────────────
   // Relayer + tests: real Node builtins, deps left external (deduped by the consumer / Node resolver). Also

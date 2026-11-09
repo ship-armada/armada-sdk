@@ -1,7 +1,8 @@
 // ABOUTME: Key-material validation (SPEC §4.2) — strict hex parsing + Baby Jubjub point checks
 // ABOUTME: (on-curve, prime-order subgroup, non-identity, non-zero). Reject, never silently clamp.
 
-import { babyjub } from '@railgun-community/circomlibjs';
+// circomlibjs' babyjub module directly: its index requires every module it has, dead weight in the browser bundle.
+import * as babyjub from '@railgun-community/circomlibjs/src/babyjub';
 import { InvalidKeyMaterialError } from '../errors';
 
 // The Baby Jubjub neutral element (identity): 0*G = (0, 1). Not a valid public key.

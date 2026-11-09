@@ -1,13 +1,11 @@
-// ABOUTME: Ambient types for the Baby Jubjub helpers of @railgun-community/circomlibjs (ships no types).
+// ABOUTME: Ambient types for the Baby Jubjub module of @railgun-community/circomlibjs (ships no types), imported directly.
 // ABOUTME: Points are [x, y] bigint pairs in this build; only the members the SDK uses are declared.
-declare module '@railgun-community/circomlibjs' {
-  export const babyjub: {
-    inCurve(point: [bigint, bigint]): boolean;
-    inSubgroup(point: [bigint, bigint]): boolean;
-    packPoint(point: [bigint, bigint]): Uint8Array;
-    unpackPoint(buf: Uint8Array): [bigint, bigint] | null;
-    readonly Base8: [bigint, bigint];
-    readonly order: bigint;
-    readonly subOrder: bigint;
-  };
+declare module '@railgun-community/circomlibjs/src/babyjub' {
+  export function inCurve(point: [bigint, bigint]): boolean;
+  export function inSubgroup(point: [bigint, bigint]): boolean;
+  export function packPoint(point: [bigint, bigint]): Uint8Array;
+  export function unpackPoint(buf: Uint8Array): [bigint, bigint] | null;
+  export const Base8: [bigint, bigint];
+  export const order: bigint;
+  export const subOrder: bigint;
 }

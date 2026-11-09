@@ -1,5 +1,7 @@
 import { utils as utilsEd25519, Point, getPublicKey, sign, verify, CURVE } from '@noble/ed25519';
-import { eddsa, Signature } from '@railgun-community/circomlibjs';
+// DIVERGES FROM UPSTREAM: imports circomlibjs' eddsa module directly, not its index (see utils/poseidon.ts).
+import * as eddsa from '@railgun-community/circomlibjs/src/eddsa';
+import type { Signature } from '@railgun-community/circomlibjs';
 import { poseidonHex } from './poseidon';
 import { ByteUtils } from './bytes';
 import { sha256, sha512 } from './hash';
