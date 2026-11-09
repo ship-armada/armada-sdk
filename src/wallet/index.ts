@@ -158,6 +158,14 @@ export interface Wallet {
    * once the release is written to storage.
    */
   clearSpendPending(txid: string): Promise<void>;
+  /**
+   * The submissions (the `txid`s given to `markSpendPending`) whose holds are still in place — not yet confirmed,
+   * cleared or past the `pendingSpendTtlMs` TTL (pruned first, as balances are). A pure read of the holds. A hold
+   * is released in the same sync that scans its spend's `Nullified` event, which is also when the spend's change
+   * note is found — so an app can show a post-send balance (spendable + pending + each held spend's
+   * `summary.changeValue`) that hands over to the scanned one with no gap and no double count.
+   */
+  pendingSpendTxids(): string[];
   /** Export this wallet's shareable viewing key (Railgun wire format) — grants view-only capability. */
   shareViewingKey(): string;
   /**
