@@ -42,6 +42,9 @@ const entry = {
   'prover/index': 'src/prover/index.ts',
   // Prebuilt Web Worker entry — self-wires the prover handler; point a browser Worker at it directly.
   'prover/worker': 'src/prover/worker-entry.ts',
+  // Selective disclosure (ADR-0020) — build + check a chain-of-custody package. Its own subpath so a
+  // consumer imports only the disclosure surface.
+  'disclosure/index': 'src/disclosure/index.ts',
 }
 
 export default defineConfig([
