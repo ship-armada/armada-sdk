@@ -809,6 +809,12 @@ class ArmadaWallet implements Wallet {
     if (this.holds.clear(txid)) await this.saveHolds();
   }
 
+  pendingSpendTxids(): string[] {
+    this.assertUsable();
+    this.prunePendingSpends();
+    return this.holds.txids();
+  }
+
   // Write the holds record — awaited, so a resolved markSpendPending/clearSpendPending is durable.
   private async saveHolds(): Promise<void> {
     if (!this.ephemeral) await savePendingSpends(this.storage, this.holds);

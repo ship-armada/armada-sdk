@@ -380,3 +380,22 @@ is reported under `pendingSpent` (rather than `spendable`) in the `balances()` e
 `markSpendPending` requires a spend-capable wallet; `clearSpendPending` is always safe to call. This
 matters for apps that issue spends back-to-back; a serialized one-at-a-time flow that refreshes
 balances between transactions is unaffected.
+
+### Showing the balance after a spend
+
+`pendingSpendTxids()` lists the submissions whose holds are still in place — not yet confirmed, cleared
+or expired. A hold is released in the same sync that scans the spend's `Nullified` event, which is when
+its change note is found. So for the balance a user will have once their spend lands, add each held
+spend's change to what `balances()` reports:
+
+```ts
+// changeBySubmission: txid → the change its plans return (Σ plan.summary.changeValue), kept when you submit
+const held = wallet.pendingSpendTxids();
+const usdc = (await wallet.balances()).find((b) => b.tokenAddress === usdcAddress);
+const afterSpends =
+  (usdc?.spendable ?? 0n) + (usdc?.pending ?? 0n) + held.reduce((sum, txid) => sum + (changeBySubmission.get(txid) ?? 0n), 0n);
+```
+
+When the spend confirms, its change moves into `spendable` / `pending` in the same sync that drops its
+txid from the list — no gap and no double count. A dropped or expired spend leaves the list too, and
+the figure falls back to the scanned balance.

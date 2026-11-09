@@ -1,5 +1,5 @@
-// ABOUTME: Tests for the spend-holds record (issue #55, #119) — its save/load round-trip, that an empty set
-// ABOUTME: deletes the record, and that an unreadable record degrades to no holds instead of failing the load.
+// ABOUTME: Tests for the spend-holds record (issue #55, #119) — its save/load round-trip, that an empty set deletes the
+// ABOUTME: record, that an unreadable record degrades to no holds, and the submissions (txids) the holds belong to.
 
 import { describe, it, expect } from 'vitest';
 import { MemoryStorageAdapter } from '../storage/index';
@@ -35,5 +35,29 @@ describe('spend-holds record', () => {
     await storage.put(PENDING_SPENDS_KEY, new TextEncoder().encode('{not json'));
     expect((await loadPendingSpends(storage)).list()).toEqual([]);
     expect((await loadPendingSpends(new MemoryStorageAdapter())).list()).toEqual([]); // and a missing one
+  });
+});
+
+describe('txids', () => {
+  // A note's spend, as a sync records it once its Nullified event is scanned.
+  const spent = (nullifier: bigint) => ({ tree: 0, nullifier, txid: '0xmined', blockNumber: 1 });
+
+  it('lists each held submission once, in the order it was first held', () => {
+    const holds = new PendingSpends();
+    holds.mark([{ tree: 0, nullifier: 1n }, { tree: 0, nullifier: 2n }], '0xfirst', 1_000, []);
+    holds.mark([{ tree: 0, nullifier: 3n }], '0xsecond', 2_000, []);
+    expect(holds.txids()).toEqual(['0xfirst', '0xsecond']);
+  });
+
+  it('drops a submission once none of its holds remain', () => {
+    const holds = new PendingSpends();
+    holds.mark([{ tree: 0, nullifier: 1n }, { tree: 0, nullifier: 2n }], '0xfirst', 1_000, []);
+    holds.mark([{ tree: 0, nullifier: 3n }], '0xsecond', 2_000, []);
+    holds.releaseConfirmed([spent(1n)]);
+    expect(holds.txids()).toEqual(['0xfirst', '0xsecond']); // one of its two inputs is still held
+    holds.releaseConfirmed([spent(2n)]);
+    expect(holds.txids()).toEqual(['0xsecond']);
+    holds.clear('0xsecond');
+    expect(holds.txids()).toEqual([]);
   });
 });

@@ -57,6 +57,11 @@ export class PendingSpends {
     return [...this.holds.values()];
   }
 
+  /** The submissions the current holds belong to — each `txid` once, in the order it was first held. */
+  txids(): string[] {
+    return [...new Set([...this.holds.values()].map((h) => h.txid))];
+  }
+
   private deleteWhere(match: (h: PendingSpend) => boolean): boolean {
     let changed = false;
     for (const [key, h] of this.holds) {

@@ -164,6 +164,12 @@ function pushTransact(block: number, leaves: bigint[]): void {
 
 // A Shield log of one real note to `keyset` worth `value` USDC at `block`. Returns its decoded commitment.
 class TestShieldNote extends ShieldNote {}
+// A spend confirming: the pool's Nullified event for `nullifiers` in `tree` (no new leaves).
+function pushNullified(block: number, tree: number, nullifiers: bigint[]): void {
+  const log = iface.encodeEventLog('Nullified', [tree, nullifiers.map(b32)]);
+  chain.logs.push({ blockNumber: block, topics: log.topics, data: log.data, transactionHash: b32(BigInt(++txCounter)), leaves: [] });
+}
+
 async function pushShield(block: number, keyset: Keyset, value: bigint): Promise<DecodedShieldCommitment> {
   const tokenData = getTokenDataERC20(USDC);
   const random = (++txCounter).toString(16).padStart(32, '0');
@@ -561,6 +567,58 @@ describe('SYNC-14: spend holds are durable as soon as markSpendPending resolves'
     const w3 = await third.wallet.fromRootSecret(ROOT_SECRET, { creationBlock: 1 });
     expect(w3.spendableNullifiers()).toHaveLength(1);
     await third.close();
+  });
+});
+
+describe('pendingSpendTxids: the submissions whose holds are still in place', () => {
+  // Hold the one owned note for '0xsubmitted'; returns the wallet and the note's (tree, nullifier).
+  async function heldWallet(extra: Partial<ArmadaSdkConfig> = {}) {
+    const owned = await pushShield(10, keyset, 1_000_000n);
+    chain.head = 10;
+    const sdk = await createArmadaSdk(cfg(extra));
+    const wallet = await sdk.wallet.fromRootSecret(ROOT_SECRET, { creationBlock: 1 });
+    await wallet.sync();
+    const [note] = wallet.spendableNullifiers();
+    await wallet.markSpendPending({ selectedInputs: [{ tree: owned.tree, position: owned.position }] } as unknown as Plan, '0xsubmitted');
+    return { sdk, wallet, note: note! };
+  }
+
+  it('lists a submission until the sync that scans its spend — the same sync that releases its inputs', async () => {
+    const { sdk, wallet, note } = await heldWallet();
+    expect(wallet.pendingSpendTxids()).toEqual(['0xsubmitted']);
+    pushNullified(11, note.tree, [note.nullifier]);
+    chain.head = 11;
+    await wallet.sync();
+    expect(wallet.pendingSpendTxids()).toEqual([]);
+    await sdk.close();
+  });
+
+  it('drops a submission that is cleared (a dropped or reverted tx)', async () => {
+    const { sdk, wallet } = await heldWallet();
+    await wallet.clearSpendPending('0xsubmitted');
+    expect(wallet.pendingSpendTxids()).toEqual([]);
+    await sdk.close();
+  });
+
+  it('drops a submission whose holds outlived the TTL, as balances do', async () => {
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const { sdk, wallet } = await heldWallet({ pool: { ...cfg().pool, pendingSpendTtlMs: 1_000 } });
+    expect(wallet.pendingSpendTxids()).toEqual(['0xsubmitted']);
+    vi.spyOn(Date, 'now').mockReturnValue(now + 1_001);
+    expect(wallet.pendingSpendTxids()).toEqual([]);
+    vi.restoreAllMocks();
+    await sdk.close();
+  });
+
+  it('survives a reload, like the holds themselves', async () => {
+    const storage = new MemoryStorageAdapter();
+    const { sdk } = await heldWallet({ storage });
+    await sdk.close();
+    const reloaded = await createArmadaSdk(cfg({ storage }));
+    const wallet = await reloaded.wallet.fromRootSecret(ROOT_SECRET, { creationBlock: 1 });
+    expect(wallet.pendingSpendTxids()).toEqual(['0xsubmitted']);
+    await reloaded.close();
   });
 });
 
