@@ -1,5 +1,5 @@
 // ABOUTME: Guards the built package layout (#129, #116) — every entry shares one engine copy (ESM + CJS), the
-// ABOUTME: prover worker stays lean, browser chunks import no Node built-ins, and the exports map types every condition.
+// ABOUTME: prover worker stays lean, browser chunks import no Node built-ins or dead weight, and every export is typed.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
@@ -81,9 +81,30 @@ describe('the ESM build in plain Node (#131)', () => {
   }, 120_000);
 });
 
+describe('the ESM build in plain Node: crypto', () => {
+  it('derives a keyset with no `self` / `window` (the code paths that fall back to Node `crypto`)', (ctx) => {
+    // WHY: @noble/ed25519 and ffjavascript use WebCrypto where `self` / `window` exist and Node's `crypto` otherwise.
+    // The browser build stands in a small `crypto` (src/platform/crypto-shim.ts) for the 3.6 MB polyfill; an empty
+    // stand-in made viewing-key derivation throw for a Node ES-module importer.
+    if (!distAvailable(ctx)) return;
+    const script = `
+      const sdk = await import(${JSON.stringify(pathToFileURL(join(DIST, 'index.js')).href)});
+      const keys = await sdk.deriveKeyset(new Uint8Array(32).fill(7));
+      if (keys.viewingPublicKey.length !== 32) throw new Error('bad viewing key');
+    `;
+    let failure = '';
+    try {
+      execFileSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', stdio: 'pipe' });
+    } catch (err) {
+      failure = (err as { stderr: string }).stderr.split('\n').find((l) => /Error/.test(l)) ?? 'failed';
+    }
+    expect(failure).toBe('');
+  }, 120_000);
+});
+
 describe('browser chunks', () => {
   it('the prover worker loads no engine or inlined WASM', (ctx) => {
-    // WHY: a browser Worker loads @armada/sdk/prover/worker; pulling the shared engine chunk (13 MB of
+    // WHY: a browser Worker loads @armada/sdk/prover/worker; pulling the shared engine chunk (~8 MB, with its
     // inlined WASM) into it would make every proof start with a multi-MB parse.
     if (!distAvailable(ctx)) return;
     const graph = esmGraph('prover/worker.js');
@@ -103,6 +124,29 @@ describe('browser chunks', () => {
       for (const file of esmGraph(entry)) {
         const hit = readFileSync(file, 'utf8').match(builtin);
         expect(hit?.[0], `${file} (reachable from ${entry}) imports a Node built-in`).toBeUndefined();
+      }
+    }
+  });
+});
+
+describe('browser engine size', () => {
+  it('bundles no Node crypto polyfill and none of the circomlibjs modules the engine never calls', (ctx) => {
+    // WHY: the browser ESM is the app's lazily loaded SDK chunk, and every MB is download + parse time before sign-in.
+    // The engine reaches `crypto` only on Node (its browser path uses WebCrypto / noble), so the 3.6 MB polyfill is
+    // dead weight; circomlibjs' index requires all its modules (contract generators, sparse Merkle trees, the slow
+    // Poseidon and its 0.9 MB constants), so the engine imports the three it uses directly. esbuild marks each bundled
+    // module with a `// node_modules/<path>` comment.
+    if (!distAvailable(ctx)) return;
+    const unwanted = [
+      '// node_modules/@jspm/core/nodelibs/browser/crypto.js',
+      '// node_modules/@railgun-community/circomlibjs/src/poseidon_slow.js',
+      '// node_modules/@railgun-community/circomlibjs/src/poseidon_constants.json',
+      '// node_modules/@railgun-community/circomlibjs/src/smt.js',
+    ];
+    for (const entry of BROWSER_ENTRIES) {
+      for (const file of esmGraph(entry)) {
+        const code = readFileSync(file, 'utf8');
+        for (const marker of unwanted) expect(code.includes(marker), `${file} bundles ${marker}`).toBe(false);
       }
     }
   });
